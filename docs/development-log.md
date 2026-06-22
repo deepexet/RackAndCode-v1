@@ -11,6 +11,7 @@ Append-only summary of material product development. Git commits are the detaile
 - Added migration `020_valeronix_brand.sql` for the visible internal project name.
 - Added Kanban task `FS-075` at Critical priority and moved it to Testing.
 - Hardened Git exclusions for databases, runtime tokens, keys and macOS metadata.
+- Created the initial repository commit `3e774ca`; private GitHub remote is pending repository access details.
 - Verification: `npm run check`; 62 automated tests and quality gate passed.
 
 ## Earlier foundation work — v0.1.0 through v0.22.0
