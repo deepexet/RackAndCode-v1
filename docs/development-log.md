@@ -9,7 +9,7 @@ Append-only summary of material product development. Git commits are the detaile
 - Implemented automatic project Daily Log from project audit events.
 - Kept manual daily entries as editable explanations alongside immutable automatic events.
 - Added migration `020_valeronix_brand.sql` for the visible internal project name.
-- Added Kanban task `FS-075` at Critical priority and moved it to Testing.
+- Added Kanban task `FS-078` at Critical priority and moved it to Testing.
 - Hardened Git exclusions for databases, runtime tokens, keys and macOS metadata.
 - Created the initial repository commit `3e774ca`; private GitHub remote is pending repository access details.
 - Verification: `npm run check`; 62 automated tests and quality gate passed.

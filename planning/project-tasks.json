@@ -458,12 +458,12 @@
       "dependsOn": [], "priorityReason": "Явно назначено пользователем Priority 2 для подготовки коммерческого продукта.", "unblocks": ["FS-043", "FS-044", "FS-045"]
     },
     {
-      "id": "FS-075", "title": "Автоматический Daily Log из project audit", "description": "Формировать дневной журнал из unit progress, задач, структуры объекта и issues; объединять с редактируемыми ручными пояснениями без дублирования источников истины.",
+      "id": "FS-078", "title": "Автоматический Daily Log из project audit", "description": "Формировать дневной журнал из unit progress, задач, структуры объекта и issues; объединять с редактируемыми ручными пояснениями без дублирования источников истины.",
       "type": "Feature", "status": "testing", "priority": "critical", "area": "projects", "risk": "Неверное объединение событий или timezone может исказить фактический отчет за день.",
       "parentId": "FS-019", "dependsOn": ["FS-004", "FS-019", "FS-020"], "priorityReason": "Daily Log должен отражать фактическую работу автоматически и служит основой отчетности техников.", "unblocks": ["FS-035", "FS-039", "FS-043"]
     },
     {
-      "id": "FS-076", "title": "Private GitHub repository и development provenance", "description": "Вести решения, development log и AI provenance в Git; исключить runtime secrets; подключить private GitHub remote и защитить main после предоставления repository URL.",
+      "id": "FS-079", "title": "Private GitHub repository и development provenance", "description": "Вести решения, development log и AI provenance в Git; исключить runtime secrets; подключить private GitHub remote и защитить main после предоставления repository URL.",
       "type": "Task", "status": "progress", "priority": "high", "area": "foundation", "risk": "Ошибочная публикация runtime data или публичный remote может раскрыть секреты и незавершенную интеллектуальную собственность.",
       "dependsOn": ["FS-004", "FS-025"], "priorityReason": "История авторства, резервная копия кода и контролируемая публикация важны до расширения команды.", "unblocks": ["FS-043", "FS-045"]
     }
