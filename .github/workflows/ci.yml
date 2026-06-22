@@ -1,0 +1,33 @@
+name: Valeronix Quality Gate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: valeronix-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Syntax, unit, isolation, and frontend contracts
+        run: npm run check
+      - name: Repository security and integrity gate
+        run: python3 scripts/quality_gate.py
+      - name: Compile Python entry points
+        run: python3 -m py_compile server/app.py server/migrations.py scripts/load_roadmap.py scripts/quality_gate.py scripts/backup.py

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Valeronix — operational intelligence for field projects and the built world">
+  <title>Valeronix · Development Workspace</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="Valeronix — на главную">
+      <span class="brand-mark">V</span>
+      <span><strong>Valeronix</strong><small>Operational Intelligence</small></span>
+    </a>
+    <nav class="primary-nav" aria-label="Разделы платформы"><a href="#overview" data-route-link="overview">Обзор</a><a href="#projects" data-route-link="projects">Проекты</a><a href="#admin" data-route-link="admin">Admin</a></nav>
+    <div class="header-right">
+      <div class="agent-indicator idle" id="agentIndicator" title="Статус разработки"><i></i><span><strong>Codex</strong><small id="agentStatusText">Статус загружается…</small></span><button id="requestContinueButton" type="button" title="Запросить продолжение разработки" aria-label="Запросить продолжение разработки">▶</button></div>
+      <div class="top-actions">
+        <span class="save-state" id="saveState"><i></i> Локально сохранено</span>
+        <button class="button ghost" id="exportButton" type="button">Экспорт задач</button>
+        <label class="button ghost file-button">Импорт задач<input id="importInput" type="file" accept="application/json"></label>
+        <button class="button primary" id="addTaskButton" type="button">＋ Новая задача</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="app-view active" data-view="overview">
+    <section class="hero" id="overview">
+      <div>
+        <p class="eyebrow">VALERONIX · PRODUCT FOUNDATION</p>
+        <h1>Операционная система<br><span>для полевых команд.</span></h1>
+        <p class="hero-copy">Systems in context. Work in motion. Decisions with evidence.</p>
+      </div>
+      <div class="system-pulse" aria-label="Состояние проекта">
+        <div class="pulse-ring"><span id="healthScore">72</span><small>%</small></div>
+        <div><strong>Foundation health</strong><span id="healthCaption">Система формируется</span></div>
+      </div>
+    </section>
+
+    <section class="metrics" aria-label="Метрики проекта">
+      <article><span>Всего задач</span><strong id="metricTotal">0</strong><small id="metricTotalNote">в workspace</small></article>
+      <article><span>В работе</span><strong id="metricActive">0</strong><small>активный поток</small></article>
+      <article><span>Завершено</span><strong id="metricDone">0</strong><small id="metricDoneNote">0% delivery</small></article>
+      <article><span>Блокировки</span><strong id="metricBlocked">0</strong><small id="metricBlockedNote">требуют внимания</small></article>
+    </section>
+
+    <section class="section roadmap-section">
+      <div class="section-heading">
+        <div><p class="eyebrow">DELIVERY MAP</p><h2>Рост платформы</h2></div>
+        <p>Прогресс автоматически считается по задачам каждого направления.</p>
+      </div>
+      <div class="roadmap" id="roadmap"></div>
+    </section>
+
+    <section class="section board-section" id="kanban">
+      <div class="section-heading board-heading">
+        <div><p class="eyebrow">DEVELOPMENT KANBAN</p><h2>Очередь разработки</h2></div>
+        <div class="filters">
+          <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="Поиск задач…" aria-label="Поиск задач"></label>
+          <select id="priorityFilter" aria-label="Фильтр приоритета">
+            <option value="all">Все приоритеты</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+          </select>
+          <select id="areaFilter" aria-label="Фильтр направления"><option value="all">Все направления</option></select>
+          <select id="statusFilter" class="status-filter" aria-label="Фильтр статуса"><option value="all">Все статусы</option></select>
+        </div>
+      </div>
+      <div class="board" id="board" aria-label="Kanban доска"></div>
+    </section>
+
+    <section class="section lower-grid">
+      <article class="panel">
+        <div class="panel-title"><div><p class="eyebrow">ARCHITECTURE</p><h2>Контуры системы</h2></div><span class="badge">Modular core</span></div>
+        <div class="architecture-flow">
+          <span>Clients</span><i>→</i><span>API / BFF</span><i>→</i><span>Domain Core</span><i>→</i><span>Data + Events</span><i>→</i><span>AI + Integrations</span>
+        </div>
+        <div class="principles"><span>Offline first</span><span>Audit by design</span><span>Tenant isolation</span><span>Graceful degradation</span></div>
+      </article>
+      <article class="panel">
+        <div class="panel-title"><div><p class="eyebrow">CHANGE STREAM</p><h2>Последние события</h2></div><button class="text-button" id="clearAuditButton" type="button">Очистить</button></div>
+        <ol class="audit-list" id="auditList"></ol>
+      </article>
+    </section>
+    </div>
+
+    <section class="app-view projects-page" data-view="projects" id="projects">
+      <div id="projectsListView"><header class="page-header"><div><p class="eyebrow">PROJECT OPERATIONS</p><h1>Проекты компании</h1><p>Прогресс по зданиям, этапам и видам работ в отдельном операционном контуре.</p></div><button class="button primary" id="newProjectButton" type="button">＋ Новый проект</button></header><div class="projects-grid" id="projectsPortfolio" aria-live="polite"><article class="project-card project-loading">Загрузка проектов…</article></div></div>
+      <div id="projectDetailView" class="hidden" aria-live="polite"></div>
+    </section>
+
+    <section class="app-view admin-page" data-view="admin" id="admin">
+      <header class="page-header"><div><p class="eyebrow">LOCAL COMPUTE CONTROL</p><h1>Устройства и нагрузка</h1><p>Состояние Mac-узлов и явное управление доступом к локальным вычислениям.</p></div><span class="save-state"><i></i> Обновление каждые 5 секунд</span></header>
+      <div class="admin-summary" id="computeSummary"></div>
+      <div class="compute-grid" id="computeNodes"><article class="compute-card project-loading">Ожидание первого Compute Agent…</article></div>
+      <section class="detail-section compute-help"><p class="eyebrow">ENROLLMENT</p><h2>Подключение Mac</h2><p>Agent работает только после ручного запуска. Возможность выполнять вычисления дополнительно требует флага <code>--compute-enabled</code> и разрешения переключателем администратора.</p><pre>python3 scripts/mac_agent.py --server http://192.168.8.138:4173 --name "M1 Pro" --compute-enabled</pre></section>
+      <section class="detail-section workflow-admin"><div class="detail-section-title"><div><p class="eyebrow">PROJECT WORKFLOW</p><h2>Виды работ и этапы</h2></div><button class="button primary" id="addWorkTypeButton" type="button">＋ Вид работ</button></div><p>Настройка применяется ко всем проектам текущей организации.</p><div class="workflow-admin-list" id="workflowAdminList"></div></section>
+      <section class="detail-section workflow-admin"><div class="detail-section-title"><div><p class="eyebrow">FORM SCHEMA</p><h2>Дополнительные поля</h2></div><button class="button primary" id="addCustomFieldButton" type="button">＋ Поле</button></div><p>Поля автоматически появляются в формах локаций и units.</p><div class="workflow-admin-list" id="customFieldAdminList"></div></section>
+    </section>
+  </main>
+
+  <dialog id="taskDialog">
+    <form id="taskForm" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">WORK ITEM</p><h2 id="dialogTitle">Новая задача</h2></div><button class="icon-button" value="cancel" formnovalidate aria-label="Закрыть">×</button></div>
+      <input id="taskId" type="hidden">
+      <label>Название<input id="taskTitle" required maxlength="120" placeholder="Что должно быть сделано?"></label>
+      <label>Цель<textarea id="taskDescription" rows="3" maxlength="500" placeholder="Результат и критерий готовности"></textarea></label>
+      <div class="form-grid">
+        <label>Тип<select id="taskType"><option>Epic</option><option>Feature</option><option selected>Task</option><option>Subtask</option></select></label>
+        <label>Статус<select id="taskStatus"></select></label>
+        <label>Приоритет<select id="taskPriority"><option value="critical">Critical</option><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></label>
+        <label>Направление<select id="taskArea"></select></label>
+      </div>
+      <label>Зависимости / риски<input id="taskRisk" maxlength="180" placeholder="Что может заблокировать задачу?"></label>
+      <section class="planning-meta hidden" id="taskPlanningMeta" aria-label="AI-контекст задачи"></section>
+      <div class="dialog-actions"><button class="button danger hidden" id="deleteTaskButton" type="button">Удалить</button><span></span><button class="button ghost" value="cancel" formnovalidate>Отмена</button><button class="button primary" id="saveTaskButton" value="default">Сохранить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="projectDialog">
+    <form id="projectForm">
+      <div class="dialog-head"><div><p class="eyebrow">PROJECTS</p><h2>Новый проект</h2></div><button class="icon-button" type="button" data-close-dialog="projectDialog" aria-label="Закрыть">×</button></div>
+      <div class="form-grid"><label>Код<input id="projectCode" required maxlength="32" pattern="[A-Za-z0-9_-]+" placeholder="HQ-ACCESS"></label><label>Приоритет<select id="projectPriority"><option value="critical">Critical</option><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></label></div>
+      <label>Название<input id="projectName" required maxlength="120" placeholder="Система контроля доступа — HQ"></label>
+      <label>Описание<textarea id="projectDescription" rows="3" maxlength="1000"></textarea></label>
+      <div class="form-grid"><label>Начало<input id="projectStartDate" type="date"></label><label>Целевая дата<input id="projectTargetDate" type="date"></label></div>
+      <div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="projectDialog">Отмена</button><button class="button primary" type="submit">Создать проект</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="buildingDialog">
+    <form id="buildingForm">
+      <input id="buildingProjectId" type="hidden">
+      <div class="dialog-head"><div><p class="eyebrow">PROJECT OBJECT</p><h2>Добавить здание</h2></div><button class="icon-button" type="button" data-close-dialog="buildingDialog" aria-label="Закрыть">×</button></div>
+      <div class="form-grid"><label>Код<input id="buildingCode" required maxlength="32" pattern="[A-Za-z0-9_-]+" placeholder="BLDG-A"></label><label>Статус<select id="buildingStatus"><option value="planned">Planned</option><option value="active">Active</option><option value="on_hold">On hold</option><option value="completed">Completed</option></select></label></div>
+      <label>Название<input id="buildingName" required maxlength="120" placeholder="Main Building"></label>
+      <label>Адрес<input id="buildingAddress" maxlength="500" placeholder="Адрес объекта"></label>
+      <div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="buildingDialog">Отмена</button><button class="button primary" type="submit">Добавить здание</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="workItemDialog">
+    <form id="workItemForm">
+      <input id="workItemProjectId" type="hidden">
+      <div class="dialog-head"><div><p class="eyebrow">FIELD WORK</p><h2>Новая полевая задача</h2></div><button class="icon-button" type="button" data-close-dialog="workItemDialog" aria-label="Закрыть">×</button></div>
+      <label>Название<input id="workItemTitle" required maxlength="120" placeholder="Установить считыватели"></label>
+      <label>Описание<textarea id="workItemDescription" rows="3" maxlength="1000"></textarea></label>
+      <div class="form-grid"><label>Здание<select id="workItemBuilding"><option value="">Без привязки</option></select></label><label>Этап<select id="workItemStage"><option value="">Без этапа</option></select></label><label>Вид работ<select id="workItemType"></select></label><label>Зависит от<select id="workItemDependency"><option value="">Нет зависимости</option></select></label><label>Статус<select id="workItemStatus"></select></label><label>Приоритет<select id="workItemPriority"><option value="critical">Critical</option><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></label><label>Срок<input id="workItemDueDate" type="date"></label><label>Оценка, часы<input id="workItemEstimate" type="number" min="0" step="0.5" inputmode="decimal"></label></div>
+      <div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="workItemDialog">Отмена</button><button class="button primary" type="submit">Создать задачу</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="locationDialog">
+    <form id="locationForm"><input id="locationProjectId" type="hidden"><div class="dialog-head"><div><p class="eyebrow">PROJECT LOCATION</p><h2>Добавить объект проекта</h2></div><button class="icon-button" type="button" data-close-dialog="locationDialog" aria-label="Закрыть">×</button></div><div class="form-grid"><label>Код<input id="locationCode" required maxlength="32" placeholder="LV-4"></label><label>Тип<select id="locationKind"><option value="floor">Этаж</option><option value="suite">Suite</option><option value="room">Помещение</option><option value="area">Зона</option></select></label></div><label>Название<input id="locationName" required maxlength="120" placeholder="Level 4"></label><div class="form-grid"><label>Здание<select id="locationBuilding"><option value="">Без здания</option></select></label><label>Родительский объект<select id="locationParent"><option value="">Корневой объект</option></select></label></div><label>Всего suites<input id="locationSuiteTotal" type="number" min="0" inputmode="numeric"></label><div class="dynamic-fields" id="locationCustomFields"></div><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="locationDialog">Отмена</button><button class="button primary" type="submit">Добавить</button></div></form>
+  </dialog>
+
+  <dialog id="unitDialog">
+    <form id="unitForm"><input id="unitProjectId" type="hidden"><input id="unitLocationId" type="hidden"><input id="unitId" type="hidden"><input id="unitVersion" type="hidden"><div class="dialog-head"><div><p class="eyebrow">UNIT REGISTRY</p><h2 id="unitDialogTitle">Добавить unit</h2></div><button class="icon-button" type="button" data-close-dialog="unitDialog" aria-label="Закрыть">×</button></div><div class="form-grid"><label>Код<input id="unitCode" required maxlength="32" placeholder="401"></label><label>Название<input id="unitName" required maxlength="120" placeholder="Suite 401"></label></div><label>Заметки<textarea id="unitNotes" rows="4" maxlength="2000" placeholder="Особенности доступа, планировки или монтажа"></textarea></label><div class="dynamic-fields" id="unitCustomFields"></div><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="unitDialog">Отмена</button><button class="button primary" type="submit">Сохранить</button></div></form>
+  </dialog>
+
+  <dialog id="workTypeDialog">
+    <form id="workTypeForm"><input id="workTypeConfigId" type="hidden"><input id="workTypeConfigVersion" type="hidden"><div class="dialog-head"><div><p class="eyebrow">WORKFLOW CONFIGURATION</p><h2 id="workTypeDialogTitle">Новый вид работ</h2></div><button class="icon-button" type="button" data-close-dialog="workTypeDialog" aria-label="Закрыть">×</button></div><div class="form-grid"><label>Код<input id="workTypeConfigCode" required maxlength="48" pattern="[A-Za-z0-9_-]+" placeholder="intercom"></label><label>Название<input id="workTypeConfigName" required maxlength="120" placeholder="Intercom"></label></div><label>Цвет<input id="workTypeConfigColor" type="color" value="#7c8cff"></label><label>Этапы<textarea id="workTypeConfigActions" rows="7" required placeholder="prewire | Prewire&#10;installed | Installed&#10;tested | Tested"></textarea></label><small>Один этап на строку: технический код | отображаемое название.</small><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="workTypeDialog">Отмена</button><button class="button primary" type="submit">Сохранить</button></div></form>
+  </dialog>
+
+  <dialog id="customFieldDialog">
+    <form id="customFieldForm"><input id="customFieldId" type="hidden"><input id="customFieldVersion" type="hidden"><div class="dialog-head"><div><p class="eyebrow">FORM SCHEMA</p><h2 id="customFieldDialogTitle">Новое поле</h2></div><button class="icon-button" type="button" data-close-dialog="customFieldDialog" aria-label="Закрыть">×</button></div><div class="form-grid"><label>Объект<select id="customFieldScope"><option value="unit">Unit</option><option value="location">Локация</option></select></label><label>Тип<select id="customFieldType"><option value="text">Текст</option><option value="number">Число</option><option value="boolean">Да / нет</option><option value="date">Дата</option><option value="select">Список</option></select></label><label>Код<input id="customFieldCode" required maxlength="48" pattern="[A-Za-z0-9_-]+" placeholder="bedrooms"></label><label>Название<input id="customFieldLabel" required maxlength="120" placeholder="Количество спален"></label></div><label>Варианты списка<input id="customFieldOptions" maxlength="1000" placeholder="Studio, 1 bedroom, 2 bedrooms"></label><label class="check-label"><input id="customFieldRequired" type="checkbox"> Обязательное поле</label><label class="check-label"><input id="customFieldActive" type="checkbox" checked> Активно</label><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="customFieldDialog">Отмена</button><button class="button primary" type="submit">Сохранить</button></div></form>
+  </dialog>
+
+  <dialog id="dailyUpdateDialog">
+    <form id="dailyUpdateForm"><input id="dailyProjectId" type="hidden"><input id="dailyEntryId" type="hidden"><input id="dailyEntryVersion" type="hidden"><div class="dialog-head"><div><p class="eyebrow">TODAY UPDATE</p><h2 id="dailyDialogTitle">Что сделано сегодня?</h2></div><button class="icon-button" type="button" data-close-dialog="dailyUpdateDialog" aria-label="Закрыть">×</button></div><div class="form-grid"><label>Дата<input id="dailyDate" type="date" required></label><label>Этаж / зона<select id="dailyLocation" required></select></label><label>Вид работ<select id="dailyWorkType" required></select></label><label>Действие<select id="dailyAction" required></select></label><label>Статус<select id="dailyStatus"><option value="ongoing">В работе</option><option value="complete">Завершено</option><option value="blocked">Заблокировано</option><option value="not_started">Не начато</option></select></label><label>Готовность, %<input id="dailyPercent" type="number" min="0" max="100" value="50" required inputmode="numeric"></label><label>Выполнено, шт.<input id="dailyQuantity" type="number" min="0" inputmode="numeric"></label></div><label>Комментарий<textarea id="dailyComments" rows="3" maxlength="2000" placeholder="Что именно сделано, важные детали"></textarea></label><section class="issue-capture"><label class="check-label"><input id="dailyHasIssue" type="checkbox"> Есть проблема или блокировка</label><div id="dailyIssueFields" class="hidden"><label>Описание проблемы<textarea id="dailyIssueDescription" rows="3" maxlength="2000" placeholder="Что произошло и что требуется"></textarea></label><label>Критичность<select id="dailyIssueSeverity"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select></label></div></section><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="dailyUpdateDialog">Отмена</button><button class="button primary" type="submit">Сохранить отчет</button></div></form>
+  </dialog>
+
+  <dialog id="audioZoneDialog">
+    <form id="audioZoneForm"><div class="dialog-head"><div><p class="eyebrow">AUDIO ZONE</p><h2>Параметры аудио зоны</h2></div><button class="icon-button" type="button" data-close-dialog="audioZoneDialog" aria-label="Закрыть">×</button></div><div class="form-grid"><label>Тип зоны<select id="audioZoneType"><option value="common_area">Common area</option><option value="amenity">Amenity</option><option value="residential">Residential</option><option value="outdoor">Outdoor</option></select></label><label>Speakers<input id="audioSpeakerCount" type="number" min="0" inputmode="numeric"></label><label>Displays / TV<input id="audioDisplayCount" type="number" min="0" inputmode="numeric"></label></div><label>Sources / назначение<input id="audioSourceDescription" maxlength="500" placeholder="TV, background music, paging"></label><label>Оборудование и заметки<textarea id="audioEquipmentNotes" rows="4" maxlength="1000" placeholder="Amplifier, rack, speaker model, mounting notes"></textarea></label><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="audioZoneDialog">Отмена</button><button class="button primary" type="submit">Сохранить зону</button></div></form>
+  </dialog>
+
+  <dialog id="jobberReportDialog">
+    <form><div class="dialog-head"><div><p class="eyebrow">JOBBER UPDATE</p><h2>Отчет по выполненным работам</h2></div><button class="icon-button" type="button" data-close-dialog="jobberReportDialog" aria-label="Закрыть">×</button></div><label>Дата<input id="jobberReportDate" type="date"></label><label>Готовый текст<textarea id="jobberReportText" rows="12" readonly></textarea></label><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="jobberReportDialog">Закрыть</button><button class="button primary" id="copyJobberReport" type="button">Копировать</button></div></form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

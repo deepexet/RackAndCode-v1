@@ -1,0 +1,565 @@
+openapi: 3.1.0
+info:
+  title: Valeronix Local Foundation API
+  version: 1.0.0
+  description: Versioned single-user development workspace API. Authentication is not yet implemented.
+servers:
+  - url: /api/v1
+paths:
+  /organizations:
+    get:
+      operationId: listOrganizations
+      summary: List organizations available to the local foundation runtime
+      responses:
+        "200":
+          description: Organization list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organizations]
+                properties:
+                  organizations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Organization" }
+  /health:
+    get:
+      operationId: getHealth
+      summary: Read process and schema health
+      responses:
+        "200":
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /audit/integrity:
+    get:
+      operationId: verifyAuditIntegrity
+      summary: Verify the append-only project audit hash chain
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: projectId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Audit integrity result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organizationId, valid, eventCount, failureCount, verifiedAt]
+                properties:
+                  organizationId: { type: string }
+                  projectId: { type: [string, "null"] }
+                  valid: { type: boolean }
+                  eventCount: { type: integer, minimum: 0 }
+                  failureCount: { type: integer, minimum: 0 }
+                  verifiedAt: { type: string, format: date-time }
+  /workspace:
+    get:
+      operationId: getWorkspace
+      summary: Read the current Kanban workspace
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: Current workspace snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+    put:
+      operationId: replaceWorkspace
+      summary: Atomically replace the workspace using optimistic concurrency
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: X-Request-ID
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceWrite"
+      responses:
+        "200":
+          description: Workspace saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceWriteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Revision conflict or reused idempotency key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /projects:
+    get:
+      operationId: listProjects
+      summary: List tenant projects with computed task and stage progress
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: Project portfolio
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organizationId, projects]
+                properties:
+                  organizationId: { type: string }
+                  projects:
+                    type: array
+                    items: { $ref: "#/components/schemas/Project" }
+    post:
+      operationId: createProject
+      summary: Create a tenant project with standard field-service stages
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectCreate" }
+      responses:
+        "201":
+          description: Project created
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /projects/{projectId}:
+    get:
+      operationId: getProject
+      summary: Read a project with stages, buildings and normalized work items
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Project detail
+        "404":
+          description: Project not found in the tenant
+  /projects/{projectId}/buildings:
+    post:
+      operationId: createBuilding
+      summary: Add a building to a tenant project
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BuildingCreate" }
+      responses:
+        "201": { description: Building created }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { description: Project not found }
+  /projects/{projectId}/work-items:
+    post:
+      operationId: createProjectWorkItem
+      summary: Create a normalized field work item
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectWorkItemCreate" }
+      responses:
+        "201": { description: Work item created }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { description: Project not found }
+  /projects/{projectId}/work-items/{workItemId}:
+    patch:
+      operationId: updateProjectWorkItem
+      summary: Optimistically update a work item and enforce workflow transitions
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/WorkItemId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectWorkItemUpdate" }
+      responses:
+        "200": { description: Work item updated }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { description: Work item not found }
+        "409":
+          description: Stale version or invalid status transition
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /projects/{projectId}/work-items/{workItemId}/dependencies:
+    post:
+      operationId: addWorkItemDependency
+      summary: Add a dependency after validating tenant, project and graph acyclicity
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/WorkItemId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [predecessorId]
+              properties:
+                predecessorId: { type: string }
+      responses:
+        "201": { description: Dependency added }
+        "400": { description: Invalid, duplicate or cyclic dependency }
+        "404": { description: Project or work item not found }
+  /projects/{projectId}/locations:
+    post:
+      operationId: createProjectLocation
+      summary: Create a floor, suite, room or area used by field reporting
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectLocationCreate" }
+      responses:
+        "201": { description: Location created }
+  /projects/{projectId}/daily-updates:
+    post:
+      operationId: createDailyProgress
+      summary: Record technician progress and optionally create an issue
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DailyProgressWrite" }
+      responses:
+        "201": { description: Daily progress recorded }
+  /projects/{projectId}/daily-updates/{dailyUpdateId}:
+    patch:
+      operationId: updateDailyProgress
+      summary: Optimistically edit a daily progress entry
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+        - name: dailyUpdateId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DailyProgressWrite" }
+      responses:
+        "200": { description: Daily progress updated }
+        "409": { description: Stale version }
+  /projects/{projectId}/locations/{locationId}:
+    patch:
+      operationId: updateProjectLocation
+      summary: Edit floor metadata or Audio Zone profile with optimistic version
+      responses:
+        "200": { description: Location updated }
+        "409": { description: Stale version }
+  /projects/{projectId}/locations/{locationId}/units/{unitId}/progress:
+    patch:
+      operationId: setUnitProgress
+      summary: Set status for one unit and one work type action
+      responses:
+        "200": { description: Unit progress saved }
+        "409": { description: Stale version }
+  /projects/{projectId}/daily-report:
+    get:
+      operationId: generateDailyJobberReport
+      summary: Generate a copy-ready daily report from recorded work
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - $ref: "#/components/parameters/ProjectId"
+        - name: date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200": { description: Generated report text and counts }
+components:
+  parameters:
+    OrganizationId:
+      name: X-Organization-ID
+      in: header
+      required: true
+      description: Explicit tenant context. Local clients use `local-dev`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 64 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Unique retry key scoped to the organization.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    WorkItemId:
+      name: workItemId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 64 }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    Health:
+      type: object
+      required: [status, service, apiVersion, schemaVersion, time]
+      properties:
+        status: { type: string, const: ok }
+        service: { type: string, const: fieldos-local }
+        apiVersion: { type: string, const: v1 }
+        schemaVersion: { type: [string, "null"] }
+        time: { type: string, format: date-time }
+    Workspace:
+      type: object
+      required: [initialized, organizationId, revision, tasks, audit]
+      properties:
+        initialized: { type: boolean }
+        organizationId: { type: string }
+        revision: { type: integer, minimum: 0 }
+        tasks:
+          type: array
+          items: { $ref: "#/components/schemas/Task" }
+        audit:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEvent" }
+        updatedAt: { type: [string, "null"], format: date-time }
+    WorkspaceWrite:
+      type: object
+      required: [expectedRevision, tasks, audit]
+      properties:
+        expectedRevision: { type: integer, minimum: 0 }
+        tasks:
+          type: array
+          maxItems: 5000
+          items: { $ref: "#/components/schemas/Task" }
+        audit:
+          type: array
+          maxItems: 1000
+          items: { $ref: "#/components/schemas/AuditEvent" }
+    WorkspaceWriteResult:
+      type: object
+      required: [ok, organizationId, revision, updatedAt]
+      properties:
+        ok: { type: boolean, const: true }
+        organizationId: { type: string }
+        revision: { type: integer, minimum: 1 }
+        updatedAt: { type: string, format: date-time }
+    Task:
+      type: object
+      required: [id, title, type, status, priority, area]
+      additionalProperties: true
+      properties:
+        id: { type: string, minLength: 1 }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string }
+        type: { type: string, enum: [Epic, Feature, Task, Subtask] }
+        status: { type: string, enum: [ideas, backlog, ready, progress, blocked, review, testing, done] }
+        priority: { type: string, enum: [critical, high, medium, low] }
+        area: { type: string, enum: [foundation, platform, field, intelligence, ecosystem] }
+        risk: { type: string }
+        parentId: { type: string }
+        dependsOn: { type: array, items: { type: string } }
+        priorityReason: { type: string }
+        unblocks: { type: array, items: { type: string } }
+    AuditEvent:
+      type: object
+      required: [at, text]
+      properties:
+        at: { type: string, format: date-time }
+        text: { type: string }
+    ErrorResponse:
+      type: object
+      required: [error, requestId]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object }
+        requestId: { type: string }
+    Organization:
+      type: object
+      required: [id, name, slug, status, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        createdAt: { type: string, format: date-time }
+    ProjectCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 32, pattern: "^[A-Za-z0-9_-]+$" }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        status: { type: string, enum: [planned, active, on_hold, completed, cancelled] }
+        priority: { type: string, enum: [critical, high, medium, low] }
+        startDate: { type: string, format: date }
+        targetDate: { type: string, format: date }
+    BuildingCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 32, pattern: "^[A-Za-z0-9_-]+$" }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        address: { type: string, maxLength: 500 }
+        status: { type: string, enum: [planned, active, on_hold, completed] }
+    ProjectWorkItemCreate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        buildingId: { type: string }
+        stageId: { type: string }
+        workTypeId: { type: string, description: Organization-scoped work type such as data, termination or fiber }
+        status: { type: string, enum: [ideas, backlog, ready, progress, blocked, review, testing, done] }
+        priority: { type: string, enum: [critical, high, medium, low] }
+        assigneeUserId: { type: string }
+        startDate: { type: string, format: date }
+        dueDate: { type: string, format: date }
+        estimatedMinutes: { type: integer, minimum: 0 }
+        dependsOnIds:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string }
+    ProjectWorkItemUpdate:
+      type: object
+      required: [expectedVersion]
+      properties:
+        expectedVersion: { type: integer, minimum: 1 }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
+        status: { type: string, enum: [ideas, backlog, ready, progress, blocked, review, testing, done] }
+        priority: { type: string, enum: [critical, high, medium, low] }
+        dueDate: { type: [string, "null"], format: date }
+        estimatedMinutes: { type: [integer, "null"], minimum: 0 }
+        actualMinutes: { type: integer, minimum: 0 }
+    ProjectLocationCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, maxLength: 32 }
+        name: { type: string, maxLength: 120 }
+        kind: { type: string, enum: [floor, suite, room, area] }
+        buildingId: { type: [string, "null"] }
+        suiteTotal: { type: [integer, "null"], minimum: 0 }
+        audioDetails:
+          type: object
+          properties:
+            zoneType: { type: string }
+            speakerCount: { type: [integer, "null"], minimum: 0 }
+            displayCount: { type: [integer, "null"], minimum: 0 }
+            sourceDescription: { type: string }
+            equipmentNotes: { type: string }
+    DailyProgressWrite:
+      type: object
+      required: [locationId, workTypeId, actionId, status, percentComplete]
+      properties:
+        expectedVersion: { type: integer, minimum: 1 }
+        locationId: { type: string }
+        workTypeId: { type: string }
+        actionId: { type: string }
+        workDate: { type: string, format: date }
+        status: { type: string, enum: [not_started, ongoing, complete, blocked] }
+        percentComplete: { type: integer, minimum: 0, maximum: 100 }
+        quantityCompleted: { type: [integer, "null"], minimum: 0 }
+        comments: { type: string, maxLength: 2000 }
+        issueDescription: { type: string, maxLength: 2000 }
+        issueSeverity: { type: string, enum: [low, medium, high, critical] }
+    Project:
+      type: object
+      required: [id, code, name, status, priority, kind, progress, taskSummary, stages]
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [planned, active, on_hold, completed, cancelled] }
+        priority: { type: string, enum: [critical, high, medium, low] }
+        kind: { type: string, enum: [internal, customer] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        workTypeProgress:
+          type: array
+          items:
+            type: object
+            required: [id, code, name, color, taskCount, progress, done, blocked]
+            properties:
+              id: { type: string }
+              code: { type: string }
+              name: { type: string }
+              color: { type: string }
+              taskCount: { type: integer }
+              progress: { type: integer, minimum: 0, maximum: 100 }
+              done: { type: integer }
+              blocked: { type: integer }
+        taskSummary:
+          type: object
+          required: [total, done, active, blocked]
+          properties:
+            total: { type: integer }
+            done: { type: integer }
+            active: { type: integer }
+            blocked: { type: integer }
+        stages:
+          type: array
+          items:
+            type: object
+            required: [id, code, name, status, position, taskCount, progress]
+            properties:
+              id: { type: string }
+              code: { type: string }
+              name: { type: string }
+              status: { type: string }
+              position: { type: integer }
+              taskCount: { type: integer }
+              progress: { type: integer, minimum: 0, maximum: 100 }
