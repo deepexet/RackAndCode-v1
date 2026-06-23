@@ -168,3 +168,9 @@ Header показывает явное состояние Codex: working, idle, 
 ## Automatic project Daily Log (v0.23)
 
 Daily Log является представлением append-only `project_change_log`, а не отдельным вручную поддерживаемым источником истины. Изменения unit progress, структуры объекта, полевых задач и проблем автоматически преобразуются в понятные человеку записи и объединяются с ручными пояснениями `daily_updates`. Ручные записи остаются редактируемыми и версионными; автоматические записи неизменяемы и наследуют дату события из audit trail.
+
+## GitHub sync settings (v0.25)
+
+Admin panel stores Git synchronization preferences per organization: remote URL, branch, commit strategy, auto commit, auto push and docs inclusion. Credentials are deliberately out of scope for the database and browser UI. Git authentication must use SSH keys, the local Git credential manager or a later encrypted secret store. This keeps repository automation auditable without placing GitHub tokens into SQLite, localStorage or exported workspace files.
+
+Default strategy is `per_task`: commit after a completed task or a tight group of related fixes, not after every experiment. This preserves a defensible development history while avoiding noisy commits.

@@ -58,6 +58,47 @@ paths:
                   eventCount: { type: integer, minimum: 0 }
                   failureCount: { type: integer, minimum: 0 }
                   verifiedAt: { type: string, format: date-time }
+  /admin/git-sync:
+    get:
+      operationId: getGitSyncSettings
+      summary: Read GitHub synchronization settings
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: Git sync settings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organizationId, settings]
+                properties:
+                  organizationId: { type: string }
+                  settings: { $ref: "#/components/schemas/GitSyncSettings" }
+    post:
+      operationId: saveGitSyncSettings
+      summary: Save GitHub synchronization settings without storing credentials
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GitSyncSettings"
+      responses:
+        "200":
+          description: Git sync settings saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organizationId, settings]
+                properties:
+                  organizationId: { type: string }
+                  settings: { $ref: "#/components/schemas/GitSyncSettings" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /workspace:
     get:
       operationId: getWorkspace
@@ -368,6 +409,20 @@ components:
           type: array
           items: { $ref: "#/components/schemas/AuditEvent" }
         updatedAt: { type: [string, "null"], format: date-time }
+    GitSyncSettings:
+      type: object
+      properties:
+        remoteUrl: { type: string, maxLength: 500 }
+        branchName: { type: string, default: main }
+        commitStrategy: { type: string, enum: [manual, per_task, per_release] }
+        autoCommit: { type: boolean }
+        autoPush: { type: boolean }
+        includeDocs: { type: boolean }
+        lastCommitHash: { type: [string, "null"] }
+        lastSyncStatus: { type: string, enum: [not_configured, configured, synced, error] }
+        lastSyncMessage: { type: string }
+        updatedAt: { type: [string, "null"], format: date-time }
+        secretMode: { type: string, const: external_credential }
     WorkspaceWrite:
       type: object
       required: [expectedRevision, tasks, audit]

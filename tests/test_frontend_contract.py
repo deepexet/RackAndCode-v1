@@ -125,6 +125,15 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("5000",self.app)
         self.assertIn(".compute-grid",self.css)
 
+    def test_admin_git_sync_settings_are_configurable_without_secrets(self):
+        self.assertIn('id="gitSyncForm"',self.html)
+        self.assertIn('id="gitRemoteUrl"',self.html)
+        self.assertIn("hydrateGitSyncSettings",self.app)
+        self.assertIn("submitGitSyncSettings",self.app)
+        self.assertIn("/api/v1/admin/git-sync",self.app)
+        self.assertIn(".git-sync-status",self.css)
+        self.assertIn("Credentials are not stored in Valeronix",self.html)
+
     def test_admin_can_configure_work_types_and_actions(self):
         self.assertIn('id="workTypeDialog"',self.html)
         self.assertIn('id="workflowAdminList"',self.html)

@@ -300,6 +300,36 @@ class WorkspaceStore:
             connection.execute("UPDATE compute_nodes SET compute_enabled=?,updated_at=? WHERE organization_id=? AND id=?",(1 if enabled else 0,utc_now(),organization_id,node_id))
         return {"nodeId":node_id,"computeEnabled":enabled}
 
+    def get_git_sync_settings(self,organization_id: str) -> dict[str,Any]:
+        with self._connect() as connection:
+            row=connection.execute("""SELECT remote_url,branch_name,commit_strategy,auto_commit,auto_push,include_docs,
+                last_commit_hash,last_sync_status,last_sync_message,updated_at FROM git_sync_settings WHERE organization_id=?""",(organization_id,)).fetchone()
+        if row is None:
+            return {"remoteUrl":"","branchName":"main","commitStrategy":"per_task","autoCommit":True,"autoPush":False,"includeDocs":True,"lastCommitHash":None,"lastSyncStatus":"not_configured","lastSyncMessage":"Git remote is not configured","updatedAt":None,"secretMode":"external_credential"}
+        return {"remoteUrl":row["remote_url"],"branchName":row["branch_name"],"commitStrategy":row["commit_strategy"],"autoCommit":bool(row["auto_commit"]),"autoPush":bool(row["auto_push"]),"includeDocs":bool(row["include_docs"]),"lastCommitHash":row["last_commit_hash"],"lastSyncStatus":row["last_sync_status"],"lastSyncMessage":row["last_sync_message"],"updatedAt":row["updated_at"],"secretMode":"external_credential"}
+
+    def save_git_sync_settings(self,organization_id: str,payload: dict[str,Any]) -> dict[str,Any]:
+        remote_url=str(payload.get("remoteUrl","")).strip()
+        branch_name=str(payload.get("branchName","main")).strip() or "main"
+        strategy=payload.get("commitStrategy","per_task")
+        if len(remote_url)>500: raise ValueError("Remote URL is too long")
+        if remote_url and not (remote_url.startswith("git@") or remote_url.startswith("https://")): raise ValueError("Remote URL must use git@ SSH or https://")
+        if not re.fullmatch(r"[A-Za-z0-9._/-]{1,120}",branch_name): raise ValueError("Invalid branch name")
+        if strategy not in {"manual","per_task","per_release"}: raise ValueError("Invalid commit strategy")
+        auto_commit=bool(payload.get("autoCommit",True)); auto_push=bool(payload.get("autoPush",False)); include_docs=bool(payload.get("includeDocs",True))
+        status="configured" if remote_url else "not_configured"
+        message="Git sync configured; credentials are managed outside Valeronix." if remote_url else "Git remote is not configured"
+        now=utc_now()
+        with self._lock,self._connect() as connection:
+            connection.execute("""INSERT INTO git_sync_settings
+                (organization_id,remote_url,branch_name,commit_strategy,auto_commit,auto_push,include_docs,last_sync_status,last_sync_message,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET
+                remote_url=excluded.remote_url,branch_name=excluded.branch_name,commit_strategy=excluded.commit_strategy,
+                auto_commit=excluded.auto_commit,auto_push=excluded.auto_push,include_docs=excluded.include_docs,
+                last_sync_status=excluded.last_sync_status,last_sync_message=excluded.last_sync_message,updated_at=excluded.updated_at""",
+                (organization_id,remote_url,branch_name,strategy,1 if auto_commit else 0,1 if auto_push else 0,1 if include_docs else 0,status,message,now))
+        return self.get_git_sync_settings(organization_id)
+
     def get_development_agent_status(self,organization_id: str) -> dict[str,Any]:
         with self._connect() as connection:
             row=connection.execute("SELECT status,message,needs_action,continuation_requested,updated_at FROM development_agent_status WHERE organization_id=?",(organization_id,)).fetchone()
@@ -1220,7 +1250,7 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 class FieldOSHandler(BaseHTTPRequestHandler):
-    server_version = "Valeronix/0.23"
+    server_version = "Valeronix/0.25"
 
     @property
     def store(self) -> WorkspaceStore:
@@ -1244,6 +1274,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/admin/compute-nodes":
             if not self._require_organization(): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"nodes":self.store.list_compute_nodes(self.organization_id)})
+            return
+        if path == "/api/v1/admin/git-sync":
+            if not self._require_organization(): return
+            self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.get_git_sync_settings(self.organization_id)})
             return
         if path == "/api/v1/admin/work-types":
             if not self._require_organization(): return
@@ -1340,6 +1374,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 payload=self._read_json()
                 if not isinstance(payload,dict): raise ValueError("JSON object expected")
                 self._json(HTTPStatus.CREATED,{"organizationId":self.organization_id,"customField":self.store.save_custom_field_definition(self.organization_id,payload)})
+            except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        if path=="/api/v1/admin/git-sync":
+            if not self._require_organization(): return
+            try:
+                payload=self._read_json()
+                if not isinstance(payload,dict): raise ValueError("JSON object expected")
+                self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.save_git_sync_settings(self.organization_id,payload)})
             except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
             return
         if path=="/api/v1/development-agent/continue":

@@ -20,7 +20,7 @@ When these disagree, stop and reconcile them explicitly. Do not silently make do
 - Append-only audit and project change log.
 - Offline browser outbox for field progress.
 - Optional macOS telemetry agent; compute participation is opt-in and currently postponed.
-- Current product version: `0.23.0`; current database schema: `020`.
+- Current product version: `0.25.0`; current database schema: `021`.
 
 ## Non-negotiable invariants
 

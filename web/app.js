@@ -10,6 +10,7 @@ let syncInFlight = false;
 let localChangeVersion = 0;
 let projects = [];
 let computeNodes = [];
+let gitSyncSettings = null;
 let workflowConfiguration = [];
 let customFieldDefinitions = [];
 let selectedProjectId = null;
@@ -277,7 +278,7 @@ function renderRoute() {
   $('#projectsListView')?.classList.toggle('hidden', Boolean(selectedProjectId));
   $('#projectDetailView')?.classList.toggle('hidden', !selectedProjectId);
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
-  if (route === 'admin') Promise.all([hydrateComputeNodes(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions()]);
+  if (route === 'admin') Promise.all([hydrateComputeNodes(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions()]);
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -292,6 +293,25 @@ function renderComputeNodes(unavailable=false){
 }
 
 async function hydrateComputeNodes(){try{const response=await fetch('/api/v1/admin/compute-nodes',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('monitor unavailable');const payload=await response.json();computeNodes=payload.nodes||[];renderComputeNodes();}catch{renderComputeNodes(true);}}
+
+function renderGitSyncSettings(unavailable=false){
+  const form=$('#gitSyncForm'),status=$('#gitSyncStatus'),message=$('#gitSyncMessage'); if(!form||!status||!message)return;
+  if(unavailable){status.textContent='Unavailable';status.className='git-sync-status error';message.textContent='Git sync settings are temporarily unavailable.';return;}
+  const settings=gitSyncSettings||{};
+  $('#gitRemoteUrl').value=settings.remoteUrl||'';
+  $('#gitBranchName').value=settings.branchName||'main';
+  $('#gitCommitStrategy').value=settings.commitStrategy||'per_task';
+  $('#gitAutoCommit').checked=settings.autoCommit!==false;
+  $('#gitAutoPush').checked=Boolean(settings.autoPush);
+  $('#gitIncludeDocs').checked=settings.includeDocs!==false;
+  status.textContent=(settings.lastSyncStatus||'not_configured').replace('_',' ');
+  status.className=`git-sync-status ${settings.lastSyncStatus||'not_configured'}`;
+  message.textContent=settings.lastSyncMessage||'Credentials are not stored in Valeronix. Use SSH key or local Git credential manager.';
+}
+
+async function hydrateGitSyncSettings(){try{const response=await fetch('/api/v1/admin/git-sync',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('git sync unavailable');const payload=await response.json();gitSyncSettings=payload.settings;renderGitSyncSettings();}catch{renderGitSyncSettings(true);}}
+
+async function submitGitSyncSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/git-sync',{method:'POST',headers:{'Content-Type':'application/json','X-Organization-ID':ORGANIZATION_ID},body:JSON.stringify({remoteUrl:$('#gitRemoteUrl').value.trim(),branchName:$('#gitBranchName').value.trim()||'main',commitStrategy:$('#gitCommitStrategy').value,autoCommit:$('#gitAutoCommit').checked,autoPush:$('#gitAutoPush').checked,includeDocs:$('#gitIncludeDocs').checked})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Git settings failed');gitSyncSettings=payload.settings;renderGitSyncSettings();toast('Git sync settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
 
 function renderAgentStatus(agent){const indicator=$('#agentIndicator');if(!indicator)return;indicator.className=`agent-indicator ${agent.status||'idle'}${agent.needsAction?' needs-action':''}`;const labels={working:'Работает',idle:'Не активен',waiting:'Ожидает',blocked:'Требуется действие',limit:'Достигнут лимит'};$('#agentStatusText').textContent=`${labels[agent.status]||agent.status} · ${agent.message||''}`;$('#requestContinueButton').classList.toggle('requested',Boolean(agent.continuationRequested));$('#requestContinueButton').title=agent.continuationRequested?'Запрос уже зарегистрирован':'Запросить продолжение разработки';}
 
@@ -841,6 +861,7 @@ async function setup() {
   $('#locationForm').addEventListener('submit', submitLocation);
   $('#unitForm').addEventListener('submit', submitUnit);
   $('#workTypeForm').addEventListener('submit', submitWorkType);
+  $('#gitSyncForm').addEventListener('submit', submitGitSyncSettings);
   $('#addWorkTypeButton').addEventListener('click',()=>openWorkTypeDialog());
   $('#customFieldForm').addEventListener('submit',submitCustomField);
   $('#addCustomFieldButton').addEventListener('click',()=>openCustomFieldDialog());
@@ -857,7 +878,7 @@ async function setup() {
   window.addEventListener('hashchange', renderRoute);
   renderRoute();
   render();
-  await Promise.all([hydrateFromServer(), hydrateProjects(),hydrateCustomFieldDefinitions(),hydrateAgentStatus()]);
+  await Promise.all([hydrateFromServer(), hydrateProjects(),hydrateCustomFieldDefinitions(),hydrateGitSyncSettings(),hydrateAgentStatus()]);
   await flushUnitOutbox();
   setInterval(()=>{if(document.body.dataset.route==='admin')hydrateComputeNodes();},5000);
   setInterval(hydrateAgentStatus,5000);

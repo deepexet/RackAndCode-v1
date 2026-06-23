@@ -481,6 +481,11 @@
       "id": "FS-079", "title": "Private GitHub repository и development provenance", "description": "Вести решения, development log и AI provenance в Git; исключить runtime secrets; подключить private GitHub remote и защитить main после предоставления repository URL.",
       "type": "Task", "status": "progress", "priority": "high", "area": "foundation", "risk": "Ошибочная публикация runtime data или публичный remote может раскрыть секреты и незавершенную интеллектуальную собственность.",
       "dependsOn": ["FS-004", "FS-025"], "priorityReason": "История авторства, резервная копия кода и контролируемая публикация важны до расширения команды.", "unblocks": ["FS-043", "FS-045"]
+    },
+    {
+      "id": "FS-080", "title": "Admin GitHub sync settings", "description": "Добавить в административную панель настройки remote URL, branch, commit strategy, auto commit, auto push и docs inclusion без хранения секретов в платформе.",
+      "type": "Task", "status": "testing", "priority": "high", "area": "foundation", "risk": "Push нельзя автоматизировать безопасно без внешнего credential manager или SSH key; токены не должны сохраняться в браузере/SQLite.",
+      "dependsOn": ["FS-079"], "priorityReason": "Пользователь запросил управлять синхронизацией репозитория из Admin панели.", "unblocks": ["FS-043", "FS-045"]
     }
   ]
 }

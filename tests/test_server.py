@@ -54,7 +54,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "020")
+        self.assertEqual(first.current_version, "021")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -332,6 +332,16 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.store.record_compute_node(DEFAULT_ORGANIZATION_ID,"node-1",payload)
         enabled=self.store.set_compute_node_enabled(DEFAULT_ORGANIZATION_ID,"node-1",True)
         self.assertTrue(enabled["computeEnabled"])
+
+    def test_git_sync_settings_store_remote_without_secret(self):
+        settings=self.store.get_git_sync_settings(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(settings["lastSyncStatus"],"not_configured")
+        saved=self.store.save_git_sync_settings(DEFAULT_ORGANIZATION_ID,{"remoteUrl":"git@github.com:valerii/Valeronix.git","branchName":"main","commitStrategy":"per_task","autoCommit":True,"autoPush":False,"includeDocs":True})
+        self.assertEqual(saved["remoteUrl"],"git@github.com:valerii/Valeronix.git")
+        self.assertEqual(saved["secretMode"],"external_credential")
+        self.assertEqual(saved["lastSyncStatus"],"configured")
+        with self.assertRaises(ValueError):
+            self.store.save_git_sync_settings(DEFAULT_ORGANIZATION_ID,{"remoteUrl":"ftp://example.com/repo.git"})
 
     def test_development_agent_status_and_continuation_request(self):
         initial=self.store.get_development_agent_status(DEFAULT_ORGANIZATION_ID)

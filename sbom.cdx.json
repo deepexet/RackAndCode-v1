@@ -7,7 +7,7 @@
     "component": {
       "type": "application",
       "name": "fieldos-development-workspace",
-      "version": "0.24.0",
+      "version": "0.25.0",
       "properties": [
         { "name": "fieldos.runtime", "value": "Python standard library + browser ES modules" },
         { "name": "fieldos.externalDependencies", "value": "none" }

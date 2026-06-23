@@ -2,6 +2,14 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-22 — v0.25.0
+
+- Added Admin GitHub sync settings for repository URL, branch, commit strategy, auto commit, auto push and docs inclusion.
+- Added schema migration `021_git_sync_settings.sql`.
+- Added API `GET/POST /api/v1/admin/git-sync`.
+- Kept credentials outside Valeronix; SSH keys or local Git credential manager remain the supported access path.
+- Verification: `npm run check`; 64 automated tests and quality gate passed.
+
 ## 2026-06-22 — v0.24.0
 
 - Increased desktop typography density for project cards, Kanban cards, overview panels, admin cards, dialogs and development-agent status.
