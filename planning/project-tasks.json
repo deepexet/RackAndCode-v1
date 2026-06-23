@@ -458,6 +458,21 @@
       "dependsOn": [], "priorityReason": "Явно назначено пользователем Priority 2 для подготовки коммерческого продукта.", "unblocks": ["FS-043", "FS-044", "FS-045"]
     },
     {
+      "id": "FS-075", "title": "Информационное окно о работе Codex", "description": "Показывать в интерфейсе статус работы Codex: работает, ожидает действия, уперся в лимит или доступен к продолжению.",
+      "type": "Feature", "status": "backlog", "priority": "critical", "area": "foundation", "risk": "Web UI может только показывать durable status/continue request; реальный запуск Codex требует интеграции с host/session API.",
+      "dependsOn": ["FS-063"], "priorityReason": "Пользователь явно назначил это Priority 1 для наблюдения за разработкой прямо в платформе.", "unblocks": ["FS-043", "FS-045"]
+    },
+    {
+      "id": "FS-076", "title": "Корректировка размера полей при добавлении новой задачи", "description": "Увеличить и стабилизировать размеры полей и подписей в dialog forms, чтобы ввод задач и проектных данных был читаемым на desktop и mobile.",
+      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Формы должны оставаться компактными, но не должны провоцировать zoom, обрезание текста или ошибки touch ввода.",
+      "dependsOn": ["FS-053"], "priorityReason": "Непригодные формы блокируют ежедневное заполнение задач и прогресса.", "unblocks": ["FS-019", "FS-071"]
+    },
+    {
+      "id": "FS-077", "title": "Корректировка размера текста в целом на платформе", "description": "Увеличить и унифицировать размер текста в Overview, Projects, Admin и Kanban без нарушения мобильной верстки.",
+      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Глобальные изменения typography могут увеличить высоту карточек и потребовать дополнительной проверки плотности интерфейса.",
+      "dependsOn": ["FS-053"], "priorityReason": "Читаемость интерфейса критична для desktop-проверки и полевой работы.", "unblocks": ["FS-019", "FS-043", "FS-069"]
+    },
+    {
       "id": "FS-078", "title": "Автоматический Daily Log из project audit", "description": "Формировать дневной журнал из unit progress, задач, структуры объекта и issues; объединять с редактируемыми ручными пояснениями без дублирования источников истины.",
       "type": "Feature", "status": "testing", "priority": "critical", "area": "projects", "risk": "Неверное объединение событий или timezone может исказить фактический отчет за день.",
       "parentId": "FS-019", "dependsOn": ["FS-004", "FS-019", "FS-020"], "priorityReason": "Daily Log должен отражать фактическую работу автоматически и служит основой отчетности техников.", "unblocks": ["FS-035", "FS-039", "FS-043"]

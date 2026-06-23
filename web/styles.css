@@ -128,3 +128,49 @@ dialog { width:min(570px,92vw); padding:0; border:1px solid #30394a; border-radi
 @media (min-width:681px) and (max-width:1250px) { .top-actions .save-state,.top-actions .ghost { display:none; }.agent-indicator { min-width:190px; max-width:220px; } }
 .daily-status.automatic { color:#aeb7ff; background:#25294b; }
 .daily-result .auto-mark { color:#8490ff; font-size:12px; letter-spacing:.08em; }
+
+@media (min-width:681px) {
+  .brand strong { font-size:16px; }
+  .brand small { font-size:12px; }
+  .button { min-height:42px; font-size:14px; }
+  .save-state { font-size:13px; }
+  .hero-copy { font-size:17px; }
+  .section-heading h2,.panel h2 { font-size:26px; }
+  .section-heading>p,.section-actions p,.page-header>div>p:last-child { font-size:15px; }
+  .metrics span,.metrics small,.system-pulse>div>span { font-size:14px; }
+  .roadmap-copy strong { font-size:18px; }
+  .roadmap-copy small,.roadmap-item>b { font-size:14px; line-height:1.45; }
+  .board { grid-template-columns:repeat(8,minmax(260px,1fr)); }
+  .column>header strong { font-size:15px; }
+  .task-card h3 { font-size:16px; }
+  .task-card p { font-size:13px; line-height:1.55; }
+  .risk,.dependency-note { font-size:12px; }
+  .project-card h3 { font-size:24px; }
+  .project-card>p { font-size:15px; line-height:1.6; }
+  .project-summary dt,.project-operations strong { font-size:21px; }
+  .project-summary dd,.project-progress span,.project-operations span,.project-operations small,.project-stages span,.project-stages b,.project-stages small { font-size:12px; }
+  .project-actions .button { min-height:42px; font-size:13px; }
+  .subsection-title span,.subsection-title small,.work-type-grid header span,.work-type-grid header b { font-size:12px; }
+  .work-type-grid footer,.project-activity small { font-size:11px; }
+  .project-activity strong,.work-item-row strong { font-size:14px; }
+  .work-item-row small,.work-item-row select { font-size:12px; }
+  .detail-header a,.detail-kpis span,.scope-cards span,.scope-cards b,.scope-cards small { font-size:13px; }
+  .location-cards>button span,.location-cards>button small,.issue-item small,.daily-main p,.daily-result small { font-size:12px; }
+  .location-cards>button strong,.issue-item strong,.daily-main h3 { font-size:15px; }
+  .daily-date strong,.daily-status { font-size:11px; }
+  .badge,.text-button { font-size:13px; }
+  .architecture-flow span { font-size:14px; }
+  .principles span { font-size:13px; }
+  .audit-list strong { font-size:14px; line-height:1.45; }
+  .audit-list span { font-size:12px; line-height:1.45; }
+  dialog { width:min(720px,92vw); }
+  dialog label { font-size:13px; line-height:1.4; }
+  dialog input,dialog textarea,dialog select { min-height:44px; font-size:16px; }
+  .planning-meta span { font-size:11px; }
+  .planning-meta strong { font-size:13px; }
+  .admin-summary span,.compute-card header small,.compute-card footer,.workflow-admin>p { font-size:13px; }
+  .compute-card header strong,.workflow-admin-list strong { font-size:15px; }
+  .node-metrics span,.node-metrics small,.workflow-admin-list small,.workflow-action-chips span { font-size:12px; }
+  .agent-indicator strong { font-size:12px; }
+  .agent-indicator small { font-size:10px; }
+}

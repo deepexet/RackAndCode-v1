@@ -2,6 +2,14 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-22 — v0.24.0
+
+- Increased desktop typography density for project cards, Kanban cards, overview panels, admin cards, dialogs and development-agent status.
+- Preserved mobile touch and iOS zoom contracts while adding a desktop readability contract.
+- Linked the change to user-reported issues `FS-076` and `FS-077`.
+- Added `FS-075`–`FS-077` to the durable planning file so they survive workspace reloads.
+- Verification: `npm run check`; 62 automated tests and quality gate passed.
+
 ## 2026-06-22 — v0.23.0
 
 - Selected Valeronix as the public working identity and documented brand philosophy.
