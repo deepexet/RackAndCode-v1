@@ -17,6 +17,13 @@ const ROLE_POLICIES = {
 let syncTimer;
 let syncInFlight = false;
 let localChangeVersion = 0;
+let _taskDataVersion = 0; // bumped on every tasks mutation — invalidates filteredTasks cache
+let _fcKey = null, _fcBase = null; // filteredTasks memo
+let _workspaceETag = null; // ETag from last workspace GET — enables 304 Not Modified
+
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
 let currentRole = loadRole();
 let projects = [];
 let computeNodes = [];
@@ -107,6 +114,7 @@ function persist(message, mutation = {}) {
   state.audit = state.audit.slice(0, 30);
   state.pendingSync = true;
   localChangeVersion += 1;
+  _taskDataVersion++;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   setSyncState('saving');
   clearTimeout(syncTimer);
@@ -273,8 +281,12 @@ function rebasePendingState(remote) {
 
 async function hydrateFromServer() {
   try {
-    const response = await fetch('/api/v1/workspace', { headers: apiHeaders({ Accept: 'application/json' }) });
+    const reqHeaders = apiHeaders({ Accept: 'application/json' });
+    if (_workspaceETag) reqHeaders['If-None-Match'] = _workspaceETag;
+    const response = await fetch('/api/v1/workspace', { headers: reqHeaders });
+    if (response.status === 304) { setSyncState('synced'); return; } // unchanged
     if (!response.ok) throw new Error('Workspace API unavailable');
+    _workspaceETag = response.headers.get('ETag') || null;
     const remote = await response.json();
     if (remote.initialized && (!state.pendingSync || !hasPendingMutations())) {
       state.tasks = remote.tasks;
@@ -286,6 +298,7 @@ async function hydrateFromServer() {
       state.auditDirty = false;
       state.fullReplace = false;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      _taskDataVersion++;
       setSyncState('synced');
       render();
       return;
@@ -308,12 +321,17 @@ function filteredTasks(includeStatus = false) {
   const priority = $('#priorityFilter').value;
   const area = $('#areaFilter').value;
   const status = $('#statusFilter').value;
-  return state.tasks.filter(task =>
-    (!q || `${task.id} ${task.title} ${task.description}`.toLowerCase().includes(q)) &&
-    (priority === 'all' || task.priority === priority) &&
-    (area === 'all' || task.area === area) &&
-    (!includeStatus || status === 'all' || task.status === status)
-  );
+  // Recompute base list only when tasks data or filters change
+  const baseKey = `${_taskDataVersion}|${q}|${priority}|${area}`;
+  if (_fcKey !== baseKey) {
+    _fcBase = state.tasks.filter(task =>
+      (!q || `${task.id} ${task.title} ${task.description}`.toLowerCase().includes(q)) &&
+      (priority === 'all' || task.priority === priority) &&
+      (area === 'all' || task.area === area)
+    );
+    _fcKey = baseKey;
+  }
+  return (!includeStatus || status === 'all') ? _fcBase : _fcBase.filter(t => t.status === status);
 }
 
 function render() {
@@ -804,89 +822,341 @@ function renderRoadmap() {
 }
 
 function renderBoard() {
-  const tasks = filteredTasks();
-  const statusFilter = $('#statusFilter').value;
-  const visibleStatuses = statusFilter === 'all' ? STATUSES : STATUSES.filter(status => status.id === statusFilter);
-  $('#board')?.classList.toggle('hidden', taskViewMode !== 'kanban');
-  $('#taskGraph')?.classList.toggle('hidden', taskViewMode !== 'graph');
-  document.querySelectorAll('[data-task-view]').forEach(button => button.classList.toggle('active', button.dataset.taskView === taskViewMode));
-  $('#board').classList.toggle('single-column', visibleStatuses.length === 1);
-  $('#board').innerHTML = visibleStatuses.map(status => {
-    const cards = tasks.filter(t => t.status === status.id);
-    return `<section class="column" data-status="${status.id}">
-      <header><span class="status-dot ${status.tone}"></span><strong>${status.label}</strong><b>${cards.length}</b></header>
-      <div class="card-list" data-dropzone="${status.id}">
-        ${cards.map(taskCard).join('') || '<div class="empty-state">Перетащите задачу сюда</div>'}
-      </div>
-      <button class="add-inline" type="button" data-add-status="${status.id}">＋ Добавить</button>
-    </section>`;
-  }).join('');
-  bindBoardEvents();
-  renderTaskGraph();
+  const isKanban = taskViewMode === 'kanban';
+  const isGraph  = taskViewMode === 'graph';
+  $('#board')?.classList.toggle('hidden', !isKanban);
+  $('#taskGraph')?.classList.toggle('hidden', !isGraph);
+  document.querySelectorAll('[data-task-view]').forEach(b => b.classList.toggle('active', b.dataset.taskView === taskViewMode));
+
+  if (isKanban) {
+    const tasks = filteredTasks();
+    const statusFilter = $('#statusFilter').value;
+    const visibleStatuses = statusFilter === 'all' ? STATUSES : STATUSES.filter(s => s.id === statusFilter);
+    const board = $('#board');
+    board.classList.toggle('single-column', visibleStatuses.length === 1);
+    // Build into a fragment to minimise reflow
+    const frag = document.createDocumentFragment();
+    visibleStatuses.forEach(status => {
+      const cards = tasks.filter(t => t.status === status.id);
+      const section = document.createElement('section');
+      section.className = 'column';
+      section.dataset.status = status.id;
+      section.innerHTML = `<header><span class="status-dot ${status.tone}"></span><strong>${status.label}</strong><b>${cards.length}</b></header>
+        <div class="card-list" data-dropzone="${status.id}">${cards.map(taskCard).join('') || '<div class="empty-state">Перетащите задачу сюда</div>'}</div>
+        <button class="add-inline" type="button" data-add-status="${status.id}">＋ Добавить</button>`;
+      frag.appendChild(section);
+    });
+    board.innerHTML = '';
+    board.appendChild(frag);
+    bindBoardEvents();
+  } else if (isGraph) {
+    renderTaskGraph();
+  }
 }
 
 function renderTaskGraph() {
   const container = $('#taskGraph');
   if (!container) return;
   const tasks = filteredTasks(true);
-  const byId = new Map(tasks.map(task => [task.id, task]));
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  // Clean up any prior global listeners attached to this graph instance
+  if (container._graphCleanup) container._graphCleanup();
   if (!tasks.length) {
     container.innerHTML = '<div class="graph-empty">Нет задач для текущих фильтров.</div>';
     return;
   }
-  const width = 1280;
-  const height = Math.max(620, Math.ceil(tasks.length / 9) * 170 + 260);
-  const centerX = width / 2;
-  const centerY = height / 2;
-  const radiusX = Math.min(510, width * 0.4);
-  const radiusY = Math.min(height * 0.38, Math.max(210, tasks.length * 5.5));
-  const points = new Map();
-  tasks.forEach((task, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(1, tasks.length) - Math.PI / 2;
-    const statusIndex = STATUSES.findIndex(status => status.id === task.status);
-    const ringOffset = ((statusIndex % 3) - 1) * 38;
-    points.set(task.id, {
-      x: Math.round(centerX + Math.cos(angle) * (radiusX + ringOffset)),
-      y: Math.round(centerY + Math.sin(angle) * (radiusY + ringOffset)),
-    });
-  });
+
+  // Build edges
   const edges = [];
   const seenEdges = new Set();
   const addEdge = (from, to, kind) => {
     if (!byId.has(from) || !byId.has(to) || from === to) return;
-    const key = `${from}->${to}:${kind}`;
+    const key = `${from}->${to}`;
     if (seenEdges.has(key)) return;
     seenEdges.add(key);
     edges.push({ from, to, kind });
   };
   tasks.forEach(task => {
-    (task.dependsOn || []).forEach(source => addEdge(source, task.id, 'depends'));
+    (task.dependsOn || []).forEach(src => addEdge(src, task.id, 'depends'));
     if (task.parentId) addEdge(task.parentId, task.id, 'parent');
-    (task.unblocks || []).forEach(target => addEdge(task.id, target, 'unblocks'));
+    (task.unblocks || []).forEach(tgt => addEdge(task.id, tgt, 'unblocks'));
   });
-  const statusColor = task => `var(--graph-${task.status})`;
-  const lines = edges.map(edge => {
-    const from = points.get(edge.from), to = points.get(edge.to);
-    return `<line class="graph-edge ${edge.kind}" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}"><title>${escapeHtml(edge.from)} → ${escapeHtml(edge.to)} · ${edge.kind}</title></line>`;
-  }).join('');
-  const nodes = tasks.map(task => {
-    const point = points.get(task.id);
-    const title = `${task.id} · ${task.title}`;
-    const shortTitle = task.title.length > 22 ? `${task.title.slice(0, 22)}…` : task.title;
-    const relatedCount = edges.filter(edge => edge.from === task.id || edge.to === task.id).length;
-    return `<g class="graph-node" data-graph-task="${task.id}" transform="translate(${point.x} ${point.y})" tabindex="0" role="button" aria-label="${escapeHtml(title)}">
-      <circle r="${relatedCount ? 31 : 25}" style="fill:${statusColor(task)}"></circle>
-      <text class="graph-id" y="-4">${escapeHtml(task.id)}</text>
-      <text class="graph-title" y="12">${escapeHtml(shortTitle)}</text>
-      <title>${escapeHtml(title)} · ${escapeHtml(task.status)} · ${relatedCount} links</title>
-    </g>`;
-  }).join('');
-  const legend = STATUSES.map(status => `<span><i class="${status.tone}"></i>${status.label}</span>`).join('');
-  container.innerHTML = `<div class="graph-meta"><div><strong>${tasks.length}</strong><span>visible tasks</span></div><div><strong>${edges.length}</strong><span>visible links</span></div><p>Фильтры Kanban применяются к графу. Клик по вершине открывает задачу.</p></div><div class="graph-legend">${legend}</div><div class="graph-canvas"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Task dependency graph">${lines}${nodes}</svg></div>`;
-  container.querySelectorAll('[data-graph-task]').forEach(node => {
-    node.addEventListener('click', () => openDialog(node.dataset.graphTask));
-    node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') openDialog(node.dataset.graphTask); });
+
+  // Per-node adjacency index for fast edge updates
+  const nodeEdges = new Map();
+  tasks.forEach(t => nodeEdges.set(t.id, []));
+  edges.forEach((e, i) => {
+    nodeEdges.get(e.from)?.push(i);
+    nodeEdges.get(e.to)?.push(i);
   });
+
+  // Initial circular layout
+  const CX = 500, CY = 380;
+  const R0 = Math.max(160, Math.min(360, tasks.length * 13));
+  const nodes = tasks.map((task, i) => {
+    const angle = (2 * Math.PI * i) / tasks.length - Math.PI / 2;
+    return { id: task.id, task, x: CX + Math.cos(angle) * R0, y: CY + Math.sin(angle) * R0, vx: 0, vy: 0 };
+  });
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+
+  // Force simulation — fewer iterations, heavier alpha decay
+  for (let iter = 0; iter < 200; iter++) {
+    const alpha = Math.pow(1 - iter / 200, 2);
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d2 = dx * dx + dy * dy || 1;
+        const dist = Math.sqrt(d2);
+        const force = (5500 / d2) * alpha;
+        const fx = (dx / dist) * force, fy = (dy / dist) * force;
+        a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+      }
+    }
+    edges.forEach(e => {
+      const a = nodeMap.get(e.from), b = nodeMap.get(e.to);
+      if (!a || !b) return;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const force = (dist - 120) * 0.05 * alpha;
+      const fx = (dx / dist) * force, fy = (dy / dist) * force;
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    });
+    nodes.forEach(n => {
+      n.vx += (CX - n.x) * 0.006 * alpha;
+      n.vy += (CY - n.y) * 0.006 * alpha;
+      n.vx *= 0.78; n.vy *= 0.78;
+      n.x += n.vx; n.y += n.vy;
+    });
+  }
+
+  const STATUS_COLOR = {
+    ideas: '#a87aff', backlog: '#778195', ready: '#30d7d7',
+    in_progress: '#6785ff', blocked: '#ff657b', review: '#ffb84c',
+    testing: '#ef78ca', done: '#42d697',
+  };
+
+  // DOM structure
+  container.innerHTML = '';
+  const legend = STATUSES.map(s => `<span><i class="${s.tone}"></i>${s.label}</span>`).join('');
+  const meta = document.createElement('div');
+  meta.className = 'graph-meta';
+  meta.innerHTML = `<div><strong>${tasks.length}</strong><span>задач</span></div><div><strong>${edges.length}</strong><span>связей</span></div><p>Колесо — зум · Фон — пан · Вершина — переместить · Клик — открыть</p>`;
+  container.appendChild(meta);
+  const legendEl = document.createElement('div');
+  legendEl.className = 'graph-legend';
+  legendEl.innerHTML = legend;
+  container.appendChild(legendEl);
+
+  const canvas = document.createElement('div');
+  canvas.className = 'graph-canvas graph-canvas--interactive';
+  container.appendChild(canvas);
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', '100%');
+  svg.style.cssText = 'display:block;cursor:grab;user-select:none;touch-action:none;';
+  canvas.appendChild(svg);
+
+  // Arrowhead markers
+  const defs = document.createElementNS(NS, 'defs');
+  [['arrow-depends','#536078'],['arrow-parent','#8b8fa8'],['arrow-unblocks','#6fdcbf']].forEach(([id, color]) => {
+    const m = document.createElementNS(NS, 'marker');
+    m.setAttribute('id', id); m.setAttribute('markerWidth', '8'); m.setAttribute('markerHeight', '6');
+    m.setAttribute('refX', '7'); m.setAttribute('refY', '3'); m.setAttribute('orient', 'auto');
+    const p = document.createElementNS(NS, 'polygon');
+    p.setAttribute('points', '0 0, 8 3, 0 6'); p.setAttribute('fill', color); p.setAttribute('opacity', '0.65');
+    m.appendChild(p); defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  // Zoom/pan root group
+  const root = document.createElementNS(NS, 'g');
+  svg.appendChild(root);
+  let tx = 0, ty = 0, scale = 1;
+  const applyT = () => root.setAttribute('transform', `translate(${tx},${ty}) scale(${scale})`);
+  applyT();
+
+  // Draw edges first (below nodes)
+  const edgeElems = edges.map(e => {
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('class', `graph-edge ${e.kind}`);
+    line.setAttribute('marker-end', `url(#arrow-${e.kind})`);
+    const a = nodeMap.get(e.from), b = nodeMap.get(e.to);
+    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+    line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    root.appendChild(line);
+    return line;
+  });
+
+  const updateEdgesForNode = id => {
+    nodeEdges.get(id)?.forEach(i => {
+      const e = edges[i], line = edgeElems[i];
+      if (!line) return;
+      const a = nodeMap.get(e.from), b = nodeMap.get(e.to);
+      line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+      line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    });
+  };
+
+  // Draw nodes
+  const LABEL_MAX = 20;
+  nodes.forEach(node => {
+    const linkCount = nodeEdges.get(node.id)?.length || 0;
+    const r = linkCount > 5 ? 30 : linkCount > 2 ? 26 : 22;
+    const color = STATUS_COLOR[node.task.status] || '#778195';
+    const label = node.task.title.length > LABEL_MAX ? node.task.title.slice(0, LABEL_MAX) + '…' : node.task.title;
+
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('class', 'graph-node');
+    g.setAttribute('tabindex', '0');
+    g.setAttribute('transform', `translate(${node.x},${node.y})`);
+
+    // Glow
+    const glow = document.createElementNS(NS, 'circle');
+    glow.setAttribute('r', r + 8); glow.setAttribute('fill', color); glow.setAttribute('opacity', '0.1');
+    g.appendChild(glow);
+
+    // Circle
+    const circle = document.createElementNS(NS, 'circle');
+    circle.setAttribute('r', r); circle.setAttribute('fill', color);
+    circle.setAttribute('stroke', '#cdd5e0'); circle.setAttribute('stroke-width', '1.2'); circle.setAttribute('stroke-opacity', '0.4');
+    g.appendChild(circle);
+
+    // ID inside circle — bold, dark, readable
+    const idTxt = document.createElementNS(NS, 'text');
+    idTxt.setAttribute('text-anchor', 'middle');
+    idTxt.setAttribute('dominant-baseline', 'middle');
+    idTxt.setAttribute('y', '0');
+    idTxt.setAttribute('font-size', r > 26 ? '9.5' : '8.5');
+    idTxt.setAttribute('font-family', "'DM Mono',monospace");
+    idTxt.setAttribute('font-weight', '800');
+    idTxt.setAttribute('fill', '#060c14');
+    idTxt.setAttribute('pointer-events', 'none');
+    idTxt.textContent = node.id;
+    g.appendChild(idTxt);
+
+    // Title label below — on a pill background
+    const LW = Math.max(label.length * 6.2 + 16, 72);
+    const LH = 18, LY = r + 6;
+    const pill = document.createElementNS(NS, 'rect');
+    pill.setAttribute('x', String(-LW / 2)); pill.setAttribute('y', String(LY));
+    pill.setAttribute('width', String(LW)); pill.setAttribute('height', String(LH));
+    pill.setAttribute('rx', '5'); pill.setAttribute('fill', '#101929');
+    pill.setAttribute('fill-opacity', '0.88'); pill.setAttribute('pointer-events', 'none');
+    g.appendChild(pill);
+
+    const titleTxt = document.createElementNS(NS, 'text');
+    titleTxt.setAttribute('text-anchor', 'middle');
+    titleTxt.setAttribute('dominant-baseline', 'middle');
+    titleTxt.setAttribute('y', String(LY + LH / 2));
+    titleTxt.setAttribute('font-size', '10');
+    titleTxt.setAttribute('font-family', 'Inter,system-ui,sans-serif');
+    titleTxt.setAttribute('font-weight', '500');
+    titleTxt.setAttribute('fill', '#dde4f0');
+    titleTxt.setAttribute('pointer-events', 'none');
+    titleTxt.textContent = label;
+    g.appendChild(titleTxt);
+
+    // Native tooltip
+    const svgTitle = document.createElementNS(NS, 'title');
+    svgTitle.textContent = `${node.id} · ${node.task.title}\n${node.task.status} · ${linkCount} связей`;
+    g.appendChild(svgTitle);
+
+    root.appendChild(g);
+    node.el = g;
+    node.circle = circle;
+    node.glow = glow;
+
+    g.addEventListener('mouseenter', () => {
+      circle.setAttribute('stroke-opacity', '1'); circle.setAttribute('stroke-width', '2');
+      glow.setAttribute('opacity', '0.2');
+    });
+    g.addEventListener('mouseleave', () => {
+      circle.setAttribute('stroke-opacity', '0.4'); circle.setAttribute('stroke-width', '1.2');
+      glow.setAttribute('opacity', '0.1');
+    });
+    g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') openDialog(node.id); });
+  });
+
+  // ── Unified drag state ──────────────────────────────────────────────
+  // Single object tracks whether we're panning or dragging a node.
+  // All movement goes through ONE window mousemove — no per-node listeners.
+  let drag = null; // null | { kind:'pan', ox, oy } | { kind:'node', node, ox, oy, moved }
+
+  nodes.forEach(node => {
+    node.el.addEventListener('mousedown', e => {
+      e.stopPropagation(); // prevent pan
+      drag = { kind: 'node', node, ox: (e.clientX - tx) / scale - node.x, oy: (e.clientY - ty) / scale - node.y, moved: false };
+      svg.style.cursor = 'grabbing';
+    });
+  });
+
+  svg.addEventListener('mousedown', e => {
+    drag = { kind: 'pan', ox: e.clientX - tx, oy: e.clientY - ty };
+    svg.style.cursor = 'grabbing';
+  });
+
+  const onMouseMove = e => {
+    if (!drag) return;
+    if (drag.kind === 'pan') {
+      tx = e.clientX - drag.ox; ty = e.clientY - drag.oy; applyT();
+    } else {
+      drag.moved = true;
+      drag.node.x = (e.clientX - tx) / scale - drag.ox;
+      drag.node.y = (e.clientY - ty) / scale - drag.oy;
+      drag.node.el.setAttribute('transform', `translate(${drag.node.x},${drag.node.y})`);
+      updateEdgesForNode(drag.node.id);
+    }
+  };
+  const onMouseUp = e => {
+    if (drag?.kind === 'node' && !drag.moved) openDialog(drag.node.id);
+    drag = null;
+    svg.style.cursor = 'grab';
+  };
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup', onMouseUp);
+
+  // Zoom
+  const onWheel = e => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.12 : 0.89;
+    const rect = svg.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    tx = mx - (mx - tx) * factor;
+    ty = my - (my - ty) * factor;
+    scale = Math.min(5, Math.max(0.1, scale * factor));
+    applyT();
+  };
+  svg.addEventListener('wheel', onWheel, { passive: false });
+
+  // Pinch zoom
+  let pinchDist = null;
+  const onTouchStart = e => { if (e.touches.length === 2) { const dx = e.touches[0].clientX - e.touches[1].clientX, dy = e.touches[0].clientY - e.touches[1].clientY; pinchDist = Math.sqrt(dx*dx+dy*dy); } };
+  const onTouchMove = e => { if (e.touches.length === 2 && pinchDist) { const dx = e.touches[0].clientX - e.touches[1].clientX, dy = e.touches[0].clientY - e.touches[1].clientY; const d = Math.sqrt(dx*dx+dy*dy); scale = Math.min(5, Math.max(0.1, scale * d / pinchDist)); pinchDist = d; applyT(); } };
+  const onTouchEnd = () => { pinchDist = null; };
+  svg.addEventListener('touchstart', onTouchStart, { passive: true });
+  svg.addEventListener('touchmove', onTouchMove, { passive: true });
+  svg.addEventListener('touchend', onTouchEnd);
+
+  // Cleanup when graph is re-rendered (filter change etc.)
+  container._graphCleanup = () => {
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('mouseup', onMouseUp);
+    svg.removeEventListener('wheel', onWheel);
+  };
+
+  // Fit to view
+  const rect = canvas.getBoundingClientRect();
+  const W = rect.width || 900, H = rect.height || 600;
+  const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
+  const minX = Math.min(...xs) - 60, maxX = Math.max(...xs) + 80;
+  const minY = Math.min(...ys) - 60, maxY = Math.max(...ys) + 80;
+  scale = Math.min(W / (maxX - minX), H / (maxY - minY), 1.4) * 0.85;
+  tx = (W - (maxX + minX) * scale) / 2;
+  ty = (H - (maxY + minY) * scale) / 2;
+  applyT();
 }
 
 function taskCard(task) {
@@ -1055,9 +1325,15 @@ async function setup() {
   $('#dailyHasIssue').addEventListener('change', () => $('#dailyIssueFields').classList.toggle('hidden', !$('#dailyHasIssue').checked));
   $('#copyJobberReport').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#jobberReportText').value); toast('Отчет скопирован'); } catch { $('#jobberReportText').select(); document.execCommand('copy'); toast('Отчет скопирован'); } });
   document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.closeDialog}`).close()));
-  ['searchInput','priorityFilter','areaFilter','statusFilter'].forEach(id => $(`#${id}`).addEventListener('input', renderBoard));
+  // Selects respond instantly; text search debounced to avoid render on every keystroke
+  const renderBoardDebounced = debounce(renderBoard, 130);
+  $('#searchInput').addEventListener('input', renderBoardDebounced);
+  ['priorityFilter','areaFilter','statusFilter'].forEach(id => $(`#${id}`).addEventListener('change', renderBoard));
   document.querySelectorAll('[data-task-view]').forEach(button => button.addEventListener('click', () => { taskViewMode = button.dataset.taskView; renderBoard(); }));
-  ['logSourceFilter','logProjectFilter','logEntityFilter','logSearchInput'].forEach(id => $(`#${id}`).addEventListener('input', hydrateLogs));
+  // Log search: text debounced (triggers network), selects instant
+  const hydrateLogsDebounced = debounce(hydrateLogs, 280);
+  $('#logSearchInput').addEventListener('input', hydrateLogsDebounced);
+  ['logSourceFilter','logProjectFilter','logEntityFilter'].forEach(id => $(`#${id}`).addEventListener('change', hydrateLogs));
   $('#refreshLogsButton').addEventListener('click', hydrateLogs);
   $('#refreshApiMetricsButton').addEventListener('click', hydrateApiMetrics);
   window.addEventListener('online', () => { syncToServer(); flushUnitOutbox(); });
@@ -1068,9 +1344,10 @@ async function setup() {
   render();
   await Promise.all([hydrateFromServer(), hydrateProjects(),hydrateCustomFieldDefinitions(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateAgentStatus()]);
   await flushUnitOutbox();
-  setInterval(()=>{if(document.body.dataset.route==='admin')hydrateComputeNodes();},5000);
-  setInterval(()=>{if(document.body.dataset.route==='api')hydrateApiMetrics();},5000);
-  setInterval(hydrateAgentStatus,5000);
+  setInterval(()=>{ if(document.body.dataset.route==='admin' && !document.hidden) hydrateComputeNodes(); }, 8000);
+  setInterval(()=>{ if(document.body.dataset.route==='api' && !document.hidden) hydrateApiMetrics(); }, 8000);
+  // Agent status: 15s interval, skip when tab is hidden
+  setInterval(()=>{ if(!document.hidden) hydrateAgentStatus(); }, 15000);
 }
 
 setup();

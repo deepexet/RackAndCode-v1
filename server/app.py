@@ -145,6 +145,10 @@ class WorkspaceStore:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute("PRAGMA synchronous=NORMAL")   # safe with WAL, ~2× faster writes
+        connection.execute("PRAGMA cache_size=-8000")     # 8 MB page cache per connection
+        connection.execute("PRAGMA temp_store=MEMORY")    # temp tables in RAM
+        connection.execute("PRAGMA mmap_size=67108864")   # 64 MB memory-mapped I/O
         connection.create_function("fieldos_audit_hash", 11, audit_event_hash, deterministic=True)
         try:
             with connection:
@@ -206,6 +210,16 @@ class WorkspaceStore:
             "audit": payload.get("audit", []),
             "updatedAt": row["updated_at"],
         }
+
+    def etag(self, organization_id: str = DEFAULT_ORGANIZATION_ID) -> str:
+        """Cheap revision-only query for ETag — avoids deserialising the full payload."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT revision FROM workspace_states WHERE organization_id = ?",
+                (organization_id,),
+            ).fetchone()
+        rev = row["revision"] if row else 0
+        return f'"{organization_id}:{rev}"'
 
     def save(self, tasks: list[dict[str, Any]], audit: list[dict[str, Any]], expected_revision: int, organization_id: str = DEFAULT_ORGANIZATION_ID) -> dict[str, Any]:
         payload = json.dumps({"tasks": tasks, "audit": audit[-30:]}, ensure_ascii=False, separators=(",", ":"))
@@ -407,7 +421,7 @@ class WorkspaceStore:
                     message=new_value.get("title") or new_value.get("name") or new_value.get("code") or message
                 events.append({"source":"project","category":"project","projectId":row["project_id"],"projectCode":row["project_code"],"projectName":row["project_name"],"entityType":row["entity_type"],"entityId":row["entity_id"],"action":row["action"],"message":str(message),"oldValue":old_value,"newValue":new_value,"actor":row["source"],"createdAt":row["created_at"]})
         if source in {"all","workspace"}:
-            workspace=self.get(organization_id)
+            workspace = self.get(organization_id)
             for event in workspace.get("audit",[])[:limit]:
                 events.append({"source":"workspace","category":"development","projectId":None,"projectCode":None,"projectName":"Development Workspace","entityType":"task","entityId":None,"action":"audit","message":str(event.get("text","")),"oldValue":{},"newValue":{},"actor":"workspace","createdAt":event.get("at")})
         if query:
@@ -1498,7 +1512,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path in {"/api/workspace", "/api/v1/workspace"}:
             if not self._require_permission("developmentWorkspace"):
                 return
-            self._json(HTTPStatus.OK, self.store.get(self.organization_id))
+            etag = self.store.etag(self.organization_id)
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(HTTPStatus.NOT_MODIFIED)
+                self._security_headers()
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
+            self._json(HTTPStatus.OK, self.store.get(self.organization_id), extra_headers={"ETag": etag})
             return
         if path == "/api/v1/openapi.yaml":
             self._serve_file(OPENAPI_PATH, "application/yaml; charset=utf-8")
@@ -1808,7 +1829,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+    def _json(self, status: HTTPStatus, payload: dict[str, Any], extra_headers: dict[str, str] | None = None) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         path = urlparse(self.path).path
         if path.startswith("/api/") and hasattr(self.server, "api_metrics"):
@@ -1828,6 +1849,8 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
