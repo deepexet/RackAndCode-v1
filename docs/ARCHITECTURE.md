@@ -176,3 +176,9 @@ Daily Log является представлением append-only `project_cha
 Admin panel stores Git synchronization preferences per organization: remote URL, branch, commit strategy, auto commit, auto push and docs inclusion. Credentials are deliberately out of scope for the database and browser UI. Git authentication must use SSH keys, the local Git credential manager or a later encrypted secret store. This keeps repository automation auditable without placing GitHub tokens into SQLite, localStorage or exported workspace files.
 
 Default strategy is `per_task`: commit after a completed task or a tight group of related fixes, not after every experiment. This preserves a defensible development history while avoiding noisy commits.
+
+## Unified Logs and Platform Settings (v0.27)
+
+Logs Explorer is a separate route backed by `GET /api/v1/logs`. It merges append-only `project_change_log` events with Development Workspace audit entries and supports source, project, entity and text filters. This is a user-facing investigation surface; immutable storage remains the project audit chain.
+
+Admin Platform Settings are organization-scoped and persisted in `platform_settings`. The first settings are default language, timezone, role mode, telemetry privacy and log retention. `roleMode=enforced` is only a configuration signal until server-side RBAC is implemented; UI-only role controls are not treated as a security boundary.

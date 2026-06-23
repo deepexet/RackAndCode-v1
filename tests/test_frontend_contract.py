@@ -91,6 +91,15 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function renderRoute()", self.app)
         self.assertIn("body[data-route=\"projects\"] .top-actions", self.css)
 
+    def test_logs_are_a_separate_routed_view_with_filters(self):
+        self.assertIn('data-route-link="logs"', self.html)
+        self.assertIn('data-view="logs"', self.html)
+        self.assertIn('id="logsList"', self.html)
+        self.assertIn('id="logProjectFilter"', self.html)
+        self.assertIn("hydrateLogs", self.app)
+        self.assertIn("/api/v1/logs", self.app)
+        self.assertIn(".log-entry", self.css)
+
     def test_work_type_progress_and_project_activity_are_rendered(self):
         self.assertIn('id="workItemType"', self.html)
         self.assertIn("project.workTypeProgress", self.app)
@@ -138,6 +147,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("/api/v1/admin/git-sync",self.app)
         self.assertIn(".git-sync-status",self.css)
         self.assertIn("Credentials are not stored in RackPilot",self.html)
+
+    def test_admin_platform_settings_are_configurable(self):
+        self.assertIn('id="platformSettingsForm"',self.html)
+        self.assertIn('id="platformLanguage"',self.html)
+        self.assertIn("hydratePlatformSettings",self.app)
+        self.assertIn("submitPlatformSettings",self.app)
+        self.assertIn("/api/v1/admin/platform-settings",self.app)
+        self.assertIn(".platform-settings-admin",self.css)
 
     def test_admin_can_configure_work_types_and_actions(self):
         self.assertIn('id="workTypeDialog"',self.html)

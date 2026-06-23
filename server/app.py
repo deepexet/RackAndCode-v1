@@ -331,6 +331,73 @@ class WorkspaceStore:
                 (organization_id,remote_url,branch_name,strategy,1 if auto_commit else 0,1 if auto_push else 0,1 if include_docs else 0,status,message,now))
         return self.get_git_sync_settings(organization_id)
 
+    def get_platform_settings(self,organization_id: str) -> dict[str,Any]:
+        with self._connect() as connection:
+            row=connection.execute("""SELECT default_language,timezone,role_mode,telemetry_mode,log_retention_days,updated_at
+                FROM platform_settings WHERE organization_id=?""",(organization_id,)).fetchone()
+        if row is None:
+            return {"defaultLanguage":"en","timezone":"America/Halifax","roleMode":"planned","telemetryMode":"standard","logRetentionDays":365,"updatedAt":None}
+        return {"defaultLanguage":row["default_language"],"timezone":row["timezone"],"roleMode":row["role_mode"],"telemetryMode":row["telemetry_mode"],"logRetentionDays":row["log_retention_days"],"updatedAt":row["updated_at"]}
+
+    def save_platform_settings(self,organization_id: str,payload: dict[str,Any]) -> dict[str,Any]:
+        language=payload.get("defaultLanguage","en")
+        timezone_name=str(payload.get("timezone","America/Halifax")).strip() or "America/Halifax"
+        role_mode=payload.get("roleMode","planned")
+        telemetry_mode=payload.get("telemetryMode","standard")
+        retention=int(payload.get("logRetentionDays",365))
+        if language not in {"en","ru"}: raise ValueError("Invalid default language")
+        if not re.fullmatch(r"[A-Za-z0-9_./+-]{1,80}",timezone_name): raise ValueError("Invalid timezone")
+        if role_mode not in {"planned","enforced"}: raise ValueError("Invalid role mode")
+        if telemetry_mode not in {"minimal","standard","diagnostic"}: raise ValueError("Invalid telemetry mode")
+        if retention < 30 or retention > 3650: raise ValueError("Log retention must be between 30 and 3650 days")
+        now=utc_now()
+        with self._lock,self._connect() as connection:
+            connection.execute("""INSERT INTO platform_settings
+                (organization_id,default_language,timezone,role_mode,telemetry_mode,log_retention_days,updated_at)
+                VALUES (?,?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET
+                default_language=excluded.default_language,timezone=excluded.timezone,role_mode=excluded.role_mode,
+                telemetry_mode=excluded.telemetry_mode,log_retention_days=excluded.log_retention_days,updated_at=excluded.updated_at""",
+                (organization_id,language,timezone_name,role_mode,telemetry_mode,retention,now))
+        return self.get_platform_settings(organization_id)
+
+    def list_logs(self,organization_id: str,filters: dict[str,Any] | None=None) -> dict[str,Any]:
+        filters=filters or {}
+        source=str(filters.get("source","all"))
+        project_id=filters.get("projectId")
+        entity_type=filters.get("entityType")
+        query=str(filters.get("q","")).strip().lower()
+        limit=max(1,min(int(filters.get("limit",100)),500))
+        events: list[dict[str,Any]]=[]
+        if source in {"all","project"}:
+            sql="""SELECT log.project_id,project.code AS project_code,project.name AS project_name,
+                          log.entity_type,log.entity_id,log.action,log.old_value,log.new_value,log.source,log.created_at
+                   FROM project_change_log log
+                   LEFT JOIN projects project ON project.organization_id=log.organization_id AND project.id=log.project_id
+                   WHERE log.organization_id=?"""
+            parameters: list[Any]=[organization_id]
+            if isinstance(project_id,str) and project_id:
+                sql+=" AND log.project_id=?"; parameters.append(project_id)
+            if isinstance(entity_type,str) and entity_type and entity_type!="all":
+                sql+=" AND log.entity_type=?"; parameters.append(entity_type)
+            sql+=" ORDER BY log.created_at DESC LIMIT ?"; parameters.append(limit)
+            with self._connect() as connection:
+                rows=connection.execute(sql,parameters).fetchall()
+            for row in rows:
+                new_value=json.loads(row["new_value"] or "{}")
+                old_value=json.loads(row["old_value"] or "{}")
+                message=f"{row['entity_type']} {row['action']}"
+                if isinstance(new_value,dict):
+                    message=new_value.get("title") or new_value.get("name") or new_value.get("code") or message
+                events.append({"source":"project","category":"project","projectId":row["project_id"],"projectCode":row["project_code"],"projectName":row["project_name"],"entityType":row["entity_type"],"entityId":row["entity_id"],"action":row["action"],"message":str(message),"oldValue":old_value,"newValue":new_value,"actor":row["source"],"createdAt":row["created_at"]})
+        if source in {"all","workspace"}:
+            workspace=self.get(organization_id)
+            for event in workspace.get("audit",[])[:limit]:
+                events.append({"source":"workspace","category":"development","projectId":None,"projectCode":None,"projectName":"Development Workspace","entityType":"task","entityId":None,"action":"audit","message":str(event.get("text","")),"oldValue":{},"newValue":{},"actor":"workspace","createdAt":event.get("at")})
+        if query:
+            events=[event for event in events if query in json.dumps(event,ensure_ascii=False).lower()]
+        events=sorted(events,key=lambda value: str(value.get("createdAt") or ""),reverse=True)[:limit]
+        return {"organizationId":organization_id,"logs":events,"count":len(events),"filters":{"source":source,"projectId":project_id,"entityType":entity_type,"q":query,"limit":limit}}
+
     def get_development_agent_status(self,organization_id: str) -> dict[str,Any]:
         with self._connect() as connection:
             row=connection.execute("SELECT status,message,needs_action,continuation_requested,updated_at FROM development_agent_status WHERE organization_id=?",(organization_id,)).fetchone()
@@ -1257,7 +1324,7 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 class FieldOSHandler(BaseHTTPRequestHandler):
-    server_version = "RackPilot/0.26"
+    server_version = "RackPilot/0.27"
 
     @property
     def store(self) -> WorkspaceStore:
@@ -1278,6 +1345,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             project_id = parse_qs(urlparse(self.path).query).get("projectId", [None])[0]
             self._json(HTTPStatus.OK, self.store.verify_audit_integrity(self.organization_id, project_id))
             return
+        if path == "/api/v1/logs":
+            if not self._require_organization(): return
+            query=parse_qs(urlparse(self.path).query)
+            self._json(HTTPStatus.OK,self.store.list_logs(self.organization_id,{
+                "source":query.get("source",["all"])[0],
+                "projectId":query.get("projectId",[None])[0],
+                "entityType":query.get("entityType",["all"])[0],
+                "q":query.get("q",[""])[0],
+                "limit":query.get("limit",[100])[0],
+            }))
+            return
         if path == "/api/v1/admin/compute-nodes":
             if not self._require_organization(): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"nodes":self.store.list_compute_nodes(self.organization_id)})
@@ -1285,6 +1363,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/admin/git-sync":
             if not self._require_organization(): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.get_git_sync_settings(self.organization_id)})
+            return
+        if path == "/api/v1/admin/platform-settings":
+            if not self._require_organization(): return
+            self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.get_platform_settings(self.organization_id)})
             return
         if path == "/api/v1/admin/work-types":
             if not self._require_organization(): return
@@ -1389,6 +1471,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 payload=self._read_json()
                 if not isinstance(payload,dict): raise ValueError("JSON object expected")
                 self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.save_git_sync_settings(self.organization_id,payload)})
+            except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        if path=="/api/v1/admin/platform-settings":
+            if not self._require_organization(): return
+            try:
+                payload=self._read_json()
+                if not isinstance(payload,dict): raise ValueError("JSON object expected")
+                self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.save_platform_settings(self.organization_id,payload)})
             except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
             return
         if path=="/api/v1/development-agent/continue":

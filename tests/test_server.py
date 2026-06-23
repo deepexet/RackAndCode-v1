@@ -54,7 +54,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "022")
+        self.assertEqual(first.current_version, "023")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -250,6 +250,17 @@ class WorkspaceStoreTests(unittest.TestCase):
             with self.assertRaises(sqlite3.IntegrityError):
                 connection.execute("DELETE FROM project_change_log WHERE id = ?", (events[0]["id"],))
 
+    def test_unified_logs_include_project_and_workspace_events(self):
+        project = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "LOGVIEW", "name": "Log View"})
+        self.store.save([TASK], [{"at":"2026-06-22T12:00:00+00:00","text":"Workspace audit event"}], 0)
+        logs = self.store.list_logs(DEFAULT_ORGANIZATION_ID, {"source":"all", "limit":20})
+        sources = {event["source"] for event in logs["logs"]}
+        self.assertIn("project", sources)
+        self.assertIn("workspace", sources)
+        filtered = self.store.list_logs(DEFAULT_ORGANIZATION_ID, {"source":"project", "projectId":project["id"], "entityType":"project"})
+        self.assertEqual(filtered["logs"][0]["projectId"], project["id"])
+        self.assertEqual(filtered["logs"][0]["entityType"], "project")
+
     def test_new_tenant_receives_default_work_types(self):
         self.store.create_organization("tenant-types", "Tenant Types", "tenant-types")
         project = self.store.create_project("tenant-types", {"code": "P1", "name": "Project"})
@@ -363,6 +374,15 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertEqual(saved["lastSyncStatus"],"configured")
         with self.assertRaises(ValueError):
             self.store.save_git_sync_settings(DEFAULT_ORGANIZATION_ID,{"remoteUrl":"ftp://example.com/repo.git"})
+
+    def test_platform_settings_are_tenant_scoped_and_validated(self):
+        defaults = self.store.get_platform_settings(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(defaults["defaultLanguage"], "en")
+        saved = self.store.save_platform_settings(DEFAULT_ORGANIZATION_ID, {"defaultLanguage":"ru","timezone":"America/Halifax","roleMode":"planned","telemetryMode":"minimal","logRetentionDays":180})
+        self.assertEqual(saved["defaultLanguage"], "ru")
+        self.assertEqual(saved["telemetryMode"], "minimal")
+        with self.assertRaises(ValueError):
+            self.store.save_platform_settings(DEFAULT_ORGANIZATION_ID, {"defaultLanguage":"de"})
 
     def test_development_agent_status_and_continuation_request(self):
         initial=self.store.get_development_agent_status(DEFAULT_ORGANIZATION_ID)

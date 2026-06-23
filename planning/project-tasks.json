@@ -424,7 +424,7 @@
     },
     {
       "id": "FS-068", "title": "Централизованный Logs Explorer", "description": "Создать отдельную страницу логов с фильтрами по времени, проекту, пользователю, entity, action, source и severity.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "platform", "risk": "Логи могут содержать PII; доступ и redaction должны зависеть от роли.",
+      "type": "Feature", "status": "testing", "priority": "high", "area": "platform", "risk": "Логи могут содержать PII; доступ и redaction должны зависеть от роли.",
       "parentId": "FS-004", "dependsOn": ["FS-004", "FS-017"], "priorityReason": "Audit уже пишется, но отсутствует единая user-facing поверхность расследования.", "unblocks": ["FS-039", "FS-043"]
     },
     {
@@ -486,6 +486,11 @@
       "id": "FS-080", "title": "Admin GitHub sync settings", "description": "Добавить в административную панель настройки remote URL, branch, commit strategy, auto commit, auto push и docs inclusion без хранения секретов в платформе.",
       "type": "Task", "status": "testing", "priority": "high", "area": "foundation", "risk": "Push нельзя автоматизировать безопасно без внешнего credential manager или SSH key; токены не должны сохраняться в браузере/SQLite.",
       "dependsOn": ["FS-079"], "priorityReason": "Пользователь запросил управлять синхронизацией репозитория из Admin панели.", "unblocks": ["FS-043", "FS-045"]
+    },
+    {
+      "id": "FS-082", "title": "Admin Platform Settings foundation", "description": "Добавить базовые organization settings: default language, timezone, role mode, telemetry privacy и log retention.",
+      "type": "Task", "status": "testing", "priority": "high", "area": "platform", "risk": "Настройки ролей не должны создавать ложное ощущение безопасности до server-side RBAC enforcement.",
+      "dependsOn": ["FS-017", "FS-069"], "priorityReason": "Пользователь запросил пополнение настроек в административной панели.", "unblocks": ["FS-043", "FS-068", "FS-073"]
     }
   ]
 }

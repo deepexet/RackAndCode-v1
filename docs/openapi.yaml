@@ -99,6 +99,78 @@ paths:
                   settings: { $ref: "#/components/schemas/GitSyncSettings" }
         "400":
           $ref: "#/components/responses/BadRequest"
+  /admin/platform-settings:
+    get:
+      operationId: getPlatformSettings
+      summary: Read organization platform settings
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: Platform settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizationId: { type: string }
+                  settings: { $ref: "#/components/schemas/PlatformSettings" }
+    post:
+      operationId: savePlatformSettings
+      summary: Save organization platform settings
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlatformSettings" }
+      responses:
+        "200":
+          description: Platform settings saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizationId: { type: string }
+                  settings: { $ref: "#/components/schemas/PlatformSettings" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /logs:
+    get:
+      operationId: listLogs
+      summary: List unified workspace and project audit logs
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+        - name: source
+          in: query
+          schema: { type: string, enum: [all, project, workspace], default: all }
+        - name: projectId
+          in: query
+          schema: { type: string }
+        - name: entityType
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, minimum: 1, maximum: 500 }
+      responses:
+        "200":
+          description: Unified logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizationId: { type: string }
+                  count: { type: integer }
+                  logs:
+                    type: array
+                    items: { $ref: "#/components/schemas/LogEntry" }
   /workspace:
     get:
       operationId: getWorkspace
@@ -423,6 +495,29 @@ components:
         lastSyncMessage: { type: string }
         updatedAt: { type: [string, "null"], format: date-time }
         secretMode: { type: string, const: external_credential }
+    PlatformSettings:
+      type: object
+      properties:
+        defaultLanguage: { type: string, enum: [en, ru] }
+        timezone: { type: string }
+        roleMode: { type: string, enum: [planned, enforced] }
+        telemetryMode: { type: string, enum: [minimal, standard, diagnostic] }
+        logRetentionDays: { type: integer, minimum: 30, maximum: 3650 }
+        updatedAt: { type: [string, "null"], format: date-time }
+    LogEntry:
+      type: object
+      properties:
+        source: { type: string, enum: [project, workspace] }
+        category: { type: string }
+        projectId: { type: [string, "null"] }
+        projectCode: { type: [string, "null"] }
+        projectName: { type: [string, "null"] }
+        entityType: { type: string }
+        entityId: { type: [string, "null"] }
+        action: { type: string }
+        message: { type: string }
+        actor: { type: string }
+        createdAt: { type: [string, "null"], format: date-time }
     WorkspaceWrite:
       type: object
       required: [expectedRevision, tasks, audit]

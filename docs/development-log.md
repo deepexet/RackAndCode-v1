@@ -18,6 +18,15 @@ Append-only summary of material product development. Git commits are the detaile
 - Live verification on the current customer project changed overall progress from an incorrect `0%` to evidence-based `62%`.
 - Verification: `npm run check`; 67 automated tests and quality gate passed.
 
+## 2026-06-22 — v0.27.0
+
+- Added dedicated `Logs` route with source, project, entity and text filters.
+- Added `GET /api/v1/logs` as a unified read model over project audit and workspace audit events.
+- Added Admin Platform Settings for default language, timezone, role mode, telemetry privacy and log retention.
+- Added migration `023_platform_settings.sql`.
+- Moved `FS-068` and `FS-082` to Testing.
+- Verification: `npm run check`; 71 automated tests and quality gate passed.
+
 ## 2026-06-22 — v0.25.0
 
 - Added Admin GitHub sync settings for repository URL, branch, commit strategy, auto commit, auto push and docs inclusion.

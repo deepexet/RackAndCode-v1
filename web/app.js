@@ -11,6 +11,8 @@ let localChangeVersion = 0;
 let projects = [];
 let computeNodes = [];
 let gitSyncSettings = null;
+let platformSettings = null;
+let logs = [];
 let workflowConfiguration = [];
 let customFieldDefinitions = [];
 let selectedProjectId = null;
@@ -267,7 +269,7 @@ function renderRoute() {
   const routeParts = requested.split('/');
   selectedProjectId = routeParts[0] === 'project' && routeParts[1] ? decodeURIComponent(routeParts[1]) : null;
   selectedLocationId = routeParts[2] === 'location' && routeParts[3] ? decodeURIComponent(routeParts[3]) : null;
-  const route = selectedProjectId ? 'projects' : (['overview', 'projects', 'admin'].includes(requested) ? requested : 'overview');
+  const route = selectedProjectId ? 'projects' : (['overview', 'projects', 'logs', 'admin'].includes(requested) ? requested : 'overview');
   document.body.dataset.route = route;
   document.querySelectorAll('[data-view]').forEach(view => view.classList.toggle('active', view.dataset.view === route));
   document.querySelectorAll('[data-route-link]').forEach(link => {
@@ -278,7 +280,8 @@ function renderRoute() {
   $('#projectsListView')?.classList.toggle('hidden', Boolean(selectedProjectId));
   $('#projectDetailView')?.classList.toggle('hidden', !selectedProjectId);
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
-  if (route === 'admin') Promise.all([hydrateComputeNodes(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions()]);
+  if (route === 'logs') hydrateLogs();
+  if (route === 'admin') Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions()]);
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -312,6 +315,18 @@ function renderGitSyncSettings(unavailable=false){
 async function hydrateGitSyncSettings(){try{const response=await fetch('/api/v1/admin/git-sync',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('git sync unavailable');const payload=await response.json();gitSyncSettings=payload.settings;renderGitSyncSettings();}catch{renderGitSyncSettings(true);}}
 
 async function submitGitSyncSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/git-sync',{method:'POST',headers:{'Content-Type':'application/json','X-Organization-ID':ORGANIZATION_ID},body:JSON.stringify({remoteUrl:$('#gitRemoteUrl').value.trim(),branchName:$('#gitBranchName').value.trim()||'main',commitStrategy:$('#gitCommitStrategy').value,autoCommit:$('#gitAutoCommit').checked,autoPush:$('#gitAutoPush').checked,includeDocs:$('#gitIncludeDocs').checked})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Git settings failed');gitSyncSettings=payload.settings;renderGitSyncSettings();toast('Git sync settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+
+function renderPlatformSettings(unavailable=false){const form=$('#platformSettingsForm'),status=$('#platformSettingsStatus');if(!form||!status)return;if(unavailable){status.textContent='Unavailable';status.className='git-sync-status error';return;}const settings=platformSettings||{};$('#platformLanguage').value=settings.defaultLanguage||'en';$('#platformTimezone').value=settings.timezone||'America/Halifax';$('#platformRoleMode').value=settings.roleMode||'planned';$('#platformTelemetryMode').value=settings.telemetryMode||'standard';$('#platformLogRetention').value=settings.logRetentionDays||365;status.textContent=settings.updatedAt?'Configured':'Default';status.className=`git-sync-status ${settings.updatedAt?'configured':'not_configured'}`;}
+
+async function hydratePlatformSettings(){try{const response=await fetch('/api/v1/admin/platform-settings',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('platform settings unavailable');const payload=await response.json();platformSettings=payload.settings;renderPlatformSettings();}catch{renderPlatformSettings(true);}}
+
+async function submitPlatformSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/platform-settings',{method:'POST',headers:{'Content-Type':'application/json','X-Organization-ID':ORGANIZATION_ID},body:JSON.stringify({defaultLanguage:$('#platformLanguage').value,timezone:$('#platformTimezone').value.trim(),roleMode:$('#platformRoleMode').value,telemetryMode:$('#platformTelemetryMode').value,logRetentionDays:Number($('#platformLogRetention').value)})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Platform settings failed');platformSettings=payload.settings;renderPlatformSettings();toast('Platform settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+
+function populateLogProjectFilter(){const filter=$('#logProjectFilter');if(!filter)return;const selected=filter.value;filter.innerHTML='<option value="">All projects</option>'+projects.map(project=>`<option value="${project.id}">${escapeHtml(project.code)} · ${escapeHtml(project.name)}</option>`).join('');filter.value=[...filter.options].some(option=>option.value===selected)?selected:'';}
+
+function renderLogs(unavailable=false){const container=$('#logsList');if(!container)return;populateLogProjectFilter();if(unavailable){container.innerHTML='<article class="project-loading">Журнал временно недоступен.</article>';return;}container.innerHTML=logs.length?logs.map(event=>`<article class="log-entry"><div><span>${escapeHtml(event.source)} · ${escapeHtml(event.entityType||'event')}</span><strong>${escapeHtml(event.message||event.action)}</strong><small>${escapeHtml(event.projectCode||event.projectName||'Workspace')} · ${escapeHtml(event.action||'audit')}</small></div><time datetime="${escapeHtml(event.createdAt||'')}">${event.createdAt?new Date(event.createdAt).toLocaleString('ru-RU'):'—'}</time></article>`).join(''):'<article class="project-loading">По фильтрам событий нет.</article>';}
+
+async function hydrateLogs(){try{populateLogProjectFilter();const params=new URLSearchParams({source:$('#logSourceFilter')?.value||'all',entityType:$('#logEntityFilter')?.value||'all',q:$('#logSearchInput')?.value||'',limit:'150'});const projectId=$('#logProjectFilter')?.value;if(projectId)params.set('projectId',projectId);const response=await fetch(`/api/v1/logs?${params}`,{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('logs unavailable');const payload=await response.json();logs=payload.logs||[];renderLogs();}catch{renderLogs(true);}}
 
 function renderAgentStatus(agent){const indicator=$('#agentIndicator');if(!indicator)return;indicator.className=`agent-indicator ${agent.status||'idle'}${agent.needsAction?' needs-action':''}`;const labels={working:'Работает',idle:'Не активен',waiting:'Ожидает',blocked:'Требуется действие',limit:'Достигнут лимит'};$('#agentStatusText').textContent=`${labels[agent.status]||agent.status} · ${agent.message||''}`;$('#requestContinueButton').classList.toggle('requested',Boolean(agent.continuationRequested));$('#requestContinueButton').title=agent.continuationRequested?'Запрос уже зарегистрирован':'Запросить продолжение разработки';}
 
@@ -862,6 +877,7 @@ async function setup() {
   $('#unitForm').addEventListener('submit', submitUnit);
   $('#workTypeForm').addEventListener('submit', submitWorkType);
   $('#gitSyncForm').addEventListener('submit', submitGitSyncSettings);
+  $('#platformSettingsForm').addEventListener('submit', submitPlatformSettings);
   $('#addWorkTypeButton').addEventListener('click',()=>openWorkTypeDialog());
   $('#customFieldForm').addEventListener('submit',submitCustomField);
   $('#addCustomFieldButton').addEventListener('click',()=>openCustomFieldDialog());
@@ -873,12 +889,14 @@ async function setup() {
   $('#copyJobberReport').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#jobberReportText').value); toast('Отчет скопирован'); } catch { $('#jobberReportText').select(); document.execCommand('copy'); toast('Отчет скопирован'); } });
   document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.closeDialog}`).close()));
   ['searchInput','priorityFilter','areaFilter','statusFilter'].forEach(id => $(`#${id}`).addEventListener('input', renderBoard));
+  ['logSourceFilter','logProjectFilter','logEntityFilter','logSearchInput'].forEach(id => $(`#${id}`).addEventListener('input', hydrateLogs));
+  $('#refreshLogsButton').addEventListener('click', hydrateLogs);
   window.addEventListener('online', () => { syncToServer(); flushUnitOutbox(); });
   window.addEventListener('offline', () => setSyncState('offline'));
   window.addEventListener('hashchange', renderRoute);
   renderRoute();
   render();
-  await Promise.all([hydrateFromServer(), hydrateProjects(),hydrateCustomFieldDefinitions(),hydrateGitSyncSettings(),hydrateAgentStatus()]);
+  await Promise.all([hydrateFromServer(), hydrateProjects(),hydrateCustomFieldDefinitions(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateAgentStatus()]);
   await flushUnitOutbox();
   setInterval(()=>{if(document.body.dataset.route==='admin')hydrateComputeNodes();},5000);
   setInterval(hydrateAgentStatus,5000);
