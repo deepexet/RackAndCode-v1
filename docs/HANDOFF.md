@@ -20,7 +20,8 @@ When these disagree, stop and reconcile them explicitly. Do not silently make do
 - Append-only audit and project change log.
 - Offline browser outbox for field progress.
 - Optional macOS telemetry agent; compute participation is opt-in and currently postponed.
-- Current product version: `0.27.0`; current database schema: `023`.
+- In-memory API telemetry for the local Administrator monitoring route.
+- Current product version: `0.28.0`; current database schema: `023`.
 
 ## Non-negotiable invariants
 
@@ -50,10 +51,10 @@ Before changing behavior, read the relevant TRD section, architecture section an
 
 ## Current delivery focus
 
-1. Correct statistics and progress formulas (`FS-070`).
-2. Role-aware authorization and UI (`FS-073`).
+1. Role-aware authorization and UI (`FS-073`).
+2. Controlled cleanup of legacy FieldOS public mentions (`FS-083`).
 3. Project work-type selection and field planning (`FS-064`, `FS-066`).
-4. Employees, project presence and unified logs (`FS-067`, `FS-068`).
+4. Employees, project presence and timeline analytics (`FS-067`, `FS-068`).
 5. English-first localization with Russian profile option (`FS-069`).
 
 Native applications and distributed compute remain lower priority until the web MVP and its domain contracts stabilize.

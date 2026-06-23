@@ -491,6 +491,16 @@
       "id": "FS-082", "title": "Admin Platform Settings foundation", "description": "Добавить базовые organization settings: default language, timezone, role mode, telemetry privacy и log retention.",
       "type": "Task", "status": "testing", "priority": "high", "area": "platform", "risk": "Настройки ролей не должны создавать ложное ощущение безопасности до server-side RBAC enforcement.",
       "dependsOn": ["FS-017", "FS-069"], "priorityReason": "Пользователь запросил пополнение настроек в административной панели.", "unblocks": ["FS-043", "FS-068", "FS-073"]
+    },
+    {
+      "id": "FS-083", "title": "Controlled cleanup legacy FieldOS mentions", "description": "Найти и убрать публичные упоминания FieldOS из UI, docs и seed data; внутренние storage/class identifiers переносить только через совместимый migration plan.",
+      "type": "Task", "status": "backlog", "priority": "critical", "area": "foundation", "risk": "Слепой rename может повредить SQLite filename, localStorage keys, audit hash compatibility и существующие тестовые fixtures.",
+      "dependsOn": ["FS-074", "FS-079"], "priorityReason": "Название FieldOS было временно сгенерировано до выбора реального продукта RackPilot by Valeronix.", "unblocks": ["FS-043", "FS-045", "FS-069"]
+    },
+    {
+      "id": "FS-084", "title": "API Monitoring Console", "description": "Добавить отдельную admin-only страницу API telemetry: request count, latency average/p95, status codes, top routes и recent API logs.",
+      "type": "Feature", "status": "testing", "priority": "high", "area": "platform", "risk": "Runtime metrics не заменяют долговременные observability metrics; доступ должен быть ограничен Administrator после server-side RBAC.",
+      "dependsOn": ["FS-010", "FS-068", "FS-073"], "priorityReason": "Пользователь запросил видеть статистику работы API, логи, количество и скорость ответа.", "unblocks": ["FS-039", "FS-043"]
     }
   ]
 }

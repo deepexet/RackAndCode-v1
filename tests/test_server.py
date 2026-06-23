@@ -3,7 +3,7 @@ import unittest
 import sqlite3
 from pathlib import Path
 
-from server.app import DEFAULT_ORGANIZATION_ID, DependenciesIncomplete, EntityVersionConflict, InvalidTransition, RevisionConflict, WorkspaceStore, discover_lan_ip, validate_workspace
+from server.app import ApiMetricsRecorder, DEFAULT_ORGANIZATION_ID, DependenciesIncomplete, EntityVersionConflict, InvalidTransition, RevisionConflict, WorkspaceStore, discover_lan_ip, validate_workspace
 from server.migrations import MigrationChecksumError, MigrationRunner
 
 
@@ -383,6 +383,19 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertEqual(saved["telemetryMode"], "minimal")
         with self.assertRaises(ValueError):
             self.store.save_platform_settings(DEFAULT_ORGANIZATION_ID, {"defaultLanguage":"de"})
+
+    def test_api_metrics_recorder_summarizes_latency_and_errors(self):
+        recorder = ApiMetricsRecorder(retention=3)
+        recorder.record({"createdAt":"2026-06-22T10:00:00+00:00","requestId":"r1","organizationId":DEFAULT_ORGANIZATION_ID,"method":"GET","route":"/api/v1/health","status":200,"durationMs":4.0,"responseBytes":100})
+        recorder.record({"createdAt":"2026-06-22T10:00:01+00:00","requestId":"r2","organizationId":DEFAULT_ORGANIZATION_ID,"method":"GET","route":"/api/v1/admin/api-metrics","status":200,"durationMs":8.0,"responseBytes":200})
+        recorder.record({"createdAt":"2026-06-22T10:00:02+00:00","requestId":"r3","organizationId":DEFAULT_ORGANIZATION_ID,"method":"POST","route":"/api/v1/projects","status":400,"durationMs":12.0,"responseBytes":300})
+        snapshot = recorder.snapshot()
+        self.assertEqual(snapshot["requestCount"], 3)
+        self.assertEqual(snapshot["averageMs"], 8.0)
+        self.assertEqual(snapshot["errorCount"], 1)
+        self.assertEqual(snapshot["statusCounts"], {"200": 2, "400": 1})
+        self.assertEqual(snapshot["topRoutes"][0]["route"], "/api/v1/health")
+        self.assertEqual(snapshot["recent"][0]["requestId"], "r3")
 
     def test_development_agent_status_and_continuation_request(self):
         initial=self.store.get_development_agent_status(DEFAULT_ORGANIZATION_ID)

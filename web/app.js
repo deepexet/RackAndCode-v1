@@ -13,6 +13,7 @@ let computeNodes = [];
 let gitSyncSettings = null;
 let platformSettings = null;
 let logs = [];
+let apiMetrics = null;
 let workflowConfiguration = [];
 let customFieldDefinitions = [];
 let selectedProjectId = null;
@@ -269,7 +270,7 @@ function renderRoute() {
   const routeParts = requested.split('/');
   selectedProjectId = routeParts[0] === 'project' && routeParts[1] ? decodeURIComponent(routeParts[1]) : null;
   selectedLocationId = routeParts[2] === 'location' && routeParts[3] ? decodeURIComponent(routeParts[3]) : null;
-  const route = selectedProjectId ? 'projects' : (['overview', 'projects', 'logs', 'admin'].includes(requested) ? requested : 'overview');
+  const route = selectedProjectId ? 'projects' : (['overview', 'projects', 'logs', 'api', 'admin'].includes(requested) ? requested : 'overview');
   document.body.dataset.route = route;
   document.querySelectorAll('[data-view]').forEach(view => view.classList.toggle('active', view.dataset.view === route));
   document.querySelectorAll('[data-route-link]').forEach(link => {
@@ -281,6 +282,7 @@ function renderRoute() {
   $('#projectDetailView')?.classList.toggle('hidden', !selectedProjectId);
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
   if (route === 'logs') hydrateLogs();
+  if (route === 'api') hydrateApiMetrics();
   if (route === 'admin') Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions()]);
 }
 
@@ -327,6 +329,10 @@ function populateLogProjectFilter(){const filter=$('#logProjectFilter');if(!filt
 function renderLogs(unavailable=false){const container=$('#logsList');if(!container)return;populateLogProjectFilter();if(unavailable){container.innerHTML='<article class="project-loading">Журнал временно недоступен.</article>';return;}container.innerHTML=logs.length?logs.map(event=>`<article class="log-entry"><div><span>${escapeHtml(event.source)} · ${escapeHtml(event.entityType||'event')}</span><strong>${escapeHtml(event.message||event.action)}</strong><small>${escapeHtml(event.projectCode||event.projectName||'Workspace')} · ${escapeHtml(event.action||'audit')}</small></div><time datetime="${escapeHtml(event.createdAt||'')}">${event.createdAt?new Date(event.createdAt).toLocaleString('ru-RU'):'—'}</time></article>`).join(''):'<article class="project-loading">По фильтрам событий нет.</article>';}
 
 async function hydrateLogs(){try{populateLogProjectFilter();const params=new URLSearchParams({source:$('#logSourceFilter')?.value||'all',entityType:$('#logEntityFilter')?.value||'all',q:$('#logSearchInput')?.value||'',limit:'150'});const projectId=$('#logProjectFilter')?.value;if(projectId)params.set('projectId',projectId);const response=await fetch(`/api/v1/logs?${params}`,{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('logs unavailable');const payload=await response.json();logs=payload.logs||[];renderLogs();}catch{renderLogs(true);}}
+
+function renderApiMetrics(unavailable=false){const summary=$('#apiSummary'),status=$('#apiStatusBreakdown'),routes=$('#apiRouteList'),list=$('#apiLogList'),badge=$('#apiMetricsStatus');if(!summary||!status||!routes||!list)return;if(unavailable){summary.innerHTML='<article><span>Status</span><strong>Offline</strong><small>API telemetry unavailable</small></article>';status.innerHTML='';routes.innerHTML='';list.innerHTML='<article class="project-loading">API telemetry временно недоступна.</article>';if(badge){badge.textContent='Unavailable';badge.className='git-sync-status error';}return;}const metrics=apiMetrics||{requestCount:0,averageMs:0,p95Ms:0,errorCount:0,statusCounts:{},methodCounts:{},topRoutes:[],recent:[],updatedAt:null};summary.innerHTML=`<article><span>Total requests</span><strong>${metrics.requestCount}</strong><small>retained runtime events</small></article><article><span>Average response</span><strong>${metrics.averageMs} ms</strong><small>mean latency</small></article><article><span>P95 response</span><strong>${metrics.p95Ms} ms</strong><small>slow path signal</small></article><article><span>Errors</span><strong>${metrics.errorCount}</strong><small>HTTP 4xx/5xx</small></article>`;status.innerHTML=Object.entries(metrics.statusCounts||{}).map(([code,count])=>`<article class="${Number(code)>=400?'error':'ok'}"><span>${escapeHtml(code)}</span><strong>${count}</strong></article>`).join('')||'<p class="empty-copy">No API responses yet.</p>';routes.innerHTML=(metrics.topRoutes||[]).map(route=>`<article><strong>${escapeHtml(route.route)}</strong><span>${route.count} requests</span></article>`).join('')||'<p class="empty-copy">No route data yet.</p>';list.innerHTML=(metrics.recent||[]).map(event=>`<article class="${event.status>=400?'error':''}"><div><span>${escapeHtml(event.method)} · ${escapeHtml(event.route)}</span><strong>${event.status} · ${event.durationMs} ms</strong><small>${escapeHtml(event.requestId)} · ${escapeHtml(event.organizationId)}</small></div><time datetime="${escapeHtml(event.createdAt)}">${new Date(event.createdAt).toLocaleTimeString('ru-RU')}</time></article>`).join('')||'<article class="project-loading">No API requests recorded yet.</article>';if(badge){badge.textContent=metrics.updatedAt?`Updated ${new Date(metrics.updatedAt).toLocaleTimeString('ru-RU')}`:'Runtime';badge.className='git-sync-status configured';}}
+
+async function hydrateApiMetrics(){try{const response=await fetch('/api/v1/admin/api-metrics',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('api metrics unavailable');const payload=await response.json();apiMetrics=payload.metrics;renderApiMetrics();}catch{renderApiMetrics(true);}}
 
 function renderAgentStatus(agent){const indicator=$('#agentIndicator');if(!indicator)return;indicator.className=`agent-indicator ${agent.status||'idle'}${agent.needsAction?' needs-action':''}`;const labels={working:'Работает',idle:'Не активен',waiting:'Ожидает',blocked:'Требуется действие',limit:'Достигнут лимит'};$('#agentStatusText').textContent=`${labels[agent.status]||agent.status} · ${agent.message||''}`;$('#requestContinueButton').classList.toggle('requested',Boolean(agent.continuationRequested));$('#requestContinueButton').title=agent.continuationRequested?'Запрос уже зарегистрирован':'Запросить продолжение разработки';}
 
@@ -891,6 +897,7 @@ async function setup() {
   ['searchInput','priorityFilter','areaFilter','statusFilter'].forEach(id => $(`#${id}`).addEventListener('input', renderBoard));
   ['logSourceFilter','logProjectFilter','logEntityFilter','logSearchInput'].forEach(id => $(`#${id}`).addEventListener('input', hydrateLogs));
   $('#refreshLogsButton').addEventListener('click', hydrateLogs);
+  $('#refreshApiMetricsButton').addEventListener('click', hydrateApiMetrics);
   window.addEventListener('online', () => { syncToServer(); flushUnitOutbox(); });
   window.addEventListener('offline', () => setSyncState('offline'));
   window.addEventListener('hashchange', renderRoute);
@@ -899,6 +906,7 @@ async function setup() {
   await Promise.all([hydrateFromServer(), hydrateProjects(),hydrateCustomFieldDefinitions(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateAgentStatus()]);
   await flushUnitOutbox();
   setInterval(()=>{if(document.body.dataset.route==='admin')hydrateComputeNodes();},5000);
+  setInterval(()=>{if(document.body.dataset.route==='api')hydrateApiMetrics();},5000);
   setInterval(hydrateAgentStatus,5000);
 }
 

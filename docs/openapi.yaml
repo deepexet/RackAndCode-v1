@@ -137,6 +137,24 @@ paths:
                   settings: { $ref: "#/components/schemas/PlatformSettings" }
         "400":
           $ref: "#/components/responses/BadRequest"
+  /admin/api-metrics:
+    get:
+      operationId: getApiMetrics
+      summary: Read current-process API telemetry for the Administrator monitoring console
+      parameters:
+        - $ref: "#/components/parameters/OrganizationId"
+      responses:
+        "200":
+          description: API metrics snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organizationId, access, metrics]
+                properties:
+                  organizationId: { type: string }
+                  access: { type: string, const: administrator }
+                  metrics: { $ref: "#/components/schemas/ApiMetricsSnapshot" }
   /logs:
     get:
       operationId: listLogs
@@ -518,6 +536,44 @@ components:
         message: { type: string }
         actor: { type: string }
         createdAt: { type: [string, "null"], format: date-time }
+    ApiMetricsSnapshot:
+      type: object
+      required: [requestCount, averageMs, p95Ms, errorCount, statusCounts, methodCounts, topRoutes, recent, updatedAt, retention]
+      properties:
+        requestCount: { type: integer, minimum: 0 }
+        averageMs: { type: number, minimum: 0 }
+        p95Ms: { type: number, minimum: 0 }
+        errorCount: { type: integer, minimum: 0 }
+        statusCounts:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        methodCounts:
+          type: object
+          additionalProperties: { type: integer, minimum: 0 }
+        topRoutes:
+          type: array
+          items:
+            type: object
+            required: [route, count]
+            properties:
+              route: { type: string }
+              count: { type: integer, minimum: 0 }
+        recent:
+          type: array
+          items:
+            type: object
+            required: [createdAt, requestId, organizationId, method, route, status, durationMs, responseBytes]
+            properties:
+              createdAt: { type: string, format: date-time }
+              requestId: { type: string }
+              organizationId: { type: string }
+              method: { type: string }
+              route: { type: string }
+              status: { type: integer }
+              durationMs: { type: number, minimum: 0 }
+              responseBytes: { type: integer, minimum: 0 }
+        updatedAt: { type: string, format: date-time }
+        retention: { type: integer, minimum: 1 }
     WorkspaceWrite:
       type: object
       required: [expectedRevision, tasks, audit]

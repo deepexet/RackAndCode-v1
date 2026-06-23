@@ -17,7 +17,7 @@
       <span class="brand-mark">V</span>
       <span><strong>RackPilot</strong><small>by Valeronix</small></span>
     </a>
-    <nav class="primary-nav" aria-label="Разделы платформы"><a href="#overview" data-route-link="overview">Обзор</a><a href="#projects" data-route-link="projects">Проекты</a><a href="#logs" data-route-link="logs">Logs</a><a href="#admin" data-route-link="admin">Admin</a></nav>
+    <nav class="primary-nav" aria-label="Разделы платформы"><a href="#overview" data-route-link="overview">Обзор</a><a href="#projects" data-route-link="projects">Проекты</a><a href="#logs" data-route-link="logs">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin">Admin</a></nav>
     <div class="header-right">
       <div class="agent-indicator idle" id="agentIndicator" title="Статус разработки"><i></i><span><strong>Codex</strong><small id="agentStatusText">Статус загружается…</small></span><button id="requestContinueButton" type="button" title="Запросить продолжение разработки" aria-label="Запросить продолжение разработки">▶</button></div>
       <div class="top-actions">
@@ -97,6 +97,17 @@
       <header class="page-header"><div><p class="eyebrow">AUDIT & ACTIVITY</p><h1>Журнал событий</h1><p>Единое представление project audit и development workspace events с фильтрацией.</p></div><button class="button ghost" id="refreshLogsButton" type="button">Обновить</button></header>
       <div class="log-filters"><label>Source<select id="logSourceFilter"><option value="all">All sources</option><option value="project">Project audit</option><option value="workspace">Workspace audit</option></select></label><label>Project<select id="logProjectFilter"><option value="">All projects</option></select></label><label>Entity<select id="logEntityFilter"><option value="all">All entities</option><option value="project">Project</option><option value="building">Building</option><option value="work_item">Work item</option><option value="location">Location</option><option value="unit">Unit</option><option value="unit_progress">Unit progress</option><option value="daily_update">Daily update</option><option value="issue">Issue</option><option value="task">Workspace task</option></select></label><label>Search<input id="logSearchInput" type="search" placeholder="Search logs…"></label></div>
       <div class="logs-list" id="logsList"><article class="project-loading">Загрузка журнала…</article></div>
+    </section>
+
+    <section class="app-view api-page" data-view="api" id="api">
+      <header class="page-header"><div><p class="eyebrow">ADMIN · API OBSERVABILITY</p><h1>API Monitoring</h1><p>Runtime telemetry по локальному API: количество запросов, скорость ответа, ошибки, маршруты и последние события. Доступ должен быть только для Administrator после включения RBAC.</p></div><button class="button ghost" id="refreshApiMetricsButton" type="button">Refresh</button></header>
+      <div class="access-note"><strong>Role policy:</strong> Administrator only. Current build shows the section as a prepared admin surface; server-side enforcement is tracked by FS-073.</div>
+      <div class="api-summary" id="apiSummary"></div>
+      <div class="api-grid">
+        <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">STATUS CODES</p><h2>Responses</h2></div></div><div class="api-breakdown" id="apiStatusBreakdown"></div></section>
+        <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">HOT PATHS</p><h2>Top routes</h2></div></div><div class="api-route-list" id="apiRouteList"></div></section>
+      </div>
+      <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">RECENT API LOGS</p><h2>Последние запросы</h2></div><span class="git-sync-status" id="apiMetricsStatus">Runtime</span></div><div class="api-log-list" id="apiLogList"><article class="project-loading">Загрузка API telemetry…</article></div></section>
     </section>
 
     <section class="app-view admin-page" data-view="admin" id="admin">

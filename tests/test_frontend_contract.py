@@ -100,6 +100,16 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("/api/v1/logs", self.app)
         self.assertIn(".log-entry", self.css)
 
+    def test_api_monitoring_is_a_separate_admin_observability_view(self):
+        self.assertIn('data-route-link="api"', self.html)
+        self.assertIn('data-view="api"', self.html)
+        self.assertIn('id="apiSummary"', self.html)
+        self.assertIn('id="apiLogList"', self.html)
+        self.assertIn("/api/v1/admin/api-metrics", self.app)
+        self.assertIn("hydrateApiMetrics", self.app)
+        self.assertIn(".api-summary", self.css)
+        self.assertIn("Administrator only", self.html)
+
     def test_work_type_progress_and_project_activity_are_rendered(self):
         self.assertIn('id="workItemType"', self.html)
         self.assertIn("project.workTypeProgress", self.app)

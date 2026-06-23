@@ -182,3 +182,9 @@ Default strategy is `per_task`: commit after a completed task or a tight group o
 Logs Explorer is a separate route backed by `GET /api/v1/logs`. It merges append-only `project_change_log` events with Development Workspace audit entries and supports source, project, entity and text filters. This is a user-facing investigation surface; immutable storage remains the project audit chain.
 
 Admin Platform Settings are organization-scoped and persisted in `platform_settings`. The first settings are default language, timezone, role mode, telemetry privacy and log retention. `roleMode=enforced` is only a configuration signal until server-side RBAC is implemented; UI-only role controls are not treated as a security boundary.
+
+## API Monitoring Console (v0.28)
+
+API Monitoring is a separate route backed by `GET /api/v1/admin/api-metrics`. The local server records current-process API responses in memory: method, route, status code, latency, response size, request ID and organization ID. The UI summarizes request count, average latency, p95 latency, error count, status codes, top routes and recent API request events.
+
+This data is operational telemetry, not immutable audit. It resets with the process and is intentionally separate from `project_change_log`. Long-term metrics storage, retention and redaction should be added only after RBAC and telemetry privacy policies are enforced server-side. The route is framed as Administrator-only and depends on `FS-073` for actual authorization enforcement.

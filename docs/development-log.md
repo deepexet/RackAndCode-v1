@@ -2,6 +2,15 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-22 — v0.28.0
+
+- Added separate `API` route for admin API monitoring.
+- Added `GET /api/v1/admin/api-metrics` with runtime request count, average latency, p95 latency, error count, status codes, top routes and recent API request logs.
+- Added in-memory API metrics recorder; no database migration because this is current-process telemetry, not long-term audit storage.
+- Added planning tasks `FS-083` for controlled cleanup of legacy FieldOS mentions and `FS-084` for the API Monitoring Console.
+- Access model: API Monitoring is marked Administrator-only and depends on `FS-073` for server-side RBAC enforcement.
+- Verification: `npm run check`; 73 automated tests and quality gate passed.
+
 ## 2026-06-22 — v0.26.0
 
 - Updated public product identity to `RackPilot by Valeronix`.

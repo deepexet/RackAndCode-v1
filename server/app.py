@@ -16,7 +16,9 @@ import socket
 import sqlite3
 import secrets
 import threading
+import time
 import uuid
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -1297,6 +1299,43 @@ class DependenciesIncomplete(Exception):
         self.blocker_ids = blocker_ids
 
 
+class ApiMetricsRecorder:
+    """In-memory API telemetry for the local admin monitoring surface."""
+
+    def __init__(self, retention: int = 500):
+        self.retention = retention
+        self._events: list[dict[str, Any]] = []
+        self._lock = threading.RLock()
+
+    def record(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            self._events.append(event)
+            if len(self._events) > self.retention:
+                self._events = self._events[-self.retention:]
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            events = list(self._events)
+        durations = sorted(float(event["durationMs"]) for event in events)
+        count = len(events)
+        status_counts = Counter(str(event["status"]) for event in events)
+        method_counts = Counter(str(event["method"]) for event in events)
+        route_counts = Counter(str(event["route"]) for event in events)
+        p95_index = max(0, min(count - 1, int(count * 0.95) - 1)) if count else 0
+        return {
+            "requestCount": count,
+            "averageMs": round(sum(durations) / count, 2) if count else 0,
+            "p95Ms": round(durations[p95_index], 2) if count else 0,
+            "errorCount": sum(1 for event in events if int(event["status"]) >= 400),
+            "statusCounts": dict(sorted(status_counts.items())),
+            "methodCounts": dict(sorted(method_counts.items())),
+            "topRoutes": [{"route": route, "count": value} for route, value in route_counts.most_common(8)],
+            "recent": list(reversed(events[-80:])),
+            "updatedAt": utc_now(),
+            "retention": self.retention,
+        }
+
+
 def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     if not isinstance(payload, dict):
         raise ValueError("JSON object expected")
@@ -1324,7 +1363,7 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 class FieldOSHandler(BaseHTTPRequestHandler):
-    server_version = "RackPilot/0.27"
+    server_version = "RackPilot/0.28"
 
     @property
     def store(self) -> WorkspaceStore:
@@ -1363,6 +1402,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/admin/git-sync":
             if not self._require_organization(): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.get_git_sync_settings(self.organization_id)})
+            return
+        if path == "/api/v1/admin/api-metrics":
+            if not self._require_organization(): return
+            self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"access":"administrator","metrics":self.server.api_metrics.snapshot()})  # type: ignore[attr-defined]
             return
         if path == "/api/v1/admin/platform-settings":
             if not self._require_organization(): return
@@ -1645,6 +1688,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _start_request(self) -> None:
+        self.request_started_at = time.perf_counter()
         candidate = self.headers.get("X-Request-ID", "")
         self.request_id = candidate if 0 < len(candidate) <= 64 and all(character.isalnum() or character in "-_." for character in candidate) else str(uuid.uuid4())
         organization = self.headers.get("X-Organization-ID", DEFAULT_ORGANIZATION_ID)
@@ -1692,6 +1736,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
 
     def _json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        path = urlparse(self.path).path
+        if path.startswith("/api/") and hasattr(self.server, "api_metrics"):
+            duration_ms = round((time.perf_counter() - getattr(self, "request_started_at", time.perf_counter())) * 1000, 2)
+            self.server.api_metrics.record({  # type: ignore[attr-defined]
+                "createdAt": utc_now(),
+                "requestId": getattr(self, "request_id", ""),
+                "organizationId": getattr(self, "organization_id", DEFAULT_ORGANIZATION_ID),
+                "method": self.command,
+                "route": path,
+                "status": int(status),
+                "durationMs": duration_ms,
+                "responseBytes": len(data),
+            })
         self.send_response(status)
         self._security_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1724,6 +1781,7 @@ class FieldOSServer(ThreadingHTTPServer):
         super().__init__(address, FieldOSHandler)
         self.store = store
         self.agent_token = agent_token
+        self.api_metrics = ApiMetricsRecorder()
 
 
 def main() -> None:
