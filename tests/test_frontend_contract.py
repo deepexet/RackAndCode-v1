@@ -89,6 +89,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("'Idempotency-Key': createIdempotencyKey()", self.app)
         self.assertIn("data-add-building", self.app)
         self.assertIn("data-add-work-item", self.app)
+        self.assertIn('id="projectWorkTypeScope"', self.html)
+        self.assertIn("function populateProjectWorkTypeScope()", self.app)
+        self.assertIn("workTypeIds", self.app)
+        self.assertIn(".project-scope-picker", self.css)
 
     def test_mobile_project_actions_meet_touch_target_contract(self):
         self.assertIn(".project-actions .button { min-height:44px; font-size:13px; }", self.css)

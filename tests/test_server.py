@@ -58,7 +58,7 @@ class WorkspaceStoreTests(unittest.TestCase):
 
     def test_public_health_contract_uses_rackpilot_service_name(self):
         from server.app import FieldOSHandler
-        self.assertEqual(FieldOSHandler.server_version, "RackPilot/0.32")
+        self.assertEqual(FieldOSHandler.server_version, "RackPilot/0.33")
 
     def test_role_policy_matrix_matches_expected_permissions(self):
         self.assertTrue(role_can("Administrator", "adminPanel"))
@@ -122,7 +122,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "024")
+        self.assertEqual(first.current_version, "025")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -333,6 +333,20 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.store.create_organization("tenant-types", "Tenant Types", "tenant-types")
         project = self.store.create_project("tenant-types", {"code": "P1", "name": "Project"})
         self.assertEqual([value["id"] for value in project["workTypeProgress"]][:3], ["data", "termination", "fiber"])
+
+    def test_project_work_type_scope_filters_progress_and_writes(self):
+        project = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "SCOPE", "name": "Scoped Project", "workTypeIds": ["data", "fiber"]})
+        self.assertEqual([value["id"] for value in project["workTypeProgress"]], ["data", "fiber"])
+        self.assertEqual([value["id"] for value in project["workTypes"]], ["data", "fiber"])
+        self.store.create_work_item(DEFAULT_ORGANIZATION_ID, project["id"], {"title": "Pull data", "workTypeId": "data"})
+        with self.assertRaises(ValueError):
+            self.store.create_work_item(DEFAULT_ORGANIZATION_ID, project["id"], {"title": "Install camera", "workTypeId": "cctv"})
+
+    def test_project_work_type_scope_rejects_empty_or_unknown_values(self):
+        with self.assertRaises(ValueError):
+            self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "EMPTY-SCOPE", "name": "No Scope", "workTypeIds": []})
+        with self.assertRaises(ValueError):
+            self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "BAD-SCOPE", "name": "Bad Scope", "workTypeIds": ["data", "bad-type"]})
 
     def test_workflow_types_and_actions_are_configurable_per_tenant(self):
         self.store.create_organization("workflow-tenant","Workflow Tenant","workflow-tenant")

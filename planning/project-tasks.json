@@ -403,8 +403,8 @@
       "parentId": "FS-002", "dependsOn": ["FS-002", "FS-010"], "priorityReason": "Явно назначено пользователем Priority 1 для наблюдения за разработкой.", "unblocks": ["FS-033"]
     },
     {
-      "id": "FS-064", "title": "Выбор видов работ при создании проекта", "description": "При создании проекта выбирать применимые WorkType; скрывать CCTV, AV и другие неиспользуемые scopes из progress и technician forms.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "field", "risk": "Изменение scope проекта не должно скрывать существующий progress.",
+      "id": "FS-064", "title": "Выбор видов работ при создании проекта", "description": "При создании проекта выбирать применимые WorkType; скрывать CCTV, AV и другие неиспользуемые scopes из progress и technician forms. Реализован первый инкремент: project_work_type_scopes, create-project picker и server-side validation.",
+      "type": "Feature", "status": "testing", "priority": "high", "area": "field", "risk": "Изменение scope проекта не должно скрывать существующий progress; редактирование scope после создания требует отдельного безопасного workflow.",
       "parentId": "FS-019", "dependsOn": ["FS-019", "FS-060"], "priorityReason": "Разные объекты включают разные виды работ; текущий общий список искажает UX и статистику.", "unblocks": ["FS-029", "FS-039"]
     },
     {

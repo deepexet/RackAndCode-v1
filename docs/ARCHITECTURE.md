@@ -159,6 +159,12 @@ Unit отделен от его progress: карточка остается бы
 
 WorkType и его Actions являются organization-scoped configuration, а не frontend enum. Administrator может создавать новый вид работ и версионно изменять название, цвет и этапы. Технические codes остаются стабильными ключами для отчетов и интеграций; существующие Actions не удаляются физически, поэтому исторический progress сохраняет ссылки.
 
+## Project work type scope (v0.33)
+
+Customer project stores an explicit set of included WorkTypes in `project_work_type_scopes`. Existing projects are backfilled with all active WorkTypes, while new projects can include only contract-relevant scopes such as Data, Fiber or CCTV. Progress cards, technician forms, Work Items, Daily Updates and Unit Progress use the scoped list, so unused disciplines do not pollute project progress or field workflows.
+
+Scope is enforced server-side. A work item, daily update or unit progress entry cannot use a WorkType outside the project scope even if a client sends it manually.
+
 ## Versioned custom field schemas (v0.21)
 
 Administrator определяет поля Location и Unit с типами text, number, boolean, date или select. Определение имеет стабильный code, version, required/active flags и варианты списка. Web-клиент строит формы из schema, а backend повторно валидирует значения, поэтому новые характеристики объектов не требуют изменения frontend или database columns.

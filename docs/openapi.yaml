@@ -658,6 +658,12 @@ components:
         priority: { type: string, enum: [critical, high, medium, low] }
         startDate: { type: string, format: date }
         targetDate: { type: string, format: date }
+        workTypeIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Active organization work types included in this project scope. Omitted means all active work types.
+          items: { type: string }
     BuildingCreate:
       type: object
       required: [code, name]

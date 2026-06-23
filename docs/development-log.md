@@ -2,6 +2,14 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-23 — v0.33.0
+
+- Added project-specific WorkType scope selection when creating customer projects.
+- Added migration `025_project_work_type_scopes.sql` and backfilled existing projects with all active WorkTypes.
+- Filtered project progress, technician forms and work item type choices to the selected project scope.
+- Added server-side validation so Work Items, Daily Updates and Unit Progress cannot use WorkTypes outside the project scope.
+- Verification: `npm run check`; 82 automated tests and quality gate passed.
+
 ## 2026-06-23 — v0.32.0
 
 - Added backend role policy helpers and route-level permission checks for admin APIs, logs, workspace sync, project management and technician daily progress.

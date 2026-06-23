@@ -579,6 +579,11 @@ class WorkspaceStore:
                    FROM work_types WHERE organization_id = ? AND active = 1 ORDER BY position""",
                 (organization_id,),
             ).fetchall()
+            work_type_scopes = connection.execute(
+                """SELECT project_id, work_type_id FROM project_work_type_scopes
+                   WHERE organization_id = ? AND active = 1""",
+                (organization_id,),
+            ).fetchall()
             activity = connection.execute(
                 """SELECT project_id, entity_type, entity_id, action, new_value, created_at
                    FROM project_change_log WHERE organization_id = ? ORDER BY created_at DESC""",
@@ -617,9 +622,15 @@ class WorkspaceStore:
         stages_by_project: dict[str, list[sqlite3.Row]] = {}
         for stage in stages:
             stages_by_project.setdefault(stage["project_id"], []).append(stage)
+        scoped_work_type_ids_by_project: dict[str, set[str]] = {}
+        for scope in work_type_scopes:
+            scoped_work_type_ids_by_project.setdefault(scope["project_id"], set()).add(scope["work_type_id"])
+        active_work_type_ids = {work_type["id"] for work_type in work_types}
         result = []
         for project in projects:
             project_id = project["id"]
+            scoped_work_type_ids = scoped_work_type_ids_by_project.get(project_id, active_work_type_ids)
+            project_work_types = [work_type for work_type in work_types if work_type["id"] in scoped_work_type_ids]
             development_tasks = [
                 task for task in all_tasks
                 if task.get("projectId") == project_id
@@ -670,7 +681,7 @@ class WorkspaceStore:
                     "taskCount": len(stage_states), "progress": stage_progress,
                 })
             work_type_progress = []
-            for work_type in work_types:
+            for work_type in project_work_types:
                 typed_items = [item for item in project_items if item["work_type_id"] == work_type["id"]]
                 typed_states = [item["effective_status"] for item in typed_items]
                 latest_by_scope: dict[tuple[str, str], dict[str, Any]] = {}
@@ -692,7 +703,7 @@ class WorkspaceStore:
             field_progress_values = [value["progress"] for value in work_type_progress if value["fieldUpdateCount"]]
             project_progress_values = task_progress_values + field_progress_values
             progress = round(sum(project_progress_values) / len(project_progress_values)) if project_progress_values else 0
-            work_type_by_id = {value["id"]: value["name"] for value in work_types}
+            work_type_by_id = {value["id"]: value["name"] for value in project_work_types}
             action_by_id = {value["id"]: value["name"] for value in work_actions}
             location_by_id = {value["id"]: value["name"] for value in project_locations}
             result.append({
@@ -706,7 +717,7 @@ class WorkspaceStore:
                 "workTypes": [{
                     "id": value["id"], "code": value["code"], "name": value["name"], "color": value["color"],
                     "actions": [{"id": action["id"], "code": action["code"], "name": action["name"]} for action in work_actions if action["work_type_id"] == value["id"]],
-                } for value in work_types],
+                } for value in project_work_types],
                 "taskSummary": {
                     "total": len(task_states),
                     "done": sum(status == "done" for status in task_states),
@@ -776,6 +787,23 @@ class WorkspaceStore:
         stages = (("planning", "Planning"), ("survey", "Site Survey"), ("installation", "Installation"), ("commissioning", "Commissioning"), ("handover", "Handover"))
         try:
             with self._connect() as connection:
+                active_work_type_rows = connection.execute(
+                    "SELECT id FROM work_types WHERE organization_id=? AND active=1 ORDER BY position",
+                    (organization_id,),
+                ).fetchall()
+                active_work_type_ids = [row["id"] for row in active_work_type_rows]
+                requested_work_type_ids = payload.get("workTypeIds")
+                if requested_work_type_ids is None:
+                    selected_work_type_ids = active_work_type_ids
+                elif isinstance(requested_work_type_ids, list) and requested_work_type_ids and all(isinstance(value, str) for value in requested_work_type_ids):
+                    selected_work_type_ids = []
+                    for work_type_id in requested_work_type_ids:
+                        if work_type_id not in active_work_type_ids:
+                            raise ValueError(f"Unknown or inactive work type: {work_type_id}")
+                        if work_type_id not in selected_work_type_ids:
+                            selected_work_type_ids.append(work_type_id)
+                else:
+                    raise ValueError("Project must include at least one work type")
                 connection.execute(
                     """INSERT INTO projects
                        (organization_id, id, code, name, description, status, priority,
@@ -786,14 +814,20 @@ class WorkspaceStore:
                 connection.executemany(
                     """INSERT INTO project_stages
                        (organization_id, id, project_id, code, name, task_area, position, status, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, NULL, ?, 'planned', ?, ?)""",
+                    VALUES (?, ?, ?, ?, ?, NULL, ?, 'planned', ?, ?)""",
                     [(organization_id, str(uuid.uuid4()), project_id, stage_code, stage_name, position, now, now) for position, (stage_code, stage_name) in enumerate(stages)],
+                )
+                connection.executemany(
+                    """INSERT INTO project_work_type_scopes
+                       (organization_id, project_id, work_type_id, active, created_at)
+                       VALUES (?, ?, ?, 1, ?)""",
+                    [(organization_id, project_id, work_type_id, now) for work_type_id in selected_work_type_ids],
                 )
                 connection.execute(
                     """INSERT INTO project_change_log
                        (organization_id, id, project_id, entity_type, entity_id, action, old_value, new_value, source, created_at)
                        VALUES (?, ?, ?, 'project', ?, 'created', '{}', ?, 'api', ?)""",
-                    (organization_id, str(uuid.uuid4()), project_id, project_id, json.dumps({"code": code.strip().upper(), "name": name.strip()}), now),
+                    (organization_id, str(uuid.uuid4()), project_id, project_id, json.dumps({"code": code.strip().upper(), "name": name.strip(), "workTypeIds": selected_work_type_ids}), now),
                 )
         except sqlite3.IntegrityError as error:
             raise ValueError("Project code already exists in this organization") from error
@@ -1378,7 +1412,7 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 class FieldOSHandler(BaseHTTPRequestHandler):
-    server_version = "RackPilot/0.32"
+    server_version = "RackPilot/0.33"
 
     @property
     def store(self) -> WorkspaceStore:

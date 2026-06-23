@@ -655,16 +655,39 @@ function openWorkItemDialog(projectId) {
   requestAnimationFrame(() => $('#workItemTitle').focus());
 }
 
+function projectScopeOptions() {
+  if (workflowConfiguration.length) return workflowConfiguration.filter(value => value.active !== false);
+  return [...new Map(projects.flatMap(project => project.workTypes || []).map(value => [value.id, value])).values()];
+}
+
+function populateProjectWorkTypeScope() {
+  const container = $('#projectWorkTypeScope');
+  if (!container) return;
+  const options = projectScopeOptions();
+  container.innerHTML = options.map(workType => `<label class="scope-check"><input type="checkbox" value="${escapeHtml(workType.id)}" checked><span style="--scope:${escapeHtml(workType.color || '#7c8cff')}"></span><b>${escapeHtml(workType.name)}</b></label>`).join('');
+  $('#selectAllProjectWorkTypes').textContent = 'Clear all';
+}
+
+function toggleProjectWorkTypeSelection() {
+  const inputs = [...document.querySelectorAll('#projectWorkTypeScope input')];
+  const shouldSelect = inputs.some(input => !input.checked);
+  inputs.forEach(input => { input.checked = shouldSelect; });
+  $('#selectAllProjectWorkTypes').textContent = shouldSelect ? 'Clear all' : 'Select all';
+}
+
 async function submitProject(event) {
   event.preventDefault();
   if (!event.currentTarget.reportValidity()) return;
   const submitButton = event.currentTarget.querySelector('[type="submit"]');
   submitButton.disabled = true;
+  const workTypeIds = [...document.querySelectorAll('#projectWorkTypeScope input:checked')].map(input => input.value);
+  if (!workTypeIds.length) { toast('Выберите хотя бы один вид работ'); submitButton.disabled = false; return; }
   try {
     await apiPost('/api/v1/projects', {
       code: $('#projectCode').value.trim(), name: $('#projectName').value.trim(),
       description: $('#projectDescription').value.trim(), priority: $('#projectPriority').value,
-      startDate: $('#projectStartDate').value || null, targetDate: $('#projectTargetDate').value || null
+      startDate: $('#projectStartDate').value || null, targetDate: $('#projectTargetDate').value || null,
+      workTypeIds,
     });
     $('#projectDialog').close();
     await hydrateProjects();
@@ -1012,7 +1035,8 @@ async function setup() {
   $('#exportButton').addEventListener('click', exportState);
   $('#importInput').addEventListener('change', e => e.target.files[0] && importState(e.target.files[0]));
   $('#clearAuditButton').addEventListener('click', () => { state.audit = []; persist('', { auditDirty: true }); renderAudit(); });
-  $('#newProjectButton').addEventListener('click', () => { $('#projectForm').reset(); $('#projectDialog').showModal(); requestAnimationFrame(() => $('#projectCode').focus()); });
+  $('#newProjectButton').addEventListener('click', () => { $('#projectForm').reset(); populateProjectWorkTypeScope(); $('#projectDialog').showModal(); requestAnimationFrame(() => $('#projectCode').focus()); });
+  $('#selectAllProjectWorkTypes').addEventListener('click', toggleProjectWorkTypeSelection);
   $('#projectForm').addEventListener('submit', submitProject);
   $('#buildingForm').addEventListener('submit', submitBuilding);
   $('#workItemForm').addEventListener('submit', submitWorkItem);

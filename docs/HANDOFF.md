@@ -22,7 +22,7 @@ When these disagree, stop and reconcile them explicitly. Do not silently make do
 - Optional macOS telemetry agent; compute participation is opt-in and currently postponed.
 - In-memory API telemetry for the local Administrator monitoring route.
 - UI role preview plus backend route-level RBAC foundation through `X-RackPilot-Role`; not production auth.
-- Current product version: `0.32.0`; current database schema: `024`.
+- Current product version: `0.33.0`; current database schema: `025`.
 
 ## Non-negotiable invariants
 

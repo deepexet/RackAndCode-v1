@@ -154,6 +154,7 @@
       <div class="form-grid"><label>Код<input id="projectCode" required maxlength="32" pattern="[A-Za-z0-9_-]+" placeholder="HQ-ACCESS"></label><label>Приоритет<select id="projectPriority"><option value="critical">Critical</option><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></label></div>
       <label>Название<input id="projectName" required maxlength="120" placeholder="Система контроля доступа — HQ"></label>
       <label>Описание<textarea id="projectDescription" rows="3" maxlength="1000"></textarea></label>
+      <section class="project-scope-picker"><div><span>Project scope</span><button class="text-button" id="selectAllProjectWorkTypes" type="button">Select all</button></div><div id="projectWorkTypeScope"></div><small>Выберите только те направления, которые есть в контракте: Data, Fiber, CCTV, Audio Visual и т.д.</small></section>
       <div class="form-grid"><label>Начало<input id="projectStartDate" type="date"></label><label>Целевая дата<input id="projectTargetDate" type="date"></label></div>
       <div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="projectDialog">Отмена</button><button class="button primary" type="submit">Создать проект</button></div>
     </form>
