@@ -318,7 +318,7 @@ class WorkspaceStore:
         if strategy not in {"manual","per_task","per_release"}: raise ValueError("Invalid commit strategy")
         auto_commit=bool(payload.get("autoCommit",True)); auto_push=bool(payload.get("autoPush",False)); include_docs=bool(payload.get("includeDocs",True))
         status="configured" if remote_url else "not_configured"
-        message="Git sync configured; credentials are managed outside Valeronix." if remote_url else "Git remote is not configured"
+        message="Git sync configured; credentials are managed outside RackPilot." if remote_url else "Git remote is not configured"
         now=utc_now()
         with self._lock,self._connect() as connection:
             connection.execute("""INSERT INTO git_sync_settings
@@ -1250,7 +1250,7 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 class FieldOSHandler(BaseHTTPRequestHandler):
-    server_version = "Valeronix/0.25"
+    server_version = "RackPilot/0.26"
 
     @property
     def store(self) -> WorkspaceStore:

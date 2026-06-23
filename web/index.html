@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
-  <meta name="description" content="Valeronix — operational intelligence for field projects and the built world">
-  <title>Valeronix · Development Workspace</title>
+  <meta name="description" content="RackPilot by Valeronix — Manage Projects, Inventory and Field Operations in One Place">
+  <title>RackPilot by Valeronix · Development Workspace</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -13,9 +13,9 @@
   <div class="ambient ambient-b"></div>
 
   <header class="topbar">
-    <a class="brand" href="#overview" aria-label="Valeronix — на главную">
+    <a class="brand" href="#overview" aria-label="RackPilot by Valeronix — на главную">
       <span class="brand-mark">V</span>
-      <span><strong>Valeronix</strong><small>Operational Intelligence</small></span>
+      <span><strong>RackPilot</strong><small>by Valeronix</small></span>
     </a>
     <nav class="primary-nav" aria-label="Разделы платформы"><a href="#overview" data-route-link="overview">Обзор</a><a href="#projects" data-route-link="projects">Проекты</a><a href="#admin" data-route-link="admin">Admin</a></nav>
     <div class="header-right">
@@ -33,9 +33,9 @@
     <div class="app-view active" data-view="overview">
     <section class="hero" id="overview">
       <div>
-        <p class="eyebrow">VALERONIX · PRODUCT FOUNDATION</p>
+        <p class="eyebrow">RACKPILOT · BY VALERONIX</p>
         <h1>Операционная система<br><span>для полевых команд.</span></h1>
-        <p class="hero-copy">Systems in context. Work in motion. Decisions with evidence.</p>
+        <p class="hero-copy">Manage Projects, Inventory and Field Operations in One Place.</p>
       </div>
       <div class="system-pulse" aria-label="Состояние проекта">
         <div class="pulse-ring"><span id="healthScore">72</span><small>%</small></div>
@@ -98,7 +98,7 @@
       <div class="admin-summary" id="computeSummary"></div>
       <div class="compute-grid" id="computeNodes"><article class="compute-card project-loading">Ожидание первого Compute Agent…</article></div>
       <section class="detail-section compute-help"><p class="eyebrow">ENROLLMENT</p><h2>Подключение Mac</h2><p>Agent работает только после ручного запуска. Возможность выполнять вычисления дополнительно требует флага <code>--compute-enabled</code> и разрешения переключателем администратора.</p><pre>python3 scripts/mac_agent.py --server http://192.168.8.138:4173 --name "M1 Pro" --compute-enabled</pre></section>
-      <section class="detail-section git-sync-admin"><div class="detail-section-title"><div><p class="eyebrow">SOURCE CONTROL</p><h2>GitHub sync</h2></div><span class="git-sync-status" id="gitSyncStatus">Not configured</span></div><form id="gitSyncForm"><label>Repository URL<input id="gitRemoteUrl" maxlength="500" placeholder="git@github.com:USER/Valeronix.git или https://github.com/USER/Valeronix.git"></label><div class="form-grid"><label>Branch<input id="gitBranchName" maxlength="120" value="main"></label><label>Commit strategy<select id="gitCommitStrategy"><option value="per_task">After completed task</option><option value="per_release">After release batch</option><option value="manual">Manual only</option></select></label></div><div class="git-sync-options"><label class="check-label"><input id="gitAutoCommit" type="checkbox" checked> Auto commit finished work</label><label class="check-label"><input id="gitAutoPush" type="checkbox"> Auto push after commit</label><label class="check-label"><input id="gitIncludeDocs" type="checkbox" checked> Include docs/provenance logs</label></div><p class="empty-copy" id="gitSyncMessage">Credentials are not stored in Valeronix. Use SSH key or local Git credential manager.</p><div class="dialog-actions"><span></span><button class="button primary" type="submit">Save Git settings</button></div></form></section>
+      <section class="detail-section git-sync-admin"><div class="detail-section-title"><div><p class="eyebrow">SOURCE CONTROL</p><h2>GitHub sync</h2></div><span class="git-sync-status" id="gitSyncStatus">Not configured</span></div><form id="gitSyncForm"><label>Repository URL<input id="gitRemoteUrl" maxlength="500" placeholder="git@github.com:deepexet/RackAndCode-v1.git"></label><div class="form-grid"><label>Branch<input id="gitBranchName" maxlength="120" value="main"></label><label>Commit strategy<select id="gitCommitStrategy"><option value="per_task">After completed task</option><option value="per_release">After release batch</option><option value="manual">Manual only</option></select></label></div><div class="git-sync-options"><label class="check-label"><input id="gitAutoCommit" type="checkbox" checked> Auto commit finished work</label><label class="check-label"><input id="gitAutoPush" type="checkbox"> Auto push after commit</label><label class="check-label"><input id="gitIncludeDocs" type="checkbox" checked> Include docs/provenance logs</label></div><p class="empty-copy" id="gitSyncMessage">Credentials are not stored in RackPilot. Use SSH key or local Git credential manager.</p><div class="dialog-actions"><span></span><button class="button primary" type="submit">Save Git settings</button></div></form></section>
       <section class="detail-section workflow-admin"><div class="detail-section-title"><div><p class="eyebrow">PROJECT WORKFLOW</p><h2>Виды работ и этапы</h2></div><button class="button primary" id="addWorkTypeButton" type="button">＋ Вид работ</button></div><p>Настройка применяется ко всем проектам текущей организации.</p><div class="workflow-admin-list" id="workflowAdminList"></div></section>
       <section class="detail-section workflow-admin"><div class="detail-section-title"><div><p class="eyebrow">FORM SCHEMA</p><h2>Дополнительные поля</h2></div><button class="button primary" id="addCustomFieldButton" type="button">＋ Поле</button></div><p>Поля автоматически появляются в формах локаций и units.</p><div class="workflow-admin-list" id="customFieldAdminList"></div></section>
     </section>

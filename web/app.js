@@ -306,7 +306,7 @@ function renderGitSyncSettings(unavailable=false){
   $('#gitIncludeDocs').checked=settings.includeDocs!==false;
   status.textContent=(settings.lastSyncStatus||'not_configured').replace('_',' ');
   status.className=`git-sync-status ${settings.lastSyncStatus||'not_configured'}`;
-  message.textContent=settings.lastSyncMessage||'Credentials are not stored in Valeronix. Use SSH key or local Git credential manager.';
+  message.textContent=settings.lastSyncMessage||'Credentials are not stored in RackPilot. Use SSH key or local Git credential manager.';
 }
 
 async function hydrateGitSyncSettings(){try{const response=await fetch('/api/v1/admin/git-sync',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('git sync unavailable');const payload=await response.json();gitSyncSettings=payload.settings;renderGitSyncSettings();}catch{renderGitSyncSettings(true);}}

@@ -16,6 +16,11 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".search input,.filters select{font-size:16px}", self.css)
         self.assertIn("dialog input,dialog textarea,dialog select{min-height:44px;font-size:16px}", self.css)
 
+    def test_public_brand_is_rackpilot_by_valeronix(self):
+        self.assertIn("RackPilot by Valeronix", self.html)
+        self.assertIn("Manage Projects, Inventory and Field Operations in One Place.", self.html)
+        self.assertIn("<strong>RackPilot</strong><small>by Valeronix</small>", self.html)
+
     def test_mobile_panels_have_readable_typography(self):
         for contract in (
             ".architecture-flow span { padding:13px 12px; font-size:14px; }",
@@ -132,7 +137,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("submitGitSyncSettings",self.app)
         self.assertIn("/api/v1/admin/git-sync",self.app)
         self.assertIn(".git-sync-status",self.css)
-        self.assertIn("Credentials are not stored in Valeronix",self.html)
+        self.assertIn("Credentials are not stored in RackPilot",self.html)
 
     def test_admin_can_configure_work_types_and_actions(self):
         self.assertIn('id="workTypeDialog"',self.html)

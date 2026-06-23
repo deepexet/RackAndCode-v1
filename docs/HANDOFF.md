@@ -1,6 +1,6 @@
 # Engineering handoff
 
-This document makes Valeronix maintainable by Codex, Claude, another coding agent or a human engineer. Codex is the primary developer, but no critical knowledge may exist only in one model's conversation history.
+This document makes RackPilot maintainable by Codex, Claude, another coding agent or a human engineer. Codex is the primary developer, but no critical knowledge may exist only in one model's conversation history.
 
 ## Source-of-truth order
 
@@ -20,7 +20,7 @@ When these disagree, stop and reconcile them explicitly. Do not silently make do
 - Append-only audit and project change log.
 - Offline browser outbox for field progress.
 - Optional macOS telemetry agent; compute participation is opt-in and currently postponed.
-- Current product version: `0.25.0`; current database schema: `021`.
+- Current product version: `0.26.0`; current database schema: `022`.
 
 ## Non-negotiable invariants
 
@@ -60,4 +60,4 @@ Native applications and distributed compute remain lower priority until the web 
 
 ## Brand compatibility
 
-The public working name is Valeronix. Legacy `FieldOS` identifiers may remain in filenames, database names and internal class/package names. Rename them only through an explicit compatibility plan; public UI and current documentation should use Valeronix.
+The public working name is RackPilot by Valeronix. Legacy `FieldOS` identifiers may remain in filenames, database names and internal class/package names. Rename them only through an explicit compatibility plan; public UI and current documentation should use RackPilot by Valeronix.

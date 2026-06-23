@@ -45,7 +45,7 @@ GitHub Actions запускает JavaScript/Python syntax checks, unit и tenan
 
 ## macOS Compute Agent
 
-На Mac, где запущен Valeronix server:
+На Mac, где запущен RackPilot server:
 
 ```bash
 python3 scripts/mac_agent.py --name "M1 Pro" --compute-enabled

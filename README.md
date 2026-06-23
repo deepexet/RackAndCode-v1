@@ -1,8 +1,8 @@
-# Valeronix — Operational Intelligence for the Built World
+# RackPilot by Valeronix — Manage Projects, Inventory and Field Operations in One Place
 
 AI-native операционная платформа для security, low-voltage и field service компаний.
 
-Рабочая философия продукта: **Systems in context. Work in motion. Decisions with evidence.**
+Рабочая философия продукта: **Manage Projects, Inventory and Field Operations in One Place.**
 
 Интерфейс разделен на `#overview` для разработки платформы и `#projects` для операционных проектов компании.
 

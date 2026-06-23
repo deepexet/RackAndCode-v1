@@ -1,4 +1,4 @@
-name: Valeronix Quality Gate
+name: RackPilot Quality Gate
 
 on:
   push:

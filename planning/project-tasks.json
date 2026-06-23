@@ -453,7 +453,7 @@
       "parentId": "FS-017", "dependsOn": ["FS-016", "FS-017"], "priorityReason": "Разграничение доступа должно учитываться в каждом следующем модуле.", "unblocks": ["FS-029", "FS-032", "FS-068", "FS-071"]
     },
     {
-      "id": "FS-074", "title": "Product naming, trademark screening и rebrand", "description": "Рабочее имя Valeronix выбрано; закрепить brand foundation, проверить trademark/domain conflicts и завершить controlled rebrand.",
+      "id": "FS-074", "title": "Product naming, trademark screening и rebrand", "description": "Рабочее имя RackPilot by Valeronix выбрано; закрепить brand foundation, проверить trademark/domain conflicts и завершить controlled rebrand.",
       "type": "Task", "status": "progress", "priority": "high", "area": "foundation", "risk": "Финальная доступность названия требует профессионального trademark search по целевым рынкам.",
       "dependsOn": [], "priorityReason": "Явно назначено пользователем Priority 2 для подготовки коммерческого продукта.", "unblocks": ["FS-043", "FS-044", "FS-045"]
     },

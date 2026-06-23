@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Valeronix Local Foundation API
+  title: RackPilot Local Foundation API
   version: 1.0.0
   description: Versioned single-user development workspace API. Authentication is not yet implemented.
 servers:

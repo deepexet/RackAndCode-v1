@@ -2,12 +2,20 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-22 — v0.26.0
+
+- Updated public product identity to `RackPilot by Valeronix`.
+- Updated tagline to `Manage Projects, Inventory and Field Operations in One Place.`
+- Added migration `022_rackpilot_brand.sql` to update the visible internal platform project.
+- Updated default Git remote examples to `git@github.com:deepexet/RackAndCode-v1.git`.
+- Verification: `npm run check`; 65 automated tests and quality gate passed.
+
 ## 2026-06-22 — v0.25.0
 
 - Added Admin GitHub sync settings for repository URL, branch, commit strategy, auto commit, auto push and docs inclusion.
 - Added schema migration `021_git_sync_settings.sql`.
 - Added API `GET/POST /api/v1/admin/git-sync`.
-- Kept credentials outside Valeronix; SSH keys or local Git credential manager remain the supported access path.
+- Kept credentials outside RackPilot; SSH keys or local Git credential manager remain the supported access path.
 - Verification: `npm run check`; 64 automated tests and quality gate passed.
 
 ## 2026-06-22 — v0.24.0
@@ -20,7 +28,7 @@ Append-only summary of material product development. Git commits are the detaile
 
 ## 2026-06-22 — v0.23.0
 
-- Selected Valeronix as the public working identity and documented brand philosophy.
+- Selected RackPilot by Valeronix as the public working identity and documented brand philosophy.
 - Added an engineering handoff independent of any single AI model or conversation.
 - Implemented automatic project Daily Log from project audit events.
 - Kept manual daily entries as editable explanations alongside immutable automatic events.

@@ -2,7 +2,7 @@
 
 ## Project control
 
-Valeronix is directed by Valerii Sergeev. Codex is the primary AI development system responsible for implementation, technical planning, testing and documentation under user direction. Other AI systems or human engineers may contribute, but contributions must follow the same repository controls and review gates.
+RackPilot by Valeronix is directed by Valerii Sergeev. Codex is the primary AI development system responsible for implementation, technical planning, testing and documentation under user direction. Other AI systems or human engineers may contribute, but contributions must follow the same repository controls and review gates.
 
 Copyright © 2026 Valerii Sergeev. All rights reserved, subject to any applicable employment, client or third-party agreements. This repository record documents development provenance; it is not a legal determination of ownership or trademark availability.
 
@@ -37,4 +37,4 @@ The Git author identifies the person or organization controlling the repository 
 
 ## Legal follow-up
 
-Before commercial launch, obtain professional review of employment/IP agreements, contributor assignments, privacy obligations, product licensing and trademark clearance for Valeronix in target jurisdictions. Documentation and Git history provide evidence of provenance but do not replace those steps.
+Before commercial launch, obtain professional review of employment/IP agreements, contributor assignments, privacy obligations, product licensing and trademark clearance for RackPilot by Valeronix in target jurisdictions. Documentation and Git history provide evidence of provenance but do not replace those steps.

@@ -1,11 +1,11 @@
 # Decision log
 
-Краткий хронологический реестр решений Valeronix. Архитектурные решения с долгосрочными последствиями дополнительно оформляются отдельными ADR в [`docs/adr`](adr/).
+Краткий хронологический реестр решений RackPilot by Valeronix. Архитектурные решения с долгосрочными последствиями дополнительно оформляются отдельными ADR в [`docs/adr`](adr/).
 
-## 2026-06-22 — Valeronix selected as the working product name
+## 2026-06-22 — RackPilot by Valeronix selected as the working product name
 
 - **Status:** Accepted as working identity; legal clearance pending.
-- **Decision:** Public product name is Valeronix. Internal compatibility identifiers such as `fieldos-platform` and `fieldos.db` may remain until a controlled migration is justified.
+- **Decision:** Public product name is RackPilot by Valeronix. Internal compatibility identifiers such as `fieldos-platform` and `fieldos.db` may remain until a controlled migration is justified.
 - **Reason:** The name retains a founder connection while supporting a broader technology and operational-intelligence category.
 - **Reference:** [`BRAND.md`](BRAND.md).
 

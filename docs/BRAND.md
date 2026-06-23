@@ -1,13 +1,15 @@
-# Valeronix brand foundation
+# RackPilot by Valeronix brand foundation
 
 ## Working identity
 
-- **Name:** Valeronix
-- **Category:** operational intelligence platform
-- **Descriptor:** Operational Intelligence for the Built World
-- **Philosophy:** Systems in context. Work in motion. Decisions with evidence.
+- **Product name:** RackPilot
+- **Company / maker:** Valeronix
+- **Public line:** RackPilot by Valeronix
+- **Category:** project, inventory and field operations platform
+- **Descriptor:** Manage Projects, Inventory and Field Operations in One Place.
+- **Philosophy:** one operational cockpit for field teams, supervisors and managers.
 
-`Valeronix` combines a personal founder signal (`Val`) with a technology-oriented ending. The product meaning is broader than field service software: it connects physical systems, project execution and verifiable operational knowledge.
+`RackPilot` expresses a practical control point for low-voltage and field operations: racks, equipment, inventory, projects and field execution. `Valeronix` remains the broader technology company identity connected to Valerii and future products.
 
 ## Product principles expressed by the brand
 
@@ -18,6 +20,6 @@
 
 ## Naming status
 
-Valeronix is the selected working name. It MUST NOT be represented as registered or legally cleared until professional trademark and domain checks are completed for target markets and software/service classes.
+RackPilot by Valeronix is the selected working identity. It MUST NOT be represented as registered or legally cleared until professional trademark and domain checks are completed for target markets and software/service classes.
 
 Internal compatibility identifiers such as `fieldos.db`, package names and existing API storage keys remain unchanged until a controlled migration is justified. They are implementation details and do not define the public brand.
