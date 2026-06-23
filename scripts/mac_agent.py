@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in FieldOS telemetry agent for Apple Silicon Macs."""
+"""Opt-in RackPilot telemetry agent for Apple Silicon Macs."""
 
 from __future__ import annotations
 
@@ -109,12 +109,14 @@ def send(server: str, organization: str, token: str, node_id: str, payload: dict
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="FieldOS macOS telemetry and compute opt-in agent")
-    parser.add_argument("--server", default=os.getenv("FIELDOS_SERVER", "http://127.0.0.1:4173"))
-    parser.add_argument("--organization", default=os.getenv("FIELDOS_ORGANIZATION", "local-dev"))
-    parser.add_argument("--token", default=os.getenv("FIELDOS_AGENT_TOKEN", ""))
+    legacy_node_id = Path.home() / ".fieldos" / "node-id"
+    default_node_id = legacy_node_id if legacy_node_id.exists() else Path.home() / ".rackpilot" / "node-id"
+    parser = argparse.ArgumentParser(description="RackPilot macOS telemetry and compute opt-in agent")
+    parser.add_argument("--server", default=os.getenv("RACKPILOT_SERVER") or os.getenv("FIELDOS_SERVER", "http://127.0.0.1:4173"))
+    parser.add_argument("--organization", default=os.getenv("RACKPILOT_ORGANIZATION") or os.getenv("FIELDOS_ORGANIZATION", "local-dev"))
+    parser.add_argument("--token", default=os.getenv("RACKPILOT_AGENT_TOKEN") or os.getenv("FIELDOS_AGENT_TOKEN", ""))
     parser.add_argument("--token-file", type=Path, default=ROOT / "data" / "agent.token")
-    parser.add_argument("--node-id-file", type=Path, default=Path.home() / ".fieldos" / "node-id")
+    parser.add_argument("--node-id-file", type=Path, default=default_node_id)
     parser.add_argument("--name", default=platform.node())
     parser.add_argument("--interval", type=int, default=5)
     parser.add_argument("--compute-enabled", action="store_true", help="Explicitly allow this node to receive compute jobs")
@@ -122,7 +124,7 @@ def main() -> None:
     args = parser.parse_args()
     token = args.token or (args.token_file.read_text(encoding="utf-8").strip() if args.token_file.exists() else "")
     if not token:
-        raise SystemExit("Agent token is required via --token, FIELDOS_AGENT_TOKEN, or --token-file")
+        raise SystemExit("Agent token is required via --token, RACKPILOT_AGENT_TOKEN, FIELDOS_AGENT_TOKEN, or --token-file")
     node_id = stable_node_id(args.node_id_file)
     while True:
         try:

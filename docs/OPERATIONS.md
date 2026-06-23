@@ -54,7 +54,7 @@ python3 scripts/mac_agent.py --name "M1 Pro" --compute-enabled
 На втором Mac скопируйте только `scripts/mac_agent.py` и содержимое локального `data/agent.token`, затем запустите:
 
 ```bash
-FIELDOS_AGENT_TOKEN='<enrollment token>' python3 mac_agent.py \
+RACKPILOT_AGENT_TOKEN='<enrollment token>' python3 mac_agent.py \
   --server http://192.168.8.138:4173 --name "M1 Air" --compute-enabled
 ```
 

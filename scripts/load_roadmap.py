@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idempotently add planned work to the local FieldOS Kanban."""
+"""Idempotently add planned work to the local RackPilot Kanban."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def request_json(url: str, method: str = "GET", payload: dict | None = None, org
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Load the TRD roadmap into FieldOS")
+    parser = argparse.ArgumentParser(description="Load the TRD roadmap into RackPilot")
     parser.add_argument("--url", default="http://127.0.0.1:4173")
     parser.add_argument("--plan", type=Path, default=DEFAULT_PLAN)
     parser.add_argument("--organization", default="local-dev")

@@ -2,6 +2,16 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-23 — v0.30.0
+
+- Completed the first controlled cleanup pass for legacy FieldOS public mentions.
+- Changed browser storage/export names to `rackpilot.*` and `rackpilot-workspace-*` while preserving legacy localStorage fallback migration.
+- Changed public health service contract to `rackpilot-local`.
+- Added migration `024_rackpilot_public_cleanup.sql` to update seeded organization/user public names.
+- Updated script descriptions, SBOM metadata and macOS agent defaults to RackPilot naming while retaining legacy env var fallbacks.
+- Changed new backup filenames to `rackpilot-*.db`; retention still recognizes old `fieldos-*.db` backups.
+- Verification: `npm run check`; 75 automated tests and quality gate passed.
+
 ## 2026-06-23 — v0.29.0
 
 - Fixed desktop header layout so the Codex development status block cannot overlap the centered navigation tabs on wide screens.

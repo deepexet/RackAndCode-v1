@@ -1,2 +1,1 @@
-"""FieldOS local foundation server."""
-
+"""RackPilot local foundation server."""

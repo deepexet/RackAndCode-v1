@@ -1,7 +1,9 @@
 import { STATUSES, AREAS, INITIAL_TASKS } from './data.js';
 
-const STORAGE_KEY = 'fieldos.workspace.v1';
-const UNIT_OUTBOX_KEY = 'fieldos.unit-outbox.v1';
+const STORAGE_KEY = 'rackpilot.workspace.v1';
+const LEGACY_STORAGE_KEYS = ['fieldos.workspace.v1'];
+const UNIT_OUTBOX_KEY = 'rackpilot.unit-outbox.v1';
+const LEGACY_UNIT_OUTBOX_KEYS = ['fieldos.unit-outbox.v1'];
 const ORGANIZATION_ID = 'local-dev';
 const state = loadState();
 const $ = selector => document.querySelector(selector);
@@ -30,12 +32,17 @@ const WORK_ITEM_TRANSITIONS = {
 };
 
 function loadState() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (parsed?.version === 1 && Array.isArray(parsed.tasks)) {
-      return { revision: 0, pendingSync: false, audit: [], dirtyTaskIds: [], deletedTaskIds: [], auditDirty: false, fullReplace: false, ...parsed };
+  for (const key of [STORAGE_KEY, ...LEGACY_STORAGE_KEYS]) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key));
+      if (parsed?.version === 1 && Array.isArray(parsed.tasks)) {
+        if (key !== STORAGE_KEY) localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+        return { revision: 0, pendingSync: false, audit: [], dirtyTaskIds: [], deletedTaskIds: [], auditDirty: false, fullReplace: false, ...parsed };
+      }
+    } catch {
+      /* recover from invalid local state */
     }
-  } catch { /* recover from invalid local state */ }
+  }
   return { version: 1, revision: 0, pendingSync: false, tasks: structuredClone(INITIAL_TASKS), audit: [{ at: new Date().toISOString(), text: 'Workspace инициализирован' }], dirtyTaskIds: [], deletedTaskIds: [], auditDirty: false, fullReplace: false };
 }
 
@@ -154,8 +161,15 @@ async function apiPatch(path, payload, idempotencyKey = createIdempotencyKey()) 
 }
 
 function loadUnitOutbox() {
-  try { const value=JSON.parse(localStorage.getItem(UNIT_OUTBOX_KEY)); return Array.isArray(value) ? value : []; }
-  catch { return []; }
+  for (const key of [UNIT_OUTBOX_KEY, ...LEGACY_UNIT_OUTBOX_KEYS]) {
+    try {
+      const value=JSON.parse(localStorage.getItem(key));
+      if(Array.isArray(value)){ if(key!==UNIT_OUTBOX_KEY)localStorage.setItem(UNIT_OUTBOX_KEY,JSON.stringify(value)); return value; }
+    } catch {
+      /* ignore invalid outbox */
+    }
+  }
+  return [];
 }
 
 function saveUnitOutbox() { localStorage.setItem(UNIT_OUTBOX_KEY,JSON.stringify(unitOutbox)); }
@@ -907,7 +921,7 @@ function exportState() {
   const blob = new Blob([JSON.stringify({ ...state, exportedAt: new Date().toISOString() }, null, 2)], { type: 'application/json' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
-  link.download = `fieldos-workspace-${new Date().toISOString().slice(0,10)}.json`;
+  link.download = `rackpilot-workspace-${new Date().toISOString().slice(0,10)}.json`;
   link.click();
   URL.revokeObjectURL(link.href);
   persist('Workspace экспортирован');

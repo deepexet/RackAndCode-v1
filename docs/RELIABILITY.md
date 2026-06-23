@@ -29,7 +29,7 @@
 ```bash
 npm run backup
 python3 scripts/backup.py verify backups/<backup>.db
-python3 scripts/backup.py restore backups/<backup>.db --target /safe/new/path/fieldos-restored.db
+python3 scripts/backup.py restore backups/<backup>.db --target /safe/new/path/rackpilot-restored.db
 ```
 
 Backup использует SQLite online backup API, поэтому не требует остановки сервиса. Каждый snapshot сопровождается manifest с SHA-256, размером, schema version и количеством organizations/workspaces. Verify выполняет checksum и `PRAGMA integrity_check`. Restore отказывается перезаписывать существующий target и сначала проверяет backup.

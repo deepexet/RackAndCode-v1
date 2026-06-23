@@ -32,6 +32,10 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertFalse(state["initialized"])
         self.assertEqual(state["revision"], 0)
 
+    def test_public_health_contract_uses_rackpilot_service_name(self):
+        from server.app import FieldOSHandler
+        self.assertEqual(FieldOSHandler.server_version, "RackPilot/0.30")
+
     def test_save_and_read_workspace(self):
         result = self.store.save([TASK], [], 0)
         state = self.store.get()
@@ -54,7 +58,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "023")
+        self.assertEqual(first.current_version, "024")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):

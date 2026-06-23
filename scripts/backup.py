@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verified online backup and safe restore tooling for FieldOS SQLite."""
+"""Verified online backup and safe restore tooling for RackPilot SQLite."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def create_backup(source: Path, output_dir: Path, keep: int = 14) -> Path:
     inspect_database(source)
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup = output_dir / f"fieldos-{stamp}.db"
+    backup = output_dir / f"rackpilot-{stamp}.db"
     temporary = output_dir / f".{backup.name}.tmp"
     source_connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)
     target_connection = sqlite3.connect(temporary)
@@ -130,7 +130,7 @@ def restore_backup(backup: Path, target: Path) -> Path:
 def prune_backups(output_dir: Path, keep: int) -> list[Path]:
     if keep < 1:
         raise ValueError("keep must be at least one when pruning")
-    backups = sorted(output_dir.glob("fieldos-*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
+    backups = sorted([*output_dir.glob("rackpilot-*.db"), *output_dir.glob("fieldos-*.db")], key=lambda path: path.stat().st_mtime, reverse=True)
     removed: list[Path] = []
     for backup in backups[keep:]:
         backup.unlink()
@@ -142,7 +142,7 @@ def prune_backups(output_dir: Path, keep: int) -> list[Path]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="FieldOS verified SQLite backup tooling")
+    parser = argparse.ArgumentParser(description="RackPilot verified SQLite backup tooling")
     subparsers = parser.add_subparsers(dest="command", required=True)
     create = subparsers.add_parser("create")
     create.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
@@ -175,4 +175,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

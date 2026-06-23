@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dependency-free local API and static server for the FieldOS workspace."""
+"""Dependency-free local API and static server for the RackPilot workspace."""
 
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ def discover_lan_ip() -> str | None:
 
 
 def ensure_agent_token(db_path: Path) -> tuple[str, Path | None]:
-    configured=os.getenv("FIELDOS_AGENT_TOKEN")
+    configured=os.getenv("RACKPILOT_AGENT_TOKEN") or os.getenv("FIELDOS_AGENT_TOKEN")
     if configured: return configured,None
     token_path=db_path.parent / "agent.token"
     if token_path.exists(): return token_path.read_text(encoding="utf-8").strip(),token_path
@@ -1363,7 +1363,7 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 class FieldOSHandler(BaseHTTPRequestHandler):
-    server_version = "RackPilot/0.29"
+    server_version = "RackPilot/0.30"
 
     @property
     def store(self) -> WorkspaceStore:
@@ -1373,7 +1373,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self._start_request()
         path = urlparse(self.path).path
         if path in {"/api/health", "/api/v1/health"}:
-            self._json(HTTPStatus.OK, {"status": "ok", "service": "fieldos-local", "apiVersion": "v1", "schemaVersion": self.store.migration_result.current_version, "time": utc_now()})
+            self._json(HTTPStatus.OK, {"status": "ok", "service": "rackpilot-local", "apiVersion": "v1", "schemaVersion": self.store.migration_result.current_version, "time": utc_now()})
             return
         if path == "/api/v1/organizations":
             self._json(HTTPStatus.OK, {"organizations": self.store.list_organizations()})
@@ -1785,10 +1785,10 @@ class FieldOSServer(ThreadingHTTPServer):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="FieldOS local development server")
+    parser = argparse.ArgumentParser(description="RackPilot local development server")
     parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "4173")))
-    parser.add_argument("--db", type=Path, default=Path(os.getenv("FIELDOS_DB", DEFAULT_DB)))
+    parser.add_argument("--db", type=Path, default=Path(os.getenv("RACKPILOT_DB") or os.getenv("FIELDOS_DB", DEFAULT_DB)))
     args = parser.parse_args()
 
     agent_token,agent_token_path=ensure_agent_token(args.db)
@@ -1807,7 +1807,7 @@ def main() -> None:
     else:
         urls = [f"http://{args.host}:{args.port}"]
     LOGGER.info(json.dumps({"event": "server_started", "urls": urls, "bind": args.host, "db": str(args.db)}))
-    LOGGER.info(json.dumps({"event":"agent_enrollment","tokenPath":str(agent_token_path) if agent_token_path else "FIELDOS_AGENT_TOKEN"}))
+    LOGGER.info(json.dumps({"event":"agent_enrollment","tokenPath":str(agent_token_path) if agent_token_path else "RACKPILOT_AGENT_TOKEN"}))
     if args.host in {"0.0.0.0", "::"}:
         LOGGER.warning(json.dumps({"event": "security_notice", "message": "LAN mode has no authentication; use only on a trusted network"}))
     try:

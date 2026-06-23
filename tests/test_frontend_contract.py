@@ -20,6 +20,11 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("RackPilot by Valeronix", self.html)
         self.assertIn("Manage Projects, Inventory and Field Operations in One Place.", self.html)
         self.assertIn("<strong>RackPilot</strong><small>by Valeronix</small>", self.html)
+        self.assertIn("rackpilot.workspace.v1", self.app)
+        self.assertIn("rackpilot.unit-outbox.v1", self.app)
+        self.assertIn("rackpilot-workspace-", self.app)
+        self.assertIn("LEGACY_STORAGE_KEYS", self.app)
+        self.assertNotIn("fieldos-workspace-", self.app)
 
     def test_mobile_panels_have_readable_typography(self):
         for contract in (

@@ -24,7 +24,7 @@ class BackupTests(unittest.TestCase):
         backup = create_backup(self.database, self.root / "backups", keep=5)
         verification = verify_backup(backup)
         self.assertTrue(verification["verified"])
-        self.assertEqual(verification["schemaVersion"], "023")
+        self.assertEqual(verification["schemaVersion"], "024")
         restored = restore_backup(backup, self.root / "restored.db")
         restored_store = WorkspaceStore(restored)
         self.assertEqual(restored_store.get()["tasks"][0]["id"], "FS-TEST")
@@ -50,7 +50,7 @@ class BackupTests(unittest.TestCase):
         removed = prune_backups(output, keep=2)
         self.assertEqual(len(removed), 1)
         self.assertFalse(removed[0].exists())
-        self.assertEqual(len(list(output.glob("fieldos-*.db"))), 2)
+        self.assertEqual(len(list(output.glob("rackpilot-*.db"))), 2)
 
     def test_live_database_remains_valid(self):
         create_backup(self.database, self.root / "backups", keep=5)

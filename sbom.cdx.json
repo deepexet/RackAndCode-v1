@@ -7,10 +7,10 @@
     "component": {
       "type": "application",
       "name": "rackpilot-development-workspace",
-      "version": "0.29.0",
+      "version": "0.30.0",
       "properties": [
-        { "name": "fieldos.runtime", "value": "Python standard library + browser ES modules" },
-        { "name": "fieldos.externalDependencies", "value": "none" }
+        { "name": "rackpilot.runtime", "value": "Python standard library + browser ES modules" },
+        { "name": "rackpilot.externalDependencies", "value": "none" }
       ]
     }
   },

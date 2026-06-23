@@ -481,7 +481,7 @@ components:
       required: [status, service, apiVersion, schemaVersion, time]
       properties:
         status: { type: string, const: ok }
-        service: { type: string, const: fieldos-local }
+        service: { type: string, const: rackpilot-local }
         apiVersion: { type: string, const: v1 }
         schemaVersion: { type: [string, "null"] }
         time: { type: string, format: date-time }
