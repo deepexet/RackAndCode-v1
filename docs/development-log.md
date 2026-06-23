@@ -2,6 +2,14 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-23 — v0.29.0
+
+- Fixed desktop header layout so the Codex development status block cannot overlap the centered navigation tabs on wide screens.
+- Added a `Graph` view beside the Development Kanban. It renders tasks as status-colored graph nodes and relationships from `dependsOn`, `parentId` and `unblocks`.
+- Reused the existing search, priority, area and status filters for both Kanban and Graph views.
+- Added planning tasks `FS-085` and `FS-086` in Testing.
+- Verification: `npm run check`; 74 automated tests and quality gate passed.
+
 ## 2026-06-22 — v0.28.0
 
 - Added separate `API` route for admin API monitoring.

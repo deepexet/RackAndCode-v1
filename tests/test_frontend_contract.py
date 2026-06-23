@@ -32,7 +32,8 @@ class FrontendContractTests(unittest.TestCase):
 
     def test_desktop_typography_and_tabs_are_stable(self):
         self.assertIn("@media (min-width:681px)",self.css)
-        self.assertIn(".primary-nav { position:absolute",self.css)
+        self.assertIn("grid-template-columns:minmax(160px,1fr) auto minmax(260px,1fr)",self.css)
+        self.assertIn(".header-right { justify-self:end; min-width:0; }",self.css)
         self.assertIn(".project-card>p { font-size:15px; line-height:1.6; }",self.css)
         self.assertIn(".task-card p { font-size:13px; line-height:1.55; }",self.css)
         self.assertIn(".workflow-admin-list strong { font-size:15px; }",self.css)
@@ -90,6 +91,18 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('data-view="overview"', self.html)
         self.assertIn("function renderRoute()", self.app)
         self.assertIn("body[data-route=\"projects\"] .top-actions", self.css)
+
+    def test_development_tasks_have_graph_view_with_shared_filters(self):
+        self.assertIn('id="kanbanViewButton"', self.html)
+        self.assertIn('id="graphViewButton"', self.html)
+        self.assertIn('id="taskGraph"', self.html)
+        self.assertIn("function renderTaskGraph()", self.app)
+        self.assertIn("filteredTasks(true)", self.app)
+        self.assertIn("task.dependsOn", self.app)
+        self.assertIn("task.parentId", self.app)
+        self.assertIn("task.unblocks", self.app)
+        self.assertIn(".task-graph", self.css)
+        self.assertIn(".graph-node", self.css)
 
     def test_logs_are_a_separate_routed_view_with_filters(self):
         self.assertIn('data-route-link="logs"', self.html)

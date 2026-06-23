@@ -61,16 +61,23 @@
     <section class="section board-section" id="kanban">
       <div class="section-heading board-heading">
         <div><p class="eyebrow">DEVELOPMENT KANBAN</p><h2>Очередь разработки</h2></div>
-        <div class="filters">
-          <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="Поиск задач…" aria-label="Поиск задач"></label>
-          <select id="priorityFilter" aria-label="Фильтр приоритета">
-            <option value="all">Все приоритеты</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
-          </select>
-          <select id="areaFilter" aria-label="Фильтр направления"><option value="all">Все направления</option></select>
-          <select id="statusFilter" class="status-filter" aria-label="Фильтр статуса"><option value="all">Все статусы</option></select>
+        <div class="board-controls">
+          <div class="view-tabs" role="tablist" aria-label="Development task views">
+            <button class="active" id="kanbanViewButton" type="button" data-task-view="kanban">Kanban</button>
+            <button id="graphViewButton" type="button" data-task-view="graph">Graph</button>
+          </div>
+          <div class="filters">
+            <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="Поиск задач…" aria-label="Поиск задач"></label>
+            <select id="priorityFilter" aria-label="Фильтр приоритета">
+              <option value="all">Все приоритеты</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option>
+            </select>
+            <select id="areaFilter" aria-label="Фильтр направления"><option value="all">Все направления</option></select>
+            <select id="statusFilter" class="status-filter" aria-label="Фильтр статуса"><option value="all">Все статусы</option></select>
+          </div>
         </div>
       </div>
       <div class="board" id="board" aria-label="Kanban доска"></div>
+      <div class="task-graph hidden" id="taskGraph" aria-label="Граф связей задач"></div>
     </section>
 
     <section class="section lower-grid">

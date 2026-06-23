@@ -21,7 +21,7 @@ When these disagree, stop and reconcile them explicitly. Do not silently make do
 - Offline browser outbox for field progress.
 - Optional macOS telemetry agent; compute participation is opt-in and currently postponed.
 - In-memory API telemetry for the local Administrator monitoring route.
-- Current product version: `0.28.0`; current database schema: `023`.
+- Current product version: `0.29.0`; current database schema: `023`.
 
 ## Non-negotiable invariants
 

@@ -501,6 +501,16 @@
       "id": "FS-084", "title": "API Monitoring Console", "description": "Добавить отдельную admin-only страницу API telemetry: request count, latency average/p95, status codes, top routes и recent API logs.",
       "type": "Feature", "status": "testing", "priority": "high", "area": "platform", "risk": "Runtime metrics не заменяют долговременные observability metrics; доступ должен быть ограничен Administrator после server-side RBAC.",
       "dependsOn": ["FS-010", "FS-068", "FS-073"], "priorityReason": "Пользователь запросил видеть статистику работы API, логи, количество и скорость ответа.", "unblocks": ["FS-039", "FS-043"]
+    },
+    {
+      "id": "FS-085", "title": "Desktop header collision fix", "description": "Перестроить desktop topbar так, чтобы Codex status и action controls не налезали на центральные navigation tabs на широких экранах.",
+      "type": "Task", "status": "testing", "priority": "critical", "area": "foundation", "risk": "Header должен сохранить mobile wrapping и не скрыть development status.",
+      "dependsOn": ["FS-063", "FS-077"], "priorityReason": "Пользователь подтвердил, что Codex status всё еще перекрывает tabs на PC версии.", "unblocks": ["FS-029", "FS-043"]
+    },
+    {
+      "id": "FS-086", "title": "Development task dependency graph", "description": "Добавить вкладку Graph рядом с Kanban, где задачи показаны как цветные вершины по статусам, а связи отображают parent, dependsOn и unblocks.",
+      "type": "Feature", "status": "testing", "priority": "high", "area": "foundation", "risk": "Граф должен работать без тяжелых зависимостей и использовать те же фильтры, что Kanban.",
+      "dependsOn": ["FS-002", "FS-073"], "priorityReason": "Граф связей ускоряет понимание roadmap и зависимостей по аналогии с Obsidian.", "unblocks": ["FS-033", "FS-043"]
     }
   ]
 }

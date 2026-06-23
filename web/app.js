@@ -19,6 +19,7 @@ let customFieldDefinitions = [];
 let selectedProjectId = null;
 let selectedLocationId = null;
 let editingAudioLocation = null;
+let taskViewMode = 'kanban';
 const unitScopeByLocation = new Map();
 let unitOutbox = loadUnitOutbox();
 let unitOutboxSyncing = false;
@@ -246,14 +247,16 @@ function escapeHtml(value = '') {
   return value.replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 }
 
-function filteredTasks() {
+function filteredTasks(includeStatus = false) {
   const q = $('#searchInput').value.trim().toLowerCase();
   const priority = $('#priorityFilter').value;
   const area = $('#areaFilter').value;
+  const status = $('#statusFilter').value;
   return state.tasks.filter(task =>
     (!q || `${task.id} ${task.title} ${task.description}`.toLowerCase().includes(q)) &&
     (priority === 'all' || task.priority === priority) &&
-    (area === 'all' || task.area === area)
+    (area === 'all' || task.area === area) &&
+    (!includeStatus || status === 'all' || task.status === status)
   );
 }
 
@@ -716,6 +719,9 @@ function renderBoard() {
   const tasks = filteredTasks();
   const statusFilter = $('#statusFilter').value;
   const visibleStatuses = statusFilter === 'all' ? STATUSES : STATUSES.filter(status => status.id === statusFilter);
+  $('#board')?.classList.toggle('hidden', taskViewMode !== 'kanban');
+  $('#taskGraph')?.classList.toggle('hidden', taskViewMode !== 'graph');
+  document.querySelectorAll('[data-task-view]').forEach(button => button.classList.toggle('active', button.dataset.taskView === taskViewMode));
   $('#board').classList.toggle('single-column', visibleStatuses.length === 1);
   $('#board').innerHTML = visibleStatuses.map(status => {
     const cards = tasks.filter(t => t.status === status.id);
@@ -728,6 +734,71 @@ function renderBoard() {
     </section>`;
   }).join('');
   bindBoardEvents();
+  renderTaskGraph();
+}
+
+function renderTaskGraph() {
+  const container = $('#taskGraph');
+  if (!container) return;
+  const tasks = filteredTasks(true);
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  if (!tasks.length) {
+    container.innerHTML = '<div class="graph-empty">Нет задач для текущих фильтров.</div>';
+    return;
+  }
+  const width = 1280;
+  const height = Math.max(620, Math.ceil(tasks.length / 9) * 170 + 260);
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radiusX = Math.min(510, width * 0.4);
+  const radiusY = Math.min(height * 0.38, Math.max(210, tasks.length * 5.5));
+  const points = new Map();
+  tasks.forEach((task, index) => {
+    const angle = (Math.PI * 2 * index) / Math.max(1, tasks.length) - Math.PI / 2;
+    const statusIndex = STATUSES.findIndex(status => status.id === task.status);
+    const ringOffset = ((statusIndex % 3) - 1) * 38;
+    points.set(task.id, {
+      x: Math.round(centerX + Math.cos(angle) * (radiusX + ringOffset)),
+      y: Math.round(centerY + Math.sin(angle) * (radiusY + ringOffset)),
+    });
+  });
+  const edges = [];
+  const seenEdges = new Set();
+  const addEdge = (from, to, kind) => {
+    if (!byId.has(from) || !byId.has(to) || from === to) return;
+    const key = `${from}->${to}:${kind}`;
+    if (seenEdges.has(key)) return;
+    seenEdges.add(key);
+    edges.push({ from, to, kind });
+  };
+  tasks.forEach(task => {
+    (task.dependsOn || []).forEach(source => addEdge(source, task.id, 'depends'));
+    if (task.parentId) addEdge(task.parentId, task.id, 'parent');
+    (task.unblocks || []).forEach(target => addEdge(task.id, target, 'unblocks'));
+  });
+  const statusColor = task => `var(--graph-${task.status})`;
+  const lines = edges.map(edge => {
+    const from = points.get(edge.from), to = points.get(edge.to);
+    return `<line class="graph-edge ${edge.kind}" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}"><title>${escapeHtml(edge.from)} → ${escapeHtml(edge.to)} · ${edge.kind}</title></line>`;
+  }).join('');
+  const nodes = tasks.map(task => {
+    const point = points.get(task.id);
+    const title = `${task.id} · ${task.title}`;
+    const shortTitle = task.title.length > 22 ? `${task.title.slice(0, 22)}…` : task.title;
+    const relatedCount = edges.filter(edge => edge.from === task.id || edge.to === task.id).length;
+    return `<g class="graph-node" data-graph-task="${task.id}" transform="translate(${point.x} ${point.y})" tabindex="0" role="button" aria-label="${escapeHtml(title)}">
+      <circle r="${relatedCount ? 31 : 25}" style="fill:${statusColor(task)}"></circle>
+      <text class="graph-id" y="-4">${escapeHtml(task.id)}</text>
+      <text class="graph-title" y="12">${escapeHtml(shortTitle)}</text>
+      <title>${escapeHtml(title)} · ${escapeHtml(task.status)} · ${relatedCount} links</title>
+    </g>`;
+  }).join('');
+  const legend = STATUSES.map(status => `<span><i class="${status.tone}"></i>${status.label}</span>`).join('');
+  container.innerHTML = `<div class="graph-meta"><div><strong>${tasks.length}</strong><span>visible tasks</span></div><div><strong>${edges.length}</strong><span>visible links</span></div><p>Фильтры Kanban применяются к графу. Клик по вершине открывает задачу.</p></div><div class="graph-legend">${legend}</div><div class="graph-canvas"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Task dependency graph">${lines}${nodes}</svg></div>`;
+  container.querySelectorAll('[data-graph-task]').forEach(node => {
+    node.addEventListener('click', () => openDialog(node.dataset.graphTask));
+    node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') openDialog(node.dataset.graphTask); });
+  });
 }
 
 function taskCard(task) {
@@ -895,6 +966,7 @@ async function setup() {
   $('#copyJobberReport').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#jobberReportText').value); toast('Отчет скопирован'); } catch { $('#jobberReportText').select(); document.execCommand('copy'); toast('Отчет скопирован'); } });
   document.querySelectorAll('[data-close-dialog]').forEach(button => button.addEventListener('click', () => $(`#${button.dataset.closeDialog}`).close()));
   ['searchInput','priorityFilter','areaFilter','statusFilter'].forEach(id => $(`#${id}`).addEventListener('input', renderBoard));
+  document.querySelectorAll('[data-task-view]').forEach(button => button.addEventListener('click', () => { taskViewMode = button.dataset.taskView; renderBoard(); }));
   ['logSourceFilter','logProjectFilter','logEntityFilter','logSearchInput'].forEach(id => $(`#${id}`).addEventListener('input', hydrateLogs));
   $('#refreshLogsButton').addEventListener('click', hydrateLogs);
   $('#refreshApiMetricsButton').addEventListener('click', hydrateApiMetrics);
