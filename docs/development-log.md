@@ -10,6 +10,14 @@ Append-only summary of material product development. Git commits are the detaile
 - Updated default Git remote examples to `git@github.com:deepexet/RackAndCode-v1.git`.
 - Verification: `npm run check`; 65 automated tests and quality gate passed.
 
+## 2026-06-22 — FS-070 progress formula correction
+
+- Fixed customer project progress so daily field updates and unit completions contribute to overall project progress.
+- Kept `taskSummary` as a task count only, avoiding a mixed count of tasks, unit marks and daily reports.
+- Added deterministic tests for daily field updates and unit completion progress.
+- Live verification on the current customer project changed overall progress from an incorrect `0%` to evidence-based `62%`.
+- Verification: `npm run check`; 67 automated tests and quality gate passed.
+
 ## 2026-06-22 — v0.25.0
 
 - Added Admin GitHub sync settings for repository URL, branch, commit strategy, auto commit, auto push and docs inclusion.

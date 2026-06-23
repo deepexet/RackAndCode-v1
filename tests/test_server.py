@@ -203,6 +203,27 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertEqual(by_type["fiber"]["progress"], 50)
         self.assertEqual(by_type["termination"]["taskCount"], 0)
 
+    def test_project_progress_includes_daily_field_updates(self):
+        project = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code":"FIELDPROG","name":"Field progress"})
+        location = self.store.create_location(DEFAULT_ORGANIZATION_ID, project["id"], {"code":"L1","name":"Level 1"})
+        self.store.save_daily_update(DEFAULT_ORGANIZATION_ID, project["id"], {"locationId":location["id"],"workTypeId":"data","actionId":"data-prewire","status":"ongoing","percentComplete":30})
+        refreshed = self.store.get_project(DEFAULT_ORGANIZATION_ID, project["id"])
+        by_type = {value["id"]: value for value in refreshed["workTypeProgress"]}
+        self.assertEqual(by_type["data"]["progress"], 30)
+        self.assertEqual(by_type["data"]["fieldUpdateCount"], 1)
+        self.assertEqual(refreshed["progress"], 30)
+
+    def test_project_progress_includes_unit_completion(self):
+        project = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code":"UNITPROG","name":"Unit progress"})
+        location = self.store.create_location(DEFAULT_ORGANIZATION_ID, project["id"], {"code":"L1","name":"Level 1"})
+        unit = self.store.create_unit(DEFAULT_ORGANIZATION_ID, project["id"], location["id"], {"code":"101","name":"Unit 101"})
+        self.store.set_unit_progress(DEFAULT_ORGANIZATION_ID, project["id"], location["id"], unit["id"], {"workTypeId":"data","actionId":"data-prewire","status":"complete"})
+        refreshed = self.store.get_project(DEFAULT_ORGANIZATION_ID, project["id"])
+        by_type = {value["id"]: value for value in refreshed["workTypeProgress"]}
+        self.assertEqual(by_type["data"]["progress"], 100)
+        self.assertEqual(by_type["data"]["fieldUpdateCount"], 1)
+        self.assertEqual(refreshed["progress"], 100)
+
     def test_project_creation_events_are_visible_in_project_activity(self):
         project = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "LOGS", "name": "Logged project"})
         building = self.store.create_building(DEFAULT_ORGANIZATION_ID, project["id"], {"code": "B1", "name": "Building 1"})

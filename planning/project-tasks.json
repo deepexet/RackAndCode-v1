@@ -434,7 +434,7 @@
     },
     {
       "id": "FS-070", "title": "Аудит корректности статистики и progress formulas", "description": "Проверить project/platform metrics, denominators, inactive scopes, units и latest-per-scope calculations; добавить deterministic fixtures.",
-      "type": "Task", "status": "ready", "priority": "critical", "area": "platform", "risk": "Некорректные проценты приводят к неверным управленческим решениям.",
+      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Некорректные проценты приводят к неверным управленческим решениям.",
       "parentId": "FS-039", "dependsOn": ["FS-019", "FS-020", "FS-064"], "priorityReason": "Пользователь обнаружил визуально некорректную статистику; доверие к данным является core-инвариантом.", "unblocks": ["FS-035", "FS-039", "FS-043"]
     },
     {

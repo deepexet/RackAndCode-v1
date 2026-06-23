@@ -39,6 +39,7 @@ ALLOWED_PROJECT_STATUSES = {"planned", "active", "on_hold", "completed", "cancel
 ALLOWED_BUILDING_STATUSES = {"planned", "active", "on_hold", "completed"}
 DEFAULT_ORGANIZATION_ID = "local-dev"
 TASK_PROGRESS = {"ideas": 0, "backlog": 0, "ready": 10, "progress": 50, "blocked": 25, "review": 75, "testing": 90, "done": 100}
+UNIT_PROGRESS = {"not_started": 0, "ongoing": 50, "blocked": 25, "complete": 100}
 WORK_ITEM_TRANSITIONS = {
     "ideas": {"backlog", "ready"}, "backlog": {"ideas", "ready"},
     "ready": {"backlog", "progress"}, "progress": {"blocked", "review"},
@@ -573,6 +574,7 @@ class WorkspaceStore:
                 item["blocked_by"] = [predecessor for predecessor in item["depends_on"] if status_by_item.get(predecessor) != "done"]
                 item["effective_status"] = "blocked" if item["status"] != "done" and item["blocked_by"] else item["status"]
             task_states = [task.get("status") for task in development_tasks] + [item["effective_status"] for item in project_items]
+            task_progress_values = [TASK_PROGRESS.get(status, 0) for status in task_states]
             project_stages = []
             for stage in stages_by_project.get(project_id, []):
                 stage_states = [task.get("status") for task in development_tasks if stage["task_area"] and task.get("area") == stage["task_area"]]
@@ -583,7 +585,6 @@ class WorkspaceStore:
                     "status": stage["status"], "position": stage["position"],
                     "taskCount": len(stage_states), "progress": stage_progress,
                 })
-            progress = round(sum(TASK_PROGRESS.get(status, 0) for status in task_states) / len(task_states)) if task_states else 0
             work_type_progress = []
             for work_type in work_types:
                 typed_items = [item for item in project_items if item["work_type_id"] == work_type["id"]]
@@ -592,15 +593,21 @@ class WorkspaceStore:
                 for update in project_updates:
                     if update["work_type_id"] == work_type["id"]:
                         latest_by_scope.setdefault((update["location_id"], update["action_id"]), update)
-                field_values = [update["percent_complete"] for update in latest_by_scope.values()]
-                typed_progress = round(sum(field_values) / len(field_values)) if field_values else (round(sum(TASK_PROGRESS.get(status, 0) for status in typed_states) / len(typed_states)) if typed_states else 0)
+                daily_values = [update["percent_complete"] for update in latest_by_scope.values()]
+                unit_values = [UNIT_PROGRESS.get(progress["status"], 0) for progress in project_unit_progress if progress["work_type_id"] == work_type["id"]]
+                task_values = [TASK_PROGRESS.get(status, 0) for status in typed_states]
+                evidence_values = daily_values + unit_values + task_values
+                typed_progress = round(sum(evidence_values) / len(evidence_values)) if evidence_values else 0
                 work_type_progress.append({
                     "id": work_type["id"], "code": work_type["code"], "name": work_type["name"],
                     "color": work_type["color"], "taskCount": len(typed_items), "progress": typed_progress,
                     "done": sum(status == "done" for status in typed_states),
                     "blocked": sum(status == "blocked" for status in typed_states),
-                    "fieldUpdateCount": len(latest_by_scope),
+                    "fieldUpdateCount": len(daily_values) + len(unit_values),
                 })
+            field_progress_values = [value["progress"] for value in work_type_progress if value["fieldUpdateCount"]]
+            project_progress_values = task_progress_values + field_progress_values
+            progress = round(sum(project_progress_values) / len(project_progress_values)) if project_progress_values else 0
             work_type_by_id = {value["id"]: value["name"] for value in work_types}
             action_by_id = {value["id"]: value["name"] for value in work_actions}
             location_by_id = {value["id"]: value["name"] for value in project_locations}

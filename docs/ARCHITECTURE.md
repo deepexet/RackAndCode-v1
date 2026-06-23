@@ -107,6 +107,8 @@ Projects является отдельным route платформы и не с
 
 Project Work Item ссылается на WorkType, Stage и опционально Building. Сервер рассчитывает для каждого вида работ количество задач, completed, blocked и weighted progress. Создание project, building и work item записывается в `project_change_log` в той же транзакции, что и доменная сущность, и показывается в журнале проекта.
 
+Общий `project.progress` считается по evidence-сигналам, а не только по Work Items. В формулу входят Development/Work Item statuses и непустые field progress signals из `daily_progress_entries` и `unit_progress`. Пустые work types не участвуют в denominator и не занижают процент. `taskSummary` намеренно остается счетчиком задач, чтобы не смешивать количество задач с количеством unit отметок или daily updates.
+
 ## Technician daily reporting (v0.12)
 
 Структура исходных spreadsheets нормализована как `ProjectLocation → WorkType → WorkTypeAction → DailyProgressEntry`. Она сохраняет Date Updated, Floor/Area, Suite Total, Action, Status, Percent, Quantity и Comments без переноса табличного UX в приложение. Actions конфигурируются по виду работ: например Data содержит Prewire, Terminated & Tested и Trimout; Fiber — Prewire, Terminated & Tested и As Built Sent; Cameras — Prewire, Installed и View Verified.
