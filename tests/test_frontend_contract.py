@@ -67,7 +67,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".role-switcher", self.css)
 
     def test_sync_uses_explicit_tenant_and_dirty_rebase(self):
+        self.assertIn("function apiHeaders", self.app)
         self.assertIn("'X-Organization-ID': ORGANIZATION_ID", self.app)
+        self.assertIn("'X-RackPilot-Role': currentRole", self.app)
         self.assertIn("dirtyTaskIds", self.app)
         self.assertIn("deletedTaskIds", self.app)
         self.assertIn("rebasePendingState", self.app)

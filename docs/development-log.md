@@ -2,6 +2,15 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-23 — v0.32.0
+
+- Added backend role policy helpers and route-level permission checks for admin APIs, logs, workspace sync, project management and technician daily progress.
+- Added `X-RackPilot-Role` as a local development role header, propagated from the browser role switcher through shared `apiHeaders()`.
+- Added HTTP integration tests that verify Technician/Supervisor/Administrator access boundaries against a real temporary server.
+- Removed blocking reverse DNS lookup during LAN server bind so `0.0.0.0:4173` starts immediately on local networks.
+- Kept this as an MVP authorization foundation: production enforcement still requires identity, memberships and signed sessions.
+- Verification: `npm run check`; 80 automated tests and quality gate passed.
+
 ## 2026-06-23 — v0.31.0
 
 - Added the first centralized role-aware UI policy matrix for Technician, Supervisor, Project Manager and Administrator.

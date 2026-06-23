@@ -193,4 +193,6 @@ This data is operational telemetry, not immutable audit. It resets with the proc
 
 The browser client contains one centralized preview policy matrix for `Technician`, `Supervisor`, `ProjectManager` and `Administrator`. It controls visible navigation routes and visible action buttons through route checks and `data-permission` attributes. This keeps access assumptions explicit while the product is still being designed.
 
-This is not a security boundary. Server-side authorization must still validate organization membership, role, route/action permission, audit context and AI-proposed changes before `roleMode=enforced` can be considered real enforcement.
+The local API now accepts `X-RackPilot-Role` for development testing and applies route-level permission checks for admin APIs, logs, workspace sync, project management and field progress. The browser sends the selected preview role through one `apiHeaders()` helper.
+
+This is still not production authentication. Server-side authorization must validate real identity, organization membership, role assignment, signed session, route/action permission, audit context and AI-proposed changes before `roleMode=enforced` can be considered real enforcement.

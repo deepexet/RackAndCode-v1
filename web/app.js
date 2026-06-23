@@ -88,6 +88,10 @@ function setCurrentRole(role) {
   toast(`Role preview: ${ROLE_POLICIES[currentRole].label}`);
 }
 
+function apiHeaders(extra = {}) {
+  return { ...extra, 'X-Organization-ID': ORGANIZATION_ID, 'X-RackPilot-Role': currentRole };
+}
+
 function persist(message, mutation = {}) {
   if (message) {
     state.audit.unshift({ at: new Date().toISOString(), text: message });
@@ -125,11 +129,11 @@ async function syncToServer() {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       response = await fetch('/api/v1/workspace', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-Organization-ID': ORGANIZATION_ID },
+        headers: apiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ expectedRevision: state.revision, tasks: state.tasks, audit: state.audit })
       });
     if (response.status !== 409 || attempt === 1) break;
-      const remoteResponse = await fetch('/api/v1/workspace', { headers: { Accept: 'application/json', 'X-Organization-ID': ORGANIZATION_ID } });
+      const remoteResponse = await fetch('/api/v1/workspace', { headers: apiHeaders({ Accept: 'application/json' }) });
       if (!remoteResponse.ok) throw new Error('Unable to rebase workspace');
       rebasePendingState(await remoteResponse.json());
     }
@@ -161,7 +165,7 @@ async function syncToServer() {
 
 async function hydrateProjects() {
   try {
-    const response = await fetch('/api/v1/projects', { headers: { Accept: 'application/json', 'X-Organization-ID': ORGANIZATION_ID } });
+    const response = await fetch('/api/v1/projects', { headers: apiHeaders({ Accept: 'application/json' }) });
     if (!response.ok) throw new Error('Projects API unavailable');
     projects = (await response.json()).projects;
     applyUnitOutbox();
@@ -175,11 +179,7 @@ async function hydrateProjects() {
 async function apiPost(path, payload) {
   const response = await fetch(path, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Organization-ID': ORGANIZATION_ID,
-      'Idempotency-Key': createIdempotencyKey()
-    },
+    headers: apiHeaders({ 'Content-Type': 'application/json', 'Idempotency-Key': createIdempotencyKey() }),
     body: JSON.stringify(payload)
   });
   const result = await response.json();
@@ -190,7 +190,7 @@ async function apiPost(path, payload) {
 async function apiPatch(path, payload, idempotencyKey = createIdempotencyKey()) {
   const response = await fetch(path, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', 'X-Organization-ID': ORGANIZATION_ID, 'Idempotency-Key': idempotencyKey },
+    headers: apiHeaders({ 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey }),
     body: JSON.stringify(payload)
   });
   const result = await response.json();
@@ -273,7 +273,7 @@ function rebasePendingState(remote) {
 
 async function hydrateFromServer() {
   try {
-    const response = await fetch('/api/v1/workspace', { headers: { Accept: 'application/json', 'X-Organization-ID': ORGANIZATION_ID } });
+    const response = await fetch('/api/v1/workspace', { headers: apiHeaders({ Accept: 'application/json' }) });
     if (!response.ok) throw new Error('Workspace API unavailable');
     const remote = await response.json();
     if (remote.initialized && (!state.pendingSync || !hasPendingMutations())) {
@@ -364,7 +364,7 @@ function renderComputeNodes(unavailable=false){
   container.querySelectorAll('[data-compute-node]').forEach(toggle=>toggle.addEventListener('change',async()=>{toggle.disabled=true;try{await apiPatch(`/api/v1/admin/compute-nodes/${encodeURIComponent(toggle.dataset.computeNode)}/enabled`,{enabled:toggle.checked});await hydrateComputeNodes();toast(toggle.checked?'Узел разрешен для вычислений':'Вычисления на узле отключены');}catch(error){toggle.checked=!toggle.checked;toast(error.message);}finally{toggle.disabled=false;}}));
 }
 
-async function hydrateComputeNodes(){try{const response=await fetch('/api/v1/admin/compute-nodes',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('monitor unavailable');const payload=await response.json();computeNodes=payload.nodes||[];renderComputeNodes();}catch{renderComputeNodes(true);}}
+async function hydrateComputeNodes(){try{const response=await fetch('/api/v1/admin/compute-nodes',{headers:apiHeaders()});if(!response.ok)throw new Error('monitor unavailable');const payload=await response.json();computeNodes=payload.nodes||[];renderComputeNodes();}catch{renderComputeNodes(true);}}
 
 function renderGitSyncSettings(unavailable=false){
   const form=$('#gitSyncForm'),status=$('#gitSyncStatus'),message=$('#gitSyncMessage'); if(!form||!status||!message)return;
@@ -381,35 +381,35 @@ function renderGitSyncSettings(unavailable=false){
   message.textContent=settings.lastSyncMessage||'Credentials are not stored in RackPilot. Use SSH key or local Git credential manager.';
 }
 
-async function hydrateGitSyncSettings(){try{const response=await fetch('/api/v1/admin/git-sync',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('git sync unavailable');const payload=await response.json();gitSyncSettings=payload.settings;renderGitSyncSettings();}catch{renderGitSyncSettings(true);}}
+async function hydrateGitSyncSettings(){try{const response=await fetch('/api/v1/admin/git-sync',{headers:apiHeaders()});if(!response.ok)throw new Error('git sync unavailable');const payload=await response.json();gitSyncSettings=payload.settings;renderGitSyncSettings();}catch{renderGitSyncSettings(true);}}
 
-async function submitGitSyncSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/git-sync',{method:'POST',headers:{'Content-Type':'application/json','X-Organization-ID':ORGANIZATION_ID},body:JSON.stringify({remoteUrl:$('#gitRemoteUrl').value.trim(),branchName:$('#gitBranchName').value.trim()||'main',commitStrategy:$('#gitCommitStrategy').value,autoCommit:$('#gitAutoCommit').checked,autoPush:$('#gitAutoPush').checked,includeDocs:$('#gitIncludeDocs').checked})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Git settings failed');gitSyncSettings=payload.settings;renderGitSyncSettings();toast('Git sync settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+async function submitGitSyncSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/git-sync',{method:'POST',headers:apiHeaders({'Content-Type':'application/json'}),body:JSON.stringify({remoteUrl:$('#gitRemoteUrl').value.trim(),branchName:$('#gitBranchName').value.trim()||'main',commitStrategy:$('#gitCommitStrategy').value,autoCommit:$('#gitAutoCommit').checked,autoPush:$('#gitAutoPush').checked,includeDocs:$('#gitIncludeDocs').checked})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Git settings failed');gitSyncSettings=payload.settings;renderGitSyncSettings();toast('Git sync settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
 
 function renderPlatformSettings(unavailable=false){const form=$('#platformSettingsForm'),status=$('#platformSettingsStatus');if(!form||!status)return;if(unavailable){status.textContent='Unavailable';status.className='git-sync-status error';return;}const settings=platformSettings||{};$('#platformLanguage').value=settings.defaultLanguage||'en';$('#platformTimezone').value=settings.timezone||'America/Halifax';$('#platformRoleMode').value=settings.roleMode||'planned';$('#platformTelemetryMode').value=settings.telemetryMode||'standard';$('#platformLogRetention').value=settings.logRetentionDays||365;status.textContent=settings.updatedAt?'Configured':'Default';status.className=`git-sync-status ${settings.updatedAt?'configured':'not_configured'}`;}
 
-async function hydratePlatformSettings(){try{const response=await fetch('/api/v1/admin/platform-settings',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('platform settings unavailable');const payload=await response.json();platformSettings=payload.settings;renderPlatformSettings();}catch{renderPlatformSettings(true);}}
+async function hydratePlatformSettings(){try{const response=await fetch('/api/v1/admin/platform-settings',{headers:apiHeaders()});if(!response.ok)throw new Error('platform settings unavailable');const payload=await response.json();platformSettings=payload.settings;renderPlatformSettings();}catch{renderPlatformSettings(true);}}
 
-async function submitPlatformSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/platform-settings',{method:'POST',headers:{'Content-Type':'application/json','X-Organization-ID':ORGANIZATION_ID},body:JSON.stringify({defaultLanguage:$('#platformLanguage').value,timezone:$('#platformTimezone').value.trim(),roleMode:$('#platformRoleMode').value,telemetryMode:$('#platformTelemetryMode').value,logRetentionDays:Number($('#platformLogRetention').value)})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Platform settings failed');platformSettings=payload.settings;renderPlatformSettings();toast('Platform settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
+async function submitPlatformSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/platform-settings',{method:'POST',headers:apiHeaders({'Content-Type':'application/json'}),body:JSON.stringify({defaultLanguage:$('#platformLanguage').value,timezone:$('#platformTimezone').value.trim(),roleMode:$('#platformRoleMode').value,telemetryMode:$('#platformTelemetryMode').value,logRetentionDays:Number($('#platformLogRetention').value)})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Platform settings failed');platformSettings=payload.settings;renderPlatformSettings();toast('Platform settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
 
 function populateLogProjectFilter(){const filter=$('#logProjectFilter');if(!filter)return;const selected=filter.value;filter.innerHTML='<option value="">All projects</option>'+projects.map(project=>`<option value="${project.id}">${escapeHtml(project.code)} · ${escapeHtml(project.name)}</option>`).join('');filter.value=[...filter.options].some(option=>option.value===selected)?selected:'';}
 
 function renderLogs(unavailable=false){const container=$('#logsList');if(!container)return;populateLogProjectFilter();if(unavailable){container.innerHTML='<article class="project-loading">Журнал временно недоступен.</article>';return;}container.innerHTML=logs.length?logs.map(event=>`<article class="log-entry"><div><span>${escapeHtml(event.source)} · ${escapeHtml(event.entityType||'event')}</span><strong>${escapeHtml(event.message||event.action)}</strong><small>${escapeHtml(event.projectCode||event.projectName||'Workspace')} · ${escapeHtml(event.action||'audit')}</small></div><time datetime="${escapeHtml(event.createdAt||'')}">${event.createdAt?new Date(event.createdAt).toLocaleString('ru-RU'):'—'}</time></article>`).join(''):'<article class="project-loading">По фильтрам событий нет.</article>';}
 
-async function hydrateLogs(){try{populateLogProjectFilter();const params=new URLSearchParams({source:$('#logSourceFilter')?.value||'all',entityType:$('#logEntityFilter')?.value||'all',q:$('#logSearchInput')?.value||'',limit:'150'});const projectId=$('#logProjectFilter')?.value;if(projectId)params.set('projectId',projectId);const response=await fetch(`/api/v1/logs?${params}`,{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('logs unavailable');const payload=await response.json();logs=payload.logs||[];renderLogs();}catch{renderLogs(true);}}
+async function hydrateLogs(){try{populateLogProjectFilter();const params=new URLSearchParams({source:$('#logSourceFilter')?.value||'all',entityType:$('#logEntityFilter')?.value||'all',q:$('#logSearchInput')?.value||'',limit:'150'});const projectId=$('#logProjectFilter')?.value;if(projectId)params.set('projectId',projectId);const response=await fetch(`/api/v1/logs?${params}`,{headers:apiHeaders()});if(!response.ok)throw new Error('logs unavailable');const payload=await response.json();logs=payload.logs||[];renderLogs();}catch{renderLogs(true);}}
 
 function renderApiMetrics(unavailable=false){const summary=$('#apiSummary'),status=$('#apiStatusBreakdown'),routes=$('#apiRouteList'),list=$('#apiLogList'),badge=$('#apiMetricsStatus');if(!summary||!status||!routes||!list)return;if(unavailable){summary.innerHTML='<article><span>Status</span><strong>Offline</strong><small>API telemetry unavailable</small></article>';status.innerHTML='';routes.innerHTML='';list.innerHTML='<article class="project-loading">API telemetry временно недоступна.</article>';if(badge){badge.textContent='Unavailable';badge.className='git-sync-status error';}return;}const metrics=apiMetrics||{requestCount:0,averageMs:0,p95Ms:0,errorCount:0,statusCounts:{},methodCounts:{},topRoutes:[],recent:[],updatedAt:null};summary.innerHTML=`<article><span>Total requests</span><strong>${metrics.requestCount}</strong><small>retained runtime events</small></article><article><span>Average response</span><strong>${metrics.averageMs} ms</strong><small>mean latency</small></article><article><span>P95 response</span><strong>${metrics.p95Ms} ms</strong><small>slow path signal</small></article><article><span>Errors</span><strong>${metrics.errorCount}</strong><small>HTTP 4xx/5xx</small></article>`;status.innerHTML=Object.entries(metrics.statusCounts||{}).map(([code,count])=>`<article class="${Number(code)>=400?'error':'ok'}"><span>${escapeHtml(code)}</span><strong>${count}</strong></article>`).join('')||'<p class="empty-copy">No API responses yet.</p>';routes.innerHTML=(metrics.topRoutes||[]).map(route=>`<article><strong>${escapeHtml(route.route)}</strong><span>${route.count} requests</span></article>`).join('')||'<p class="empty-copy">No route data yet.</p>';list.innerHTML=(metrics.recent||[]).map(event=>`<article class="${event.status>=400?'error':''}"><div><span>${escapeHtml(event.method)} · ${escapeHtml(event.route)}</span><strong>${event.status} · ${event.durationMs} ms</strong><small>${escapeHtml(event.requestId)} · ${escapeHtml(event.organizationId)}</small></div><time datetime="${escapeHtml(event.createdAt)}">${new Date(event.createdAt).toLocaleTimeString('ru-RU')}</time></article>`).join('')||'<article class="project-loading">No API requests recorded yet.</article>';if(badge){badge.textContent=metrics.updatedAt?`Updated ${new Date(metrics.updatedAt).toLocaleTimeString('ru-RU')}`:'Runtime';badge.className='git-sync-status configured';}}
 
-async function hydrateApiMetrics(){try{const response=await fetch('/api/v1/admin/api-metrics',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('api metrics unavailable');const payload=await response.json();apiMetrics=payload.metrics;renderApiMetrics();}catch{renderApiMetrics(true);}}
+async function hydrateApiMetrics(){try{const response=await fetch('/api/v1/admin/api-metrics',{headers:apiHeaders()});if(!response.ok)throw new Error('api metrics unavailable');const payload=await response.json();apiMetrics=payload.metrics;renderApiMetrics();}catch{renderApiMetrics(true);}}
 
 function renderAgentStatus(agent){const indicator=$('#agentIndicator');if(!indicator)return;indicator.className=`agent-indicator ${agent.status||'idle'}${agent.needsAction?' needs-action':''}`;const labels={working:'Работает',idle:'Не активен',waiting:'Ожидает',blocked:'Требуется действие',limit:'Достигнут лимит'};$('#agentStatusText').textContent=`${labels[agent.status]||agent.status} · ${agent.message||''}`;$('#requestContinueButton').classList.toggle('requested',Boolean(agent.continuationRequested));$('#requestContinueButton').title=agent.continuationRequested?'Запрос уже зарегистрирован':'Запросить продолжение разработки';}
 
-async function hydrateAgentStatus(){try{const response=await fetch('/api/v1/development-agent/status',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('status unavailable');const payload=await response.json();renderAgentStatus(payload.agent);}catch{renderAgentStatus({status:'blocked',message:'Статус недоступен',needsAction:true});}}
+async function hydrateAgentStatus(){try{const response=await fetch('/api/v1/development-agent/status',{headers:apiHeaders()});if(!response.ok)throw new Error('status unavailable');const payload=await response.json();renderAgentStatus(payload.agent);}catch{renderAgentStatus({status:'blocked',message:'Статус недоступен',needsAction:true});}}
 
-async function requestDevelopmentContinuation(){const button=$('#requestContinueButton');button.disabled=true;try{const response=await fetch('/api/v1/development-agent/continue',{method:'POST',headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('request failed');const payload=await response.json();renderAgentStatus(payload.agent);toast('Запрос на продолжение зарегистрирован');}catch{toast('Не удалось зарегистрировать запрос');}finally{button.disabled=false;}}
+async function requestDevelopmentContinuation(){const button=$('#requestContinueButton');button.disabled=true;try{const response=await fetch('/api/v1/development-agent/continue',{method:'POST',headers:apiHeaders()});if(!response.ok)throw new Error('request failed');const payload=await response.json();renderAgentStatus(payload.agent);toast('Запрос на продолжение зарегистрирован');}catch{toast('Не удалось зарегистрировать запрос');}finally{button.disabled=false;}}
 
 function renderWorkflowConfiguration(){const container=$('#workflowAdminList');if(!container)return;container.innerHTML=workflowConfiguration.map(type=>`<article style="--workflow-color:${escapeHtml(type.color)}"><div><i></i><div><strong>${escapeHtml(type.name)}</strong><small>${escapeHtml(type.code)} · ${type.actions.length} этапов</small></div></div><div class="workflow-action-chips">${type.actions.filter(value=>value.active).map(value=>`<span>${escapeHtml(value.name)}</span>`).join('')}</div><button class="text-button" type="button" data-edit-work-type="${type.id}">Редактировать</button></article>`).join('')||'<p class="empty-copy">Виды работ не настроены.</p>';container.querySelectorAll('[data-edit-work-type]').forEach(button=>button.addEventListener('click',()=>openWorkTypeDialog(workflowConfiguration.find(value=>value.id===button.dataset.editWorkType))));}
 
-async function hydrateWorkflowConfiguration(){try{const response=await fetch('/api/v1/admin/work-types',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('workflow unavailable');const payload=await response.json();workflowConfiguration=payload.workTypes||[];renderWorkflowConfiguration();}catch{const container=$('#workflowAdminList');if(container)container.innerHTML='<p class="empty-copy">Настройки workflow временно недоступны.</p>';}}
+async function hydrateWorkflowConfiguration(){try{const response=await fetch('/api/v1/admin/work-types',{headers:apiHeaders()});if(!response.ok)throw new Error('workflow unavailable');const payload=await response.json();workflowConfiguration=payload.workTypes||[];renderWorkflowConfiguration();}catch{const container=$('#workflowAdminList');if(container)container.innerHTML='<p class="empty-copy">Настройки workflow временно недоступны.</p>';}}
 
 function openWorkTypeDialog(type=null){$('#workTypeForm').reset();$('#workTypeConfigId').value=type?.id||'';$('#workTypeConfigVersion').value=type?.version||'';$('#workTypeDialogTitle').textContent=type?'Редактировать вид работ':'Новый вид работ';$('#workTypeConfigCode').value=type?.code||'';$('#workTypeConfigName').value=type?.name||'';$('#workTypeConfigColor').value=type?.color||'#7c8cff';$('#workTypeConfigActions').value=(type?.actions||[]).filter(value=>value.active).map(value=>`${value.code} | ${value.name}`).join('\n');$('#workTypeDialog').showModal();}
 
@@ -417,7 +417,7 @@ async function submitWorkType(event){event.preventDefault();if(!event.currentTar
 
 function renderCustomFieldAdmin(){const container=$('#customFieldAdminList');if(!container)return;container.innerHTML=customFieldDefinitions.map(field=>`<article><div><i style="background:${field.scope==='unit'?'#7c8cff':'#42d697'}"></i><div><strong>${escapeHtml(field.label)}</strong><small>${escapeHtml(field.scope)} · ${escapeHtml(field.code)} · ${escapeHtml(field.dataType)}</small></div></div><div class="workflow-action-chips"><span>${field.required?'Обязательно':'Необязательно'}</span><span>${field.active?'Активно':'Отключено'}</span></div><button class="text-button" type="button" data-edit-custom-field="${field.id}">Редактировать</button></article>`).join('')||'<p class="empty-copy">Дополнительные поля не настроены.</p>';container.querySelectorAll('[data-edit-custom-field]').forEach(button=>button.addEventListener('click',()=>openCustomFieldDialog(customFieldDefinitions.find(value=>value.id===button.dataset.editCustomField))));}
 
-async function hydrateCustomFieldDefinitions(){try{const response=await fetch('/api/v1/admin/custom-fields',{headers:{'X-Organization-ID':ORGANIZATION_ID}});if(!response.ok)throw new Error('custom fields unavailable');const payload=await response.json();customFieldDefinitions=payload.customFields||[];renderCustomFieldAdmin();}catch{const container=$('#customFieldAdminList');if(container)container.innerHTML='<p class="empty-copy">Настройки полей временно недоступны.</p>';}}
+async function hydrateCustomFieldDefinitions(){try{const response=await fetch('/api/v1/admin/custom-fields',{headers:apiHeaders()});if(!response.ok)throw new Error('custom fields unavailable');const payload=await response.json();customFieldDefinitions=payload.customFields||[];renderCustomFieldAdmin();}catch{const container=$('#customFieldAdminList');if(container)container.innerHTML='<p class="empty-copy">Настройки полей временно недоступны.</p>';}}
 
 function openCustomFieldDialog(field=null){$('#customFieldForm').reset();$('#customFieldId').value=field?.id||'';$('#customFieldVersion').value=field?.version||'';$('#customFieldDialogTitle').textContent=field?'Редактировать поле':'Новое поле';$('#customFieldScope').value=field?.scope||'unit';$('#customFieldType').value=field?.dataType||'text';$('#customFieldCode').value=field?.code||'';$('#customFieldLabel').value=field?.label||'';$('#customFieldOptions').value=(field?.options||[]).join(', ');$('#customFieldRequired').checked=Boolean(field?.required);$('#customFieldActive').checked=field?.active??true;$('#customFieldDialog').showModal();}
 
@@ -578,7 +578,7 @@ async function submitUnit(event){event.preventDefault();if(!event.currentTarget.
 
 function openAudioZone(project,locationValue){editingAudioLocation={project,location:locationValue}; const audio=locationValue.audioDetails||{}; $('#audioZoneType').value=audio.zoneType||'common_area'; $('#audioSpeakerCount').value=audio.speakerCount??''; $('#audioDisplayCount').value=audio.displayCount??''; $('#audioSourceDescription').value=audio.sourceDescription||''; $('#audioEquipmentNotes').value=audio.equipmentNotes||''; $('#audioZoneDialog').showModal();}
 
-async function openJobberReport(project){const date=new Date().toISOString().slice(0,10); const response=await fetch(`/api/v1/projects/${encodeURIComponent(project.id)}/daily-report?date=${date}`,{headers:{'X-Organization-ID':ORGANIZATION_ID}}); const report=await response.json(); $('#jobberReportDate').value=date; $('#jobberReportText').value=report.text; $('#jobberReportDialog').showModal();}
+async function openJobberReport(project){const date=new Date().toISOString().slice(0,10); const response=await fetch(`/api/v1/projects/${encodeURIComponent(project.id)}/daily-report?date=${date}`,{headers:apiHeaders()}); const report=await response.json(); $('#jobberReportDate').value=date; $('#jobberReportText').value=report.text; $('#jobberReportDialog').showModal();}
 
 function openLocationDialog(project) {
   $('#locationForm').reset(); $('#locationProjectId').value = project.id;

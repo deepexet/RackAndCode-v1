@@ -448,8 +448,8 @@
       "parentId": "FS-002", "dependsOn": ["FS-013", "FS-017", "FS-025"], "priorityReason": "Текущие кнопки работают только с Kanban и создают неверное ожидание полного backup/export.", "unblocks": ["FS-043"]
     },
     {
-      "id": "FS-073", "title": "Role-aware UI и матрица доступа", "description": "Применить Technician, Supervisor, PM и Administrator policies ко всем страницам, действиям, логам, статистике и AI preview. Первый инкремент: централизованная UI policy matrix, role preview switcher, route/action visibility.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Скрытие кнопок без server-side authorization не является защитой; server-side RBAC остается отдельным обязательным инкрементом.",
+      "id": "FS-073", "title": "Role-aware UI и матрица доступа", "description": "Применить Technician, Supervisor, PM и Administrator policies ко всем страницам, действиям, логам, статистике и AI preview. Готовый инкремент: централизованная UI policy matrix, role preview switcher, route/action visibility, dev-role API header и server-side route permission checks.",
+      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Dev-role header является foundation для MVP-проверки; production enforcement требует real identity, memberships, signed sessions и server-side policy storage.",
       "parentId": "FS-017", "dependsOn": ["FS-016", "FS-017"], "priorityReason": "Разграничение доступа должно учитываться в каждом следующем модуле.", "unblocks": ["FS-029", "FS-032", "FS-068", "FS-071"]
     },
     {
@@ -511,6 +511,11 @@
       "id": "FS-086", "title": "Development task dependency graph", "description": "Добавить вкладку Graph рядом с Kanban, где задачи показаны как цветные вершины по статусам, а связи отображают parent, dependsOn и unblocks.",
       "type": "Feature", "status": "testing", "priority": "high", "area": "foundation", "risk": "Граф должен работать без тяжелых зависимостей и использовать те же фильтры, что Kanban.",
       "dependsOn": ["FS-002", "FS-073"], "priorityReason": "Граф связей ускоряет понимание roadmap и зависимостей по аналогии с Obsidian.", "unblocks": ["FS-033", "FS-043"]
+    },
+    {
+      "id": "FS-087", "title": "Production identity, memberships и signed sessions", "description": "Заменить development-only role header на настоящую identity модель: пользователи, memberships, роли, signed sessions, logout, session expiry и server-side policy evaluation.",
+      "type": "Feature", "status": "backlog", "priority": "critical", "area": "security", "risk": "Без настоящей identity/session модели multi-company доступ нельзя считать безопасным или коммерчески готовым.",
+      "parentId": "FS-017", "dependsOn": ["FS-016", "FS-017", "FS-073", "FS-082"], "priorityReason": "Route-level RBAC foundation готов, но коммерческий multi-tenant режим требует реальной авторизации.", "unblocks": ["FS-032", "FS-043", "FS-068", "FS-071"]
     }
   ]
 }

@@ -13,6 +13,7 @@ import os
 import re
 import signal
 import socket
+import socketserver
 import sqlite3
 import secrets
 import threading
@@ -40,6 +41,12 @@ ALLOWED_PRIORITIES = {"critical", "high", "medium", "low"}
 ALLOWED_PROJECT_STATUSES = {"planned", "active", "on_hold", "completed", "cancelled"}
 ALLOWED_BUILDING_STATUSES = {"planned", "active", "on_hold", "completed"}
 DEFAULT_ORGANIZATION_ID = "local-dev"
+ROLE_POLICIES = {
+    "Technician": {"projectRead", "fieldProgress"},
+    "Supervisor": {"projectRead", "fieldProgress", "projectManage", "logsRead"},
+    "ProjectManager": {"projectRead", "fieldProgress", "projectManage", "logsRead", "developmentWorkspace"},
+    "Administrator": {"projectRead", "fieldProgress", "projectManage", "logsRead", "apiMonitor", "adminPanel", "developmentWorkspace"},
+}
 TASK_PROGRESS = {"ideas": 0, "backlog": 0, "ready": 10, "progress": 50, "blocked": 25, "review": 75, "testing": 90, "done": 100}
 UNIT_PROGRESS = {"not_started": 0, "ongoing": 50, "blocked": 25, "complete": 100}
 WORK_ITEM_TRANSITIONS = {
@@ -78,6 +85,14 @@ DEFAULT_WORK_ACTIONS = (
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 LOGGER = logging.getLogger("fieldos")
+
+
+def normalize_role(value: str | None) -> str:
+    return value if value in ROLE_POLICIES else "Administrator"
+
+
+def role_can(role: str, permission: str) -> bool:
+    return permission in ROLE_POLICIES.get(normalize_role(role), ROLE_POLICIES["Administrator"])
 
 
 def utc_now() -> str:
@@ -1363,7 +1378,7 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 class FieldOSHandler(BaseHTTPRequestHandler):
-    server_version = "RackPilot/0.31"
+    server_version = "RackPilot/0.32"
 
     @property
     def store(self) -> WorkspaceStore:
@@ -1379,13 +1394,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"organizations": self.store.list_organizations()})
             return
         if path == "/api/v1/audit/integrity":
-            if not self._require_organization():
+            if not self._require_permission("logsRead"):
                 return
             project_id = parse_qs(urlparse(self.path).query).get("projectId", [None])[0]
             self._json(HTTPStatus.OK, self.store.verify_audit_integrity(self.organization_id, project_id))
             return
         if path == "/api/v1/logs":
-            if not self._require_organization(): return
+            if not self._require_permission("logsRead"): return
             query=parse_qs(urlparse(self.path).query)
             self._json(HTTPStatus.OK,self.store.list_logs(self.organization_id,{
                 "source":query.get("source",["all"])[0],
@@ -1396,27 +1411,27 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             }))
             return
         if path == "/api/v1/admin/compute-nodes":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"nodes":self.store.list_compute_nodes(self.organization_id)})
             return
         if path == "/api/v1/admin/git-sync":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.get_git_sync_settings(self.organization_id)})
             return
         if path == "/api/v1/admin/api-metrics":
-            if not self._require_organization(): return
+            if not self._require_permission("apiMonitor"): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"access":"administrator","metrics":self.server.api_metrics.snapshot()})  # type: ignore[attr-defined]
             return
         if path == "/api/v1/admin/platform-settings":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.get_platform_settings(self.organization_id)})
             return
         if path == "/api/v1/admin/work-types":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"workTypes":self.store.list_workflow_configuration(self.organization_id)})
             return
         if path == "/api/v1/admin/custom-fields":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"customFields":self.store.list_custom_field_definitions(self.organization_id)})
             return
         if path == "/api/v1/development-agent/status":
@@ -1424,12 +1439,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"agent":self.store.get_development_agent_status(self.organization_id)})
             return
         if path == "/api/v1/projects":
-            if not self._require_organization():
+            if not self._require_permission("projectRead"):
                 return
             self._json(HTTPStatus.OK, {"organizationId": self.organization_id, "projects": self.store.list_projects(self.organization_id)})
             return
         if path.startswith("/api/v1/projects/"):
-            if not self._require_organization():
+            if not self._require_permission("projectRead"):
                 return
             parts = path.strip("/").split("/")
             if len(parts) == 4:
@@ -1447,7 +1462,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.NOT_FOUND, "project_not_found", str(error))
                 return
         if path in {"/api/workspace", "/api/v1/workspace"}:
-            if not self._require_organization():
+            if not self._require_permission("developmentWorkspace"):
                 return
             self._json(HTTPStatus.OK, self.store.get(self.organization_id))
             return
@@ -1461,7 +1476,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if urlparse(self.path).path not in {"/api/workspace", "/api/v1/workspace"}:
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found")
             return
-        if not self._require_organization():
+        if not self._require_permission("developmentWorkspace"):
             return
         try:
             payload = self._read_json()
@@ -1493,7 +1508,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         parts = path.strip("/").split("/")
         if path=="/api/v1/admin/work-types":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             try:
                 payload=self._read_json()
                 if not isinstance(payload,dict): raise ValueError("JSON object expected")
@@ -1501,7 +1516,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
             return
         if path=="/api/v1/admin/custom-fields":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             try:
                 payload=self._read_json()
                 if not isinstance(payload,dict): raise ValueError("JSON object expected")
@@ -1509,7 +1524,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
             return
         if path=="/api/v1/admin/git-sync":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             try:
                 payload=self._read_json()
                 if not isinstance(payload,dict): raise ValueError("JSON object expected")
@@ -1517,7 +1532,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
             return
         if path=="/api/v1/admin/platform-settings":
-            if not self._require_organization(): return
+            if not self._require_permission("adminPanel"): return
             try:
                 payload=self._read_json()
                 if not isinstance(payload,dict): raise ValueError("JSON object expected")
@@ -1555,7 +1570,16 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path != "/api/v1/projects" and not path.startswith("/api/v1/projects/"):
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found")
             return
-        if not self._require_organization():
+        if path == "/api/v1/projects":
+            if not self._require_permission("projectManage"):
+                return
+        elif path.startswith("/api/v1/projects/"):
+            permission = "fieldProgress" if (len(parts) == 5 and parts[4] == "daily-updates") else "projectManage"
+            if len(parts)==7 and parts[4]=="locations" and parts[6]=="units":
+                permission = "projectManage"
+            if not self._require_permission(permission):
+                return
+        elif not self._require_organization():
             return
         try:
             payload = self._read_json()
@@ -1623,8 +1647,15 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if not regular_route and not unit_route and not unit_detail_route and not admin_node_route and not workflow_route and not custom_field_route:
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found")
             return
-        if not self._require_organization():
-            return
+        if admin_node_route or workflow_route or custom_field_route:
+            if not self._require_permission("adminPanel"):
+                return
+        elif unit_route or (regular_route and parts[4] == "daily-updates"):
+            if not self._require_permission("fieldProgress"):
+                return
+        else:
+            if not self._require_permission("projectManage"):
+                return
         try:
             payload = self._read_json()
             if not isinstance(payload, dict):
@@ -1693,10 +1724,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self.request_id = candidate if 0 < len(candidate) <= 64 and all(character.isalnum() or character in "-_." for character in candidate) else str(uuid.uuid4())
         organization = self.headers.get("X-Organization-ID", DEFAULT_ORGANIZATION_ID)
         self.organization_id = organization if 0 < len(organization) <= 64 and all(character.isalnum() or character in "-_" for character in organization) else ""
+        self.current_role = normalize_role(self.headers.get("X-RackPilot-Role"))
 
     def _require_organization(self) -> bool:
         if not self.organization_id or not self.store.organization_exists(self.organization_id):
             self._error(HTTPStatus.NOT_FOUND, "organization_not_found", "Organization does not exist or is inactive")
+            return False
+        return True
+
+    def _require_permission(self, permission: str) -> bool:
+        if not self._require_organization():
+            return False
+        if not role_can(getattr(self, "current_role", "Administrator"), permission):
+            self._error(HTTPStatus.FORBIDDEN, "forbidden", f"Role {self.current_role} cannot perform {permission}", {"role": self.current_role, "permission": permission})
             return False
         return True
 
@@ -1767,6 +1807,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self.send_header("X-API-Version", "1")
         self.send_header("X-Request-ID", getattr(self, "request_id", "static"))
         self.send_header("X-Organization-ID", getattr(self, "organization_id", DEFAULT_ORGANIZATION_ID))
+        self.send_header("X-RackPilot-Role", getattr(self, "current_role", "Administrator"))
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -1776,6 +1817,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
 class FieldOSServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
 
     def __init__(self, address: tuple[str, int], store: WorkspaceStore, agent_token: str):
         super().__init__(address, FieldOSHandler)

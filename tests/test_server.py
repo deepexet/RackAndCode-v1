@@ -1,9 +1,12 @@
 import tempfile
 import unittest
+import http.client
+import json
+import threading
 import sqlite3
 from pathlib import Path
 
-from server.app import ApiMetricsRecorder, DEFAULT_ORGANIZATION_ID, DependenciesIncomplete, EntityVersionConflict, InvalidTransition, RevisionConflict, WorkspaceStore, discover_lan_ip, validate_workspace
+from server.app import ApiMetricsRecorder, DEFAULT_ORGANIZATION_ID, DependenciesIncomplete, EntityVersionConflict, FieldOSServer, InvalidTransition, RevisionConflict, WorkspaceStore, discover_lan_ip, role_can, validate_workspace
 from server.migrations import MigrationChecksumError, MigrationRunner
 
 
@@ -27,6 +30,27 @@ class WorkspaceStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def http_request(self, method, path, *, role="Administrator", payload=None):
+        server = FieldOSServer(("127.0.0.1", 0), self.store, "test-agent-token")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            body = json.dumps(payload).encode("utf-8") if payload is not None else None
+            headers = {"X-Organization-ID": DEFAULT_ORGANIZATION_ID, "X-RackPilot-Role": role}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+                headers["Idempotency-Key"] = f"test-{method}-{path}-{role}"
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            data = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            return response.status, response.getheaders(), data
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_uninitialized_workspace(self):
         state = self.store.get()
         self.assertFalse(state["initialized"])
@@ -34,7 +58,47 @@ class WorkspaceStoreTests(unittest.TestCase):
 
     def test_public_health_contract_uses_rackpilot_service_name(self):
         from server.app import FieldOSHandler
-        self.assertEqual(FieldOSHandler.server_version, "RackPilot/0.31")
+        self.assertEqual(FieldOSHandler.server_version, "RackPilot/0.32")
+
+    def test_role_policy_matrix_matches_expected_permissions(self):
+        self.assertTrue(role_can("Administrator", "adminPanel"))
+        self.assertTrue(role_can("ProjectManager", "developmentWorkspace"))
+        self.assertTrue(role_can("Supervisor", "logsRead"))
+        self.assertTrue(role_can("Technician", "fieldProgress"))
+        self.assertFalse(role_can("Technician", "projectManage"))
+        self.assertFalse(role_can("Supervisor", "adminPanel"))
+
+    def test_server_rbac_blocks_admin_api_for_non_admin_roles(self):
+        status, headers, body = self.http_request("GET", "/api/v1/admin/api-metrics", role="Technician")
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"]["code"], "forbidden")
+        self.assertEqual(dict(headers)["X-RackPilot-Role"], "Technician")
+
+        status, _headers, body = self.http_request("GET", "/api/v1/admin/api-metrics", role="Administrator")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["access"], "administrator")
+
+    def test_server_rbac_allows_logs_for_supervisor_but_not_technician(self):
+        status, _headers, body = self.http_request("GET", "/api/v1/logs", role="Technician")
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"]["details"]["permission"], "logsRead")
+
+        status, _headers, body = self.http_request("GET", "/api/v1/logs", role="Supervisor")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["organizationId"], DEFAULT_ORGANIZATION_ID)
+
+    def test_server_rbac_allows_technician_daily_progress_not_project_creation(self):
+        project = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "RBAC-1", "name": "RBAC Test"})
+        location = self.store.create_location(DEFAULT_ORGANIZATION_ID, project["id"], {"code": "L1", "name": "Level 1", "kind": "floor"})
+        payload = {"locationId": location["id"], "workTypeId": "data", "actionId": "data-prewire", "status": "ongoing", "percentComplete": 50}
+
+        status, _headers, body = self.http_request("POST", f"/api/v1/projects/{project['id']}/daily-updates", role="Technician", payload=payload)
+        self.assertEqual(status, 201)
+        self.assertEqual(body["dailyUpdate"]["status"], "ongoing")
+
+        status, _headers, body = self.http_request("POST", "/api/v1/projects", role="Technician", payload={"code": "NOPE", "name": "Blocked"})
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"]["details"]["permission"], "projectManage")
 
     def test_save_and_read_workspace(self):
         result = self.store.save([TASK], [], 0)

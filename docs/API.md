@@ -4,6 +4,8 @@ Base URL: `http://127.0.0.1:4173` или LAN-адрес, показанный п
 
 Workspace requests используют явный tenant context в заголовке `X-Organization-ID`. Локальный клиент работает в организации `local-dev`. Неизвестная или inactive организация получает `404 organization_not_found` до чтения или изменения workspace.
 
+Локальный MVP также поддерживает development-only заголовок `X-RackPilot-Role` со значениями `Technician`, `Supervisor`, `ProjectManager`, `Administrator`. Он нужен для проверки route-level RBAC во время разработки. Это не production authentication: клиентский заголовок должен быть заменен signed session + persisted memberships перед коммерческим multi-company режимом.
+
 ## GET /api/v1/organizations
 
 Возвращает организации локального foundation runtime. После реализации authentication этот endpoint будет фильтроваться memberships текущего пользователя.
@@ -46,4 +48,4 @@ Legacy paths без `/v1` временно остаются compatibility aliase
 
 ## Security boundary
 
-Штатный `serve.sh` слушает все локальные интерфейсы для доступа с устройств в доверенной LAN; прямой запуск Python-модуля остается loopback-only. Authentication и tenant authorization еще не реализованы, поэтому публикация порта в интернет запрещена. Loopback-only режим запускается через `HOST=127.0.0.1 ./scripts/serve.sh`.
+Штатный `serve.sh` слушает все локальные интерфейсы для доступа с устройств в доверенной LAN; прямой запуск Python-модуля остается loopback-only. Production authentication еще не реализован, поэтому публикация порта в интернет запрещена. Текущий route-level RBAC защищает MVP-потоки от случайных действий при выбранной роли, но не заменяет настоящую identity/session модель. Loopback-only режим запускается через `HOST=127.0.0.1 ./scripts/serve.sh`.

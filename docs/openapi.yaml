@@ -452,6 +452,14 @@ components:
         type: string
         minLength: 1
         maxLength: 64
+    RackPilotRole:
+      name: X-RackPilot-Role
+      in: header
+      required: false
+      description: Development-only role preview header for MVP route-level RBAC. Not production authentication.
+      schema:
+        type: string
+        enum: [Technician, Supervisor, ProjectManager, Administrator]
     ProjectId:
       name: projectId
       in: path

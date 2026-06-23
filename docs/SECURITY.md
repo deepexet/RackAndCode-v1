@@ -16,6 +16,10 @@
 - Rate limiting, abuse detection и защищенный webhook verification.
 - Privacy controls для device/application monitoring: purpose, consent, retention, minimization.
 
+## MVP RBAC boundary
+
+`X-RackPilot-Role` is a development-only role preview header used by the local MVP to test route-level policies. It must not be treated as production authentication. Commercial or multi-company deployment requires signed sessions, real users, organization memberships, persisted role assignments and server-side policy evaluation independent of client-controlled headers.
+
 ## AI threat model
 
 - Документы и внешние данные считаются недоверенным вводом.
@@ -28,4 +32,3 @@
 ## Security incident priorities
 
 P0: active tenant isolation breach, credential compromise, destructive unauthorized access. Первые действия: contain, preserve evidence, rotate/revoke, assess scope, communicate по incident plan.
-

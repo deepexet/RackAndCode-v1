@@ -7,7 +7,7 @@
     "component": {
       "type": "application",
       "name": "rackpilot-development-workspace",
-      "version": "0.31.0",
+      "version": "0.32.0",
       "properties": [
         { "name": "rackpilot.runtime", "value": "Python standard library + browser ES modules" },
         { "name": "rackpilot.externalDependencies", "value": "none" }
