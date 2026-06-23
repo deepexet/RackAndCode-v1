@@ -890,42 +890,53 @@ function renderTaskGraph() {
     nodeEdges.get(e.to)?.push(i);
   });
 
-  // Initial circular layout
-  const CX = 500, CY = 380;
-  const R0 = Math.max(160, Math.min(360, tasks.length * 13));
+  // Initial layout — spiral so nodes start spread out, not clumped
+  const CX = 900, CY = 680;
+  const MIN_DIST = 90;          // hard collision radius
+  const SPRING_LEN = 200;       // rest length of edge springs
+  const REPULSION = 22000;      // node-node repulsion constant
   const nodes = tasks.map((task, i) => {
-    const angle = (2 * Math.PI * i) / tasks.length - Math.PI / 2;
-    return { id: task.id, task, x: CX + Math.cos(angle) * R0, y: CY + Math.sin(angle) * R0, vx: 0, vy: 0 };
+    // Golden-angle spiral gives even distribution without crowding
+    const angle = i * 2.399963; // golden angle ≈ 137.5°
+    const r = 55 * Math.sqrt(i + 1);
+    return { id: task.id, task, x: CX + Math.cos(angle) * r, y: CY + Math.sin(angle) * r, vx: 0, vy: 0 };
   });
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
 
-  // Force simulation — fewer iterations, heavier alpha decay
-  for (let iter = 0; iter < 200; iter++) {
-    const alpha = Math.pow(1 - iter / 200, 2);
+  // Force simulation
+  for (let iter = 0; iter < 220; iter++) {
+    const alpha = Math.pow(1 - iter / 220, 1.6); // slower cool-down
+    // Repulsion + collision
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i], b = nodes[j];
         const dx = b.x - a.x, dy = b.y - a.y;
-        const d2 = dx * dx + dy * dy || 1;
+        const d2 = dx * dx + dy * dy || 0.01;
         const dist = Math.sqrt(d2);
-        const force = (5500 / d2) * alpha;
-        const fx = (dx / dist) * force, fy = (dy / dist) * force;
+        // Normal repulsion
+        const rep = (REPULSION / d2) * alpha;
+        // Extra hard push when nodes overlap
+        const col = dist < MIN_DIST ? (MIN_DIST - dist) * 3.5 : 0;
+        const f = rep + col;
+        const fx = (dx / dist) * f, fy = (dy / dist) * f;
         a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
       }
     }
+    // Spring attraction along edges — weaker than repulsion
     edges.forEach(e => {
       const a = nodeMap.get(e.from), b = nodeMap.get(e.to);
       if (!a || !b) return;
       const dx = b.x - a.x, dy = b.y - a.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const force = (dist - 120) * 0.05 * alpha;
-      const fx = (dx / dist) * force, fy = (dy / dist) * force;
+      const f = (dist - SPRING_LEN) * 0.03 * alpha;
+      const fx = (dx / dist) * f, fy = (dy / dist) * f;
       a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
     });
+    // Weak center gravity
     nodes.forEach(n => {
-      n.vx += (CX - n.x) * 0.006 * alpha;
-      n.vy += (CY - n.y) * 0.006 * alpha;
-      n.vx *= 0.78; n.vy *= 0.78;
+      n.vx += (CX - n.x) * 0.003 * alpha;
+      n.vy += (CY - n.y) * 0.003 * alpha;
+      n.vx *= 0.76; n.vy *= 0.76;
       n.x += n.vx; n.y += n.vy;
     });
   }
