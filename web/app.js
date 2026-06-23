@@ -4,12 +4,20 @@ const STORAGE_KEY = 'rackpilot.workspace.v1';
 const LEGACY_STORAGE_KEYS = ['fieldos.workspace.v1'];
 const UNIT_OUTBOX_KEY = 'rackpilot.unit-outbox.v1';
 const LEGACY_UNIT_OUTBOX_KEYS = ['fieldos.unit-outbox.v1'];
+const ROLE_KEY = 'rackpilot.role-preview.v1';
 const ORGANIZATION_ID = 'local-dev';
 const state = loadState();
 const $ = selector => document.querySelector(selector);
+const ROLE_POLICIES = {
+  Technician: { label: 'Technician', routes: ['overview', 'projects'], permissions: ['projectRead', 'fieldProgress'] },
+  Supervisor: { label: 'Supervisor', routes: ['overview', 'projects', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead'] },
+  ProjectManager: { label: 'Project Manager', routes: ['overview', 'projects', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead', 'developmentWorkspace'] },
+  Administrator: { label: 'Administrator', routes: ['overview', 'projects', 'logs', 'api', 'admin'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead', 'apiMonitor', 'adminPanel', 'developmentWorkspace'] },
+};
 let syncTimer;
 let syncInFlight = false;
 let localChangeVersion = 0;
+let currentRole = loadRole();
 let projects = [];
 let computeNodes = [];
 let gitSyncSettings = null;
@@ -44,6 +52,40 @@ function loadState() {
     }
   }
   return { version: 1, revision: 0, pendingSync: false, tasks: structuredClone(INITIAL_TASKS), audit: [{ at: new Date().toISOString(), text: 'Workspace инициализирован' }], dirtyTaskIds: [], deletedTaskIds: [], auditDirty: false, fullReplace: false };
+}
+
+function loadRole() {
+  const saved = localStorage.getItem(ROLE_KEY);
+  return ROLE_POLICIES[saved] ? saved : 'Administrator';
+}
+
+function rolePolicy() { return ROLE_POLICIES[currentRole] || ROLE_POLICIES.Administrator; }
+function roleCan(permission) { return rolePolicy().permissions.includes(permission); }
+function routeAllowed(route) { return rolePolicy().routes.includes(route); }
+
+function applyRolePolicy() {
+  document.body.dataset.role = currentRole;
+  const switcher = $('#roleSwitcher');
+  if (switcher) switcher.value = currentRole;
+  document.querySelectorAll('[data-route-link]').forEach(link => {
+    const allowed = routeAllowed(link.dataset.routeLink);
+    link.classList.toggle('role-hidden', !allowed);
+    link.setAttribute('aria-disabled', allowed ? 'false' : 'true');
+  });
+  document.querySelectorAll('[data-permission]').forEach(element => {
+    const allowed = roleCan(element.dataset.permission);
+    element.classList.toggle('role-hidden', !allowed);
+    if ('disabled' in element) element.disabled = !allowed;
+  });
+}
+
+function setCurrentRole(role) {
+  if (!ROLE_POLICIES[role]) return;
+  currentRole = role;
+  localStorage.setItem(ROLE_KEY, currentRole);
+  applyRolePolicy();
+  renderRoute();
+  toast(`Role preview: ${ROLE_POLICIES[currentRole].label}`);
 }
 
 function persist(message, mutation = {}) {
@@ -287,8 +329,16 @@ function renderRoute() {
   const routeParts = requested.split('/');
   selectedProjectId = routeParts[0] === 'project' && routeParts[1] ? decodeURIComponent(routeParts[1]) : null;
   selectedLocationId = routeParts[2] === 'location' && routeParts[3] ? decodeURIComponent(routeParts[3]) : null;
-  const route = selectedProjectId ? 'projects' : (['overview', 'projects', 'logs', 'api', 'admin'].includes(requested) ? requested : 'overview');
+  let route = selectedProjectId ? 'projects' : (['overview', 'projects', 'logs', 'api', 'admin'].includes(requested) ? requested : 'overview');
+  if (!routeAllowed(route)) {
+    route = 'overview';
+    selectedProjectId = null;
+    selectedLocationId = null;
+    if (location.hash !== '#overview') history.replaceState(null, '', '#overview');
+    toast(`Role ${ROLE_POLICIES[currentRole].label} cannot access that section yet`);
+  }
   document.body.dataset.route = route;
+  applyRolePolicy();
   document.querySelectorAll('[data-view]').forEach(view => view.classList.toggle('active', view.dataset.view === route));
   document.querySelectorAll('[data-route-link]').forEach(link => {
     const active = link.dataset.routeLink === route;
@@ -414,7 +464,7 @@ function renderProjects(unavailable = false) {
       </div>
       <ol class="project-stages">${stages}</ol>
       <button class="button project-open" type="button" data-open-project="${project.id}">Открыть проект →</button>
-      ${project.kind === 'customer' ? `<footer class="project-actions"><button class="button ghost" type="button" data-add-building="${project.id}">＋ Здание</button><button class="button ghost" type="button" data-add-work-item="${project.id}">＋ Полевая задача</button></footer>` : '<footer class="project-boundary">Внутренний проект · полевые операции отключены</footer>'}
+      ${project.kind === 'customer' ? `<footer class="project-actions"><button class="button ghost" type="button" data-permission="projectManage" data-add-building="${project.id}">＋ Здание</button><button class="button ghost" type="button" data-permission="projectManage" data-add-work-item="${project.id}">＋ Полевая задача</button></footer>` : '<footer class="project-boundary">Внутренний проект · полевые операции отключены</footer>'}
       ${workItems.length ? `<div class="work-items-preview"><div class="preview-title"><span>FIELD WORKFLOW</span><b>${workItems.length}</b></div>${workItems.slice(-5).reverse().map(item => {
         const blockedBy = item.blockedBy || [];
         const allowed = [item.status, ...(WORK_ITEM_TRANSITIONS[item.status] || [])].filter(status => !blockedBy.length || !['progress','review','testing','done'].includes(status));
@@ -727,6 +777,7 @@ function renderRoadmap() {
       <div class="progress"><i style="width:${progress}%"></i></div><b>${progress}%</b>
     </article>`;
   }).join('');
+  applyRolePolicy();
 }
 
 function renderBoard() {
@@ -953,6 +1004,7 @@ async function setup() {
   $('#taskArea').innerHTML = AREAS.map(a => `<option value="${a.id}">${a.label}</option>`).join('');
   $('#areaFilter').innerHTML += AREAS.map(a => `<option value="${a.id}">${a.label}</option>`).join('');
   $('#workItemStatus').innerHTML = STATUSES.map(s => `<option value="${s.id}">${s.label}</option>`).join('');
+  $('#roleSwitcher').addEventListener('change', event => setCurrentRole(event.target.value));
   $('#addTaskButton').addEventListener('click', () => openDialog());
   $('#requestContinueButton').addEventListener('click',requestDevelopmentContinuation);
   $('#taskForm').addEventListener('submit', saveTask);
@@ -987,6 +1039,7 @@ async function setup() {
   window.addEventListener('online', () => { syncToServer(); flushUnitOutbox(); });
   window.addEventListener('offline', () => setSyncState('offline'));
   window.addEventListener('hashchange', renderRoute);
+  applyRolePolicy();
   renderRoute();
   render();
   await Promise.all([hydrateFromServer(), hydrateProjects(),hydrateCustomFieldDefinitions(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateAgentStatus()]);

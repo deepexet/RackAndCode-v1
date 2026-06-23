@@ -21,7 +21,8 @@ When these disagree, stop and reconcile them explicitly. Do not silently make do
 - Offline browser outbox for field progress.
 - Optional macOS telemetry agent; compute participation is opt-in and currently postponed.
 - In-memory API telemetry for the local Administrator monitoring route.
-- Current product version: `0.30.0`; current database schema: `024`.
+- UI role preview with centralized route/action policy; not a security boundary.
+- Current product version: `0.31.0`; current database schema: `024`.
 
 ## Non-negotiable invariants
 
@@ -51,11 +52,10 @@ Before changing behavior, read the relevant TRD section, architecture section an
 
 ## Current delivery focus
 
-1. Role-aware authorization and UI (`FS-073`).
-2. Controlled cleanup of legacy FieldOS public mentions (`FS-083`).
-3. Project work-type selection and field planning (`FS-064`, `FS-066`).
-4. Employees, project presence and timeline analytics (`FS-067`, `FS-068`).
-5. English-first localization with Russian profile option (`FS-069`).
+1. Server-side role-aware authorization (`FS-073` follow-up).
+2. Project work-type selection and field planning (`FS-064`, `FS-066`).
+3. Employees, project presence and timeline analytics (`FS-067`, `FS-068`).
+4. English-first localization with Russian profile option (`FS-069`).
 
 Native applications and distributed compute remain lower priority until the web MVP and its domain contracts stabilize.
 

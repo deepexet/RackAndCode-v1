@@ -34,7 +34,7 @@ class WorkspaceStoreTests(unittest.TestCase):
 
     def test_public_health_contract_uses_rackpilot_service_name(self):
         from server.app import FieldOSHandler
-        self.assertEqual(FieldOSHandler.server_version, "RackPilot/0.30")
+        self.assertEqual(FieldOSHandler.server_version, "RackPilot/0.31")
 
     def test_save_and_read_workspace(self):
         result = self.store.save([TASK], [], 0)

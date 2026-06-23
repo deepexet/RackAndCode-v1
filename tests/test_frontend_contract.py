@@ -51,6 +51,21 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("/api/v1/development-agent/continue",self.app)
         self.assertIn(".agent-indicator.working",self.css)
 
+    def test_role_preview_applies_page_and_action_policy(self):
+        self.assertIn('id="roleSwitcher"', self.html)
+        self.assertIn("const ROLE_POLICIES", self.app)
+        self.assertIn("routeAllowed(route)", self.app)
+        self.assertIn("function applyRolePolicy()", self.app)
+        self.assertIn("setCurrentRole", self.app)
+        self.assertIn("apiMonitor", self.app)
+        self.assertIn("adminPanel", self.app)
+        self.assertIn("developmentWorkspace", self.app)
+        self.assertIn('data-permission="developmentWorkspace"', self.html)
+        self.assertIn('data-permission="projectManage"', self.html)
+        self.assertIn('data-permission="projectManage"', self.app)
+        self.assertIn(".role-hidden", self.css)
+        self.assertIn(".role-switcher", self.css)
+
     def test_sync_uses_explicit_tenant_and_dirty_rebase(self):
         self.assertIn("'X-Organization-ID': ORGANIZATION_ID", self.app)
         self.assertIn("dirtyTaskIds", self.app)

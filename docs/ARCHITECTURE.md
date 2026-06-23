@@ -188,3 +188,9 @@ Admin Platform Settings are organization-scoped and persisted in `platform_setti
 API Monitoring is a separate route backed by `GET /api/v1/admin/api-metrics`. The local server records current-process API responses in memory: method, route, status code, latency, response size, request ID and organization ID. The UI summarizes request count, average latency, p95 latency, error count, status codes, top routes and recent API request events.
 
 This data is operational telemetry, not immutable audit. It resets with the process and is intentionally separate from `project_change_log`. Long-term metrics storage, retention and redaction should be added only after RBAC and telemetry privacy policies are enforced server-side. The route is framed as Administrator-only and depends on `FS-073` for actual authorization enforcement.
+
+## Role-aware UI foundation (v0.31)
+
+The browser client contains one centralized preview policy matrix for `Technician`, `Supervisor`, `ProjectManager` and `Administrator`. It controls visible navigation routes and visible action buttons through route checks and `data-permission` attributes. This keeps access assumptions explicit while the product is still being designed.
+
+This is not a security boundary. Server-side authorization must still validate organization membership, role, route/action permission, audit context and AI-proposed changes before `roleMode=enforced` can be considered real enforcement.

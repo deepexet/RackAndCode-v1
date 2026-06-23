@@ -448,8 +448,8 @@
       "parentId": "FS-002", "dependsOn": ["FS-013", "FS-017", "FS-025"], "priorityReason": "Текущие кнопки работают только с Kanban и создают неверное ожидание полного backup/export.", "unblocks": ["FS-043"]
     },
     {
-      "id": "FS-073", "title": "Role-aware UI и матрица доступа", "description": "Применить Technician, Supervisor, PM и Administrator policies ко всем страницам, действиям, логам, статистике и AI preview.",
-      "type": "Task", "status": "backlog", "priority": "critical", "area": "platform", "risk": "Скрытие кнопок без server-side authorization не является защитой.",
+      "id": "FS-073", "title": "Role-aware UI и матрица доступа", "description": "Применить Technician, Supervisor, PM и Administrator policies ко всем страницам, действиям, логам, статистике и AI preview. Первый инкремент: централизованная UI policy matrix, role preview switcher, route/action visibility.",
+      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Скрытие кнопок без server-side authorization не является защитой; server-side RBAC остается отдельным обязательным инкрементом.",
       "parentId": "FS-017", "dependsOn": ["FS-016", "FS-017"], "priorityReason": "Разграничение доступа должно учитываться в каждом следующем модуле.", "unblocks": ["FS-029", "FS-032", "FS-068", "FS-071"]
     },
     {

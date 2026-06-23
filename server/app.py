@@ -1363,7 +1363,7 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
 
 
 class FieldOSHandler(BaseHTTPRequestHandler):
-    server_version = "RackPilot/0.30"
+    server_version = "RackPilot/0.31"
 
     @property
     def store(self) -> WorkspaceStore:

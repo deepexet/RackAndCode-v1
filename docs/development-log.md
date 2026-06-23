@@ -2,6 +2,15 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-23 — v0.31.0
+
+- Added the first centralized role-aware UI policy matrix for Technician, Supervisor, Project Manager and Administrator.
+- Added a development role preview switcher in the header so access assumptions can be tested during MVP build-out.
+- Applied route visibility to Logs, API and Admin tabs and action visibility to Development Workspace and Project Management controls.
+- Kept this explicitly as a UI foundation only: server-side RBAC remains mandatory before role enforcement is considered secure.
+- Moved `FS-073` to Testing for the UI-policy increment.
+- Verification: `npm run check`; 76 automated tests and quality gate passed.
+
 ## 2026-06-23 — v0.30.0
 
 - Completed the first controlled cleanup pass for legacy FieldOS public mentions.
