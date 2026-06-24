@@ -3756,6 +3756,19 @@ function renderProjectDetail() {
   container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis"><article><span>Общий прогресс</span><strong>${project.progress}%</strong></article><article><span>Сегодня обновлено</span><strong>${updatesToday.length}</strong></article><article><span>Открытые проблемы</span><strong>${openIssues.length}</strong></article><article><span>Локации</span><strong>${project.locations.length}</strong></article></section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div><div style="display:flex;gap:8px"><button class="button ghost" id="progressHistoryBtn" type="button" style="font-size:12px">📈 История</button><button class="button ghost" id="criticalPathBtn" type="button" style="font-size:12px">⛓ Critical path</button><button class="button ghost" id="analyticsBtn" type="button" style="font-size:12px">📊 Analytics</button></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div><div id="progressHistoryPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div><div id="criticalPathPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div><div id="analyticsPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div></section>
+    <section class="detail-section" id="workItemsSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">FIELD WORKFLOW</p><h2>Все задачи <small style="font-weight:400;font-size:14px;color:var(--text-secondary)">(${workItems.length})</small></h2></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="wiFilterStatus" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+            <option value="">Все статусы</option>
+            ${STATUSES.map(s => `<option value="${s.id}">${s.label}</option>`).join('')}
+          </select>
+          ${canManage ? `<button class="button ghost" id="wiBulkDoneBtn" type="button" style="font-size:11px;display:none">✓ Bulk done</button>` : ''}
+        </div>
+      </div>
+      <div id="workItemsFullList" style="display:flex;flex-direction:column;gap:6px;margin-top:6px"></div>
+    </section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
     <section class="detail-section" id="projectTeamSection">
@@ -4075,6 +4088,76 @@ function renderProjectDetail() {
   setupProjectTeam(project.id);
   hydrateProjectTeam(project.id);
   setupPresencePanel(project.id);
+  setupWorkItemsBulkList(project);
+}
+
+function setupWorkItemsBulkList(project) {
+  const listEl = document.getElementById('workItemsFullList');
+  const filterSel = document.getElementById('wiFilterStatus');
+  const bulkBtn = document.getElementById('wiBulkDoneBtn');
+  if (!listEl) return;
+
+  const workTypeById = new Map((project.workTypeProgress||[]).map(wt => [wt.id, wt]));
+  const buildingById = new Map((project.buildings||[]).map(b => [b.id, b]));
+  let selected = new Set();
+
+  function render() {
+    const filterStatus = filterSel?.value || '';
+    const items = (project.workItems||[]).filter(wi =>
+      !filterStatus || wi.status === filterStatus
+    );
+    if (!items.length) {
+      listEl.innerHTML = '<p class="empty-copy">Нет задач.</p>';
+      if (bulkBtn) bulkBtn.style.display = 'none';
+      return;
+    }
+    const STATUS_COLOR = { ready:'#3bb969', progress:'#4f8ef7', blocked:'#e05353', done:'#445060', backlog:'#556' };
+    listEl.innerHTML = items.map(wi => {
+      const wt = workTypeById.get(wi.workTypeId);
+      const bld = buildingById.get(wi.buildingId);
+      const isSelected = selected.has(wi.id);
+      return `<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:${isSelected ? 'rgba(79,142,247,.08)' : 'var(--surface)'};border:1px solid ${isSelected ? 'rgba(79,142,247,.3)' : 'var(--border)'};border-radius:8px;cursor:pointer">
+        <input type="checkbox" data-wi-id="${wi.id}" ${isSelected ? 'checked' : ''} style="width:14px;height:14px;cursor:pointer">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:6px">
+            <strong style="font-size:12px">${wi.code ? escapeHtml(wi.code) + ' ' : ''}${escapeHtml(wi.title)}</strong>
+            <span style="font-size:9px;font-weight:700;color:${STATUS_COLOR[wi.effectiveStatus||wi.status]||'#556'};text-transform:uppercase">${wi.effectiveStatus||wi.status}</span>
+          </div>
+          <small style="font-size:10px;color:var(--text-muted)">${wt ? escapeHtml(wt.name) : ''}${bld ? ' · ' + escapeHtml(bld.code) : ''}${wi.dueDate ? ' · до ' + wi.dueDate : ''}</small>
+        </div>
+      </label>`;
+    }).join('');
+
+    listEl.querySelectorAll('[data-wi-id]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        if (cb.checked) selected.add(cb.dataset.wiId);
+        else selected.delete(cb.dataset.wiId);
+        if (bulkBtn) bulkBtn.style.display = selected.size ? 'inline-flex' : 'none';
+      });
+    });
+  }
+
+  filterSel?.addEventListener('change', render);
+  render();
+
+  bulkBtn?.addEventListener('click', async () => {
+    if (!selected.size) return;
+    const targetStatus = prompt(`Установить статус для ${selected.size} задач:\n${Object.keys(WORK_ITEM_TRANSITIONS).join(', ')}`, 'done');
+    if (!targetStatus) return;
+    try {
+      const r = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/work-items/bulk-status`, {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ ids: [...selected], status: targetStatus }),
+      });
+      const { updated, skipped } = await r.json();
+      toast(`Обновлено: ${updated}, пропущено: ${skipped}`);
+      selected.clear();
+      if (bulkBtn) bulkBtn.style.display = 'none';
+      // Reload project data
+      await fetchProjects();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
 }
 
 // ── Comments & Activity ──────────────────────────────────────────────────────
@@ -5619,8 +5702,166 @@ async function setup() {
 }
 
 setup();
+setupGlobalSearch();
+setupNotificationCenter();
 
 // PWA service worker registration
+// ── Global Search ──────────────────────────────────────────────────────────
+
+// ── Notification Center ───────────────────────────────────────────────────
+
+let _notifPollTimer = null;
+
+async function fetchNotifications(unreadOnly = false) {
+  try {
+    const r = await apiFetch(`/api/v1/notifications${unreadOnly ? '?unread=true' : ''}`);
+    const { notifications = [], unreadCount = 0 } = await r.json();
+    const badge = document.getElementById('notifBadge');
+    if (badge) {
+      badge.textContent = unreadCount > 9 ? '9+' : String(unreadCount);
+      badge.style.display = unreadCount ? 'flex' : 'none';
+    }
+    return { notifications, unreadCount };
+  } catch { return { notifications: [], unreadCount: 0 }; }
+}
+
+function renderNotifications(notifications) {
+  const list = document.getElementById('notificationList');
+  if (!list) return;
+  const TYPE_ICON = { work_item_unblocked:'🔓', issue_opened:'⚠', comment:'💬', ai_approval:'🤖', system:'ℹ' };
+  if (!notifications.length) {
+    list.innerHTML = '<p style="padding:12px 14px;font-size:12px;color:var(--text-muted)">Нет уведомлений.</p>';
+    return;
+  }
+  list.innerHTML = notifications.map(n => `
+    <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.05);background:${n.read ? 'none' : 'rgba(79,142,247,.05)'}" data-notif-id="${n.id}">
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <span style="font-size:14px;margin-top:1px">${TYPE_ICON[n.type]||'•'}</span>
+        <div style="flex:1;min-width:0">
+          <strong style="font-size:12px;display:block">${escapeHtml(n.title)}</strong>
+          ${n.body ? `<p style="margin:2px 0 0;font-size:11px;color:var(--text-muted)">${escapeHtml(n.body)}</p>` : ''}
+          <small style="font-size:10px;color:#445;margin-top:2px;display:block">${new Date(n.created_at).toLocaleString('ru-RU',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</small>
+        </div>
+        ${!n.read ? '<span style="width:6px;height:6px;border-radius:50%;background:#4f8ef7;flex-shrink:0;margin-top:5px"></span>' : ''}
+      </div>
+    </div>`).join('');
+}
+
+function setupNotificationCenter() {
+  const bell = document.getElementById('notificationBellBtn');
+  const panel = document.getElementById('notificationPanel');
+  const markAllBtn = document.getElementById('markAllReadBtn');
+  if (!bell || !panel) return;
+
+  bell.addEventListener('click', async () => {
+    const isOpen = panel.style.display !== 'none';
+    panel.style.display = isOpen ? 'none' : '';
+    if (!isOpen) {
+      const { notifications } = await fetchNotifications();
+      renderNotifications(notifications);
+    }
+  });
+
+  markAllBtn?.addEventListener('click', async () => {
+    try {
+      await apiFetch('/api/v1/notifications/read', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+      });
+      const badge = document.getElementById('notifBadge');
+      if (badge) badge.style.display = 'none';
+      const { notifications } = await fetchNotifications();
+      renderNotifications(notifications);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
+  document.addEventListener('click', e => {
+    if (!bell.contains(e.target) && !panel.contains(e.target)) {
+      panel.style.display = 'none';
+    }
+  });
+
+  // Poll for new notifications every 60s
+  fetchNotifications(true);
+  _notifPollTimer = setInterval(() => fetchNotifications(true), 60000);
+}
+
+function setupGlobalSearch() {
+  const input = document.getElementById('globalSearchInput');
+  const results = document.getElementById('globalSearchResults');
+  if (!input || !results) return;
+
+  const TYPE_ICON = { project:'📁', work_item:'✅', location:'📍', asset:'🖥', issue:'⚠', document:'📄' };
+  const TYPE_LABEL = { project:'Проект', work_item:'Задача', location:'Локация', asset:'Актив', issue:'Проблема', document:'Документ' };
+
+  let _timer = null;
+  let _lastQ = '';
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearTimeout(_timer);
+    if (!q || q.length < 2) { results.style.display = 'none'; return; }
+    if (q === _lastQ) return;
+    _timer = setTimeout(async () => {
+      _lastQ = q;
+      try {
+        const r = await apiFetch(`/api/v1/search?q=${encodeURIComponent(q)}&limit=15`);
+        const { results: items = [] } = await r.json();
+        if (!items.length) {
+          results.innerHTML = '<p style="padding:12px 14px;font-size:12px;color:var(--text-muted)">Ничего не найдено.</p>';
+        } else {
+          results.innerHTML = items.map(item => `
+            <button type="button" data-search-type="${item.type}" data-search-id="${escapeHtml(item.id||'')}" data-search-project="${escapeHtml(item.projectId||item.id||'')}"
+              style="display:flex;align-items:center;gap:10px;width:100%;padding:8px 12px;background:none;border:none;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer;text-align:left;color:var(--text)">
+              <span style="font-size:16px;width:20px;text-align:center">${TYPE_ICON[item.type]||'•'}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(item.title)}</div>
+                <div style="font-size:10px;color:var(--text-muted)">${TYPE_LABEL[item.type]||item.type}${item.subtitle ? ' · ' + escapeHtml(item.subtitle) : ''}</div>
+              </div>
+              ${item.status ? `<span style="font-size:9px;font-weight:700;color:#778;text-transform:uppercase">${escapeHtml(item.status)}</span>` : ''}
+            </button>`).join('');
+        }
+        results.style.display = '';
+      } catch { results.style.display = 'none'; }
+    }, 250);
+  });
+
+  results.addEventListener('click', e => {
+    const btn = e.target.closest('[data-search-type]');
+    if (!btn) return;
+    const type = btn.dataset.searchType;
+    const projectId = btn.dataset.searchProject;
+    results.style.display = 'none';
+    input.value = '';
+    _lastQ = '';
+    if (type === 'project') {
+      location.hash = `project/${encodeURIComponent(projectId)}`;
+    } else if (type === 'work_item' || type === 'location' || type === 'asset' || type === 'issue') {
+      location.hash = `project/${encodeURIComponent(projectId)}`;
+    } else if (type === 'document') {
+      location.hash = 'projects';
+    }
+  });
+
+  document.addEventListener('click', e => {
+    if (!input.contains(e.target) && !results.contains(e.target)) {
+      results.style.display = 'none';
+    }
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { results.style.display = 'none'; input.blur(); }
+  });
+
+  // Cmd+K / Ctrl+K focus global search
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault();
+      input.focus();
+      input.select();
+    }
+  });
+}
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(reg => {
     // Listen for messages from SW (e.g. flush outbox request)

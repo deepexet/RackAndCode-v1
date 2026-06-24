@@ -421,3 +421,17 @@ body[style*="padding-top"] .topbar { top:41px; }
 .upload-item-thumb { width:40px;height:40px;border-radius:6px;object-fit:cover;flex-shrink:0 }
 .upload-progress { height:3px;border-radius:2px;background:var(--border);margin-top:4px;overflow:hidden }
 .upload-progress-bar { height:100%;background:var(--accent);border-radius:2px;transition:width .3s }
+
+/* ── Global Search ──────────────────────────────────────────────────────── */
+.global-search-wrap { position:relative }
+#globalSearchInput { transition:width .2s }
+#globalSearchInput:focus { width:240px; outline:2px solid var(--accent,#4f8ef7); }
+#globalSearchResults button:hover { background:rgba(79,142,247,.08) }
+
+/* ── Notification Center ─────────────────────────────────────────────────── */
+#notificationBellBtn { transition:color .15s }
+#notificationBellBtn:hover { color:var(--text) }
+#notifBadge { pointer-events:none }
+
+/* ── Work Items Bulk List ────────────────────────────────────────────────── */
+#workItemsFullList label:hover { border-color:var(--accent,#4f8ef7); cursor:pointer }

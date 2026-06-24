@@ -3500,6 +3500,66 @@ Rules:
                 ).fetchall()
         return [dict(r) for r in rows]
 
+    def global_search(self, org: str, query: str, limit: int = 20) -> dict[str, Any]:
+        """Cross-entity search: projects, work items, locations, assets, issues, documents."""
+        if not query.strip() or len(query) > 200:
+            return {"query": query, "results": []}
+        q = f"%{query.strip()}%"
+        results: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            # Projects
+            for r in conn.execute(
+                "SELECT id, name, code, status FROM projects "
+                "WHERE organization_id=? AND (name LIKE ? OR code LIKE ? OR description LIKE ?) LIMIT ?",
+                (org, q, q, q, limit),
+            ).fetchall():
+                results.append({"type": "project", "id": r["id"], "title": r["name"],
+                                 "subtitle": r["code"], "status": r["status"]})
+            # Work items
+            for r in conn.execute(
+                "SELECT wi.id, wi.title, wi.code, wi.status, wi.project_id, p.name as project_name "
+                "FROM project_work_items wi JOIN projects p ON p.id=wi.project_id AND p.organization_id=wi.organization_id "
+                "WHERE wi.organization_id=? AND (wi.title LIKE ? OR wi.code LIKE ? OR wi.description LIKE ?) LIMIT ?",
+                (org, q, q, q, limit),
+            ).fetchall():
+                results.append({"type": "work_item", "id": r["id"], "projectId": r["project_id"],
+                                 "title": r["title"], "subtitle": f"{r['code']} · {r['project_name']}", "status": r["status"]})
+            # Locations
+            for r in conn.execute(
+                "SELECT pl.id, pl.name, pl.code, pl.project_id, p.name as project_name "
+                "FROM project_locations pl JOIN projects p ON p.id=pl.project_id AND p.organization_id=pl.organization_id "
+                "WHERE pl.organization_id=? AND (pl.name LIKE ? OR pl.code LIKE ?) LIMIT ?",
+                (org, q, q, limit),
+            ).fetchall():
+                results.append({"type": "location", "id": r["id"], "projectId": r["project_id"],
+                                 "title": r["name"], "subtitle": f"{r['code']} · {r['project_name']}"})
+            # Assets
+            for r in conn.execute(
+                "SELECT id, name, make, model, status FROM dt_assets "
+                "WHERE organization_id=? AND (name LIKE ? OR make LIKE ? OR model LIKE ? OR serial LIKE ?) LIMIT ?",
+                (org, q, q, q, q, limit),
+            ).fetchall():
+                results.append({"type": "asset", "id": r["id"],
+                                 "title": r["name"], "subtitle": f"{r['make'] or ''} {r['model'] or ''}".strip(),
+                                 "status": r["status"]})
+            # Issues
+            for r in conn.execute(
+                "SELECT id, title, severity, status, project_id FROM project_issues "
+                "WHERE organization_id=? AND status='open' AND (title LIKE ? OR description LIKE ?) LIMIT ?",
+                (org, q, q, limit),
+            ).fetchall():
+                results.append({"type": "issue", "id": r["id"], "projectId": r["project_id"],
+                                 "title": r["title"], "subtitle": f"{r['severity']} · issue", "status": r["status"]})
+            # Documents
+            for r in conn.execute(
+                "SELECT id, name, mime_type FROM objects "
+                "WHERE organization_id=? AND parent_id IS NULL AND (name LIKE ? OR description LIKE ?) LIMIT ?",
+                (org, q, q, limit),
+            ).fetchall():
+                results.append({"type": "document", "id": r["id"],
+                                 "title": r["name"], "subtitle": r["mime_type"]})
+        return {"query": query, "results": results[:limit]}
+
     def get_project_analytics(self, org: str, project_id: str) -> dict[str, Any]:
         """Velocity, risk, burndown, and milestone analytics for a project."""
         with self._connect() as conn:
@@ -3596,6 +3656,57 @@ Rules:
             "issuesBySeverity": issues_by_severity,
             "criticalIssues": critical_issues,
         }
+
+    # ── Notifications ────────────────────────────────────────────────────────
+
+    def push_notification(self, org: str, title: str, body: str = "",
+                           notif_type: str = "system", user_id: str | None = None,
+                           entity_type: str | None = None, entity_id: str | None = None,
+                           project_id: str | None = None) -> str:
+        notif_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO notifications (id,organization_id,user_id,type,title,body,"
+                "entity_type,entity_id,project_id,read,created_at) VALUES (?,?,?,?,?,?,?,?,?,0,?)",
+                (notif_id, org, user_id, notif_type, title, body,
+                 entity_type, entity_id, project_id, now),
+            )
+        return notif_id
+
+    def list_notifications(self, org: str, user_id: str | None = None,
+                            unread_only: bool = False, limit: int = 30) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            where = "organization_id=?"
+            params: list[Any] = [org]
+            if user_id:
+                where += " AND (user_id=? OR user_id IS NULL)"
+                params.append(user_id)
+            if unread_only:
+                where += " AND read=0"
+            rows = conn.execute(
+                f"SELECT * FROM notifications WHERE {where} ORDER BY created_at DESC LIMIT ?",
+                params + [limit],
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_notifications_read(self, org: str, notif_ids: list[str] | None = None,
+                                  user_id: str | None = None) -> int:
+        with self._connect() as conn:
+            if notif_ids:
+                placeholders = ",".join("?" * len(notif_ids))
+                result = conn.execute(
+                    f"UPDATE notifications SET read=1 WHERE organization_id=? AND id IN ({placeholders})",
+                    [org] + notif_ids,
+                )
+            else:
+                where = "organization_id=? AND read=0"
+                params: list[Any] = [org]
+                if user_id:
+                    where += " AND (user_id=? OR user_id IS NULL)"
+                    params.append(user_id)
+                result = conn.execute(f"UPDATE notifications SET read=1 WHERE {where}", params)
+        return result.rowcount
 
     # ── Connectors ──────────────────────────────────────────────────────────
 
@@ -5540,6 +5651,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except Exception as err:
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "export_failed", str(err))
             return
+        # Global search: GET /api/v1/search?q=...
+        if path == "/api/v1/search":
+            if not self._require_permission("projectRead"): return
+            qs = self._params()
+            query = qs.get("q", "").strip()[:200]
+            if not query:
+                self._json(HTTPStatus.OK, {"query": "", "results": []})
+                return
+            limit = max(5, min(50, int(qs.get("limit","20"))))
+            results = self.store.global_search(self.organization_id, query, limit)
+            self._json(HTTPStatus.OK, results)
+            return
         # Project analytics: GET /api/v1/projects/:id/analytics
         if path_depth == 5 and parts[4] == "analytics" and parts[2] == "projects":
             if not self._require_permission("projectRead"): return
@@ -5559,6 +5682,16 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             to_date = qs.get("to", today)
             records = self.store.list_presence(self.organization_id, project_id, from_date, to_date)
             self._json(HTTPStatus.OK, {"presence": records})
+            return
+        # Notifications: GET /api/v1/notifications
+        if path == "/api/v1/notifications":
+            if not self._require_permission("projectRead"): return
+            qs = self._params()
+            user_id = self.session_context.get("userId") or self.session_context.get("user_id")
+            unread_only = qs.get("unread") == "true"
+            notifs = self.store.list_notifications(self.organization_id, user_id, unread_only)
+            unread_count = sum(1 for n in notifs if not n["read"])
+            self._json(HTTPStatus.OK, {"notifications": notifs, "unreadCount": unread_count})
             return
         # Connectors: GET /api/v1/admin/connectors
         if path == "/api/v1/admin/connectors":
@@ -6150,6 +6283,52 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.store.remove_assignment(self.organization_id, parts[3], parts[5])
             self._json(HTTPStatus.OK, {"ok": True})
             return
+        # Bulk work item status: POST /api/v1/projects/:id/work-items/bulk-status
+        if path.startswith("/api/v1/projects/") and len(parts) == 6 and parts[4] == "work-items" and parts[5] == "bulk-status":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                ids: list[str] = payload.get("ids", [])
+                status: str = payload.get("status", "")
+                if not ids or not status:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "ids[] and status are required"); return
+                if len(ids) > 100:
+                    self._error(HTTPStatus.BAD_REQUEST, "too_many", "Max 100 items per bulk operation"); return
+                updated, skipped = 0, 0
+                project_id = parts[3]
+                with self.store._connect() as conn:
+                    for item_id in ids:
+                        row = conn.execute(
+                            "SELECT status, version FROM project_work_items "
+                            "WHERE organization_id=? AND project_id=? AND id=?",
+                            (self.organization_id, project_id, item_id)
+                        ).fetchone()
+                        if row is None:
+                            skipped += 1; continue
+                        if status not in WORK_ITEM_TRANSITIONS.get(row["status"], set()):
+                            skipped += 1; continue
+                        now = utc_now()
+                        conn.execute(
+                            "UPDATE project_work_items SET status=?,version=?,updated_at=? "
+                            "WHERE organization_id=? AND project_id=? AND id=? AND version=?",
+                            (status, row["version"] + 1, now,
+                             self.organization_id, project_id, item_id, row["version"]),
+                        )
+                        self.store.audit(
+                            self.organization_id, "bulk-api", project_id,
+                            "work_item.bulk_status", "work_item", item_id,
+                        )
+                        updated += 1
+                        if status == "done":
+                            try:
+                                self.store.sync_blocked_status(self.organization_id, project_id, item_id)
+                            except Exception:
+                                pass
+                self._json(HTTPStatus.OK, {"updated": updated, "skipped": skipped})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
         # Team presence: POST /api/v1/projects/:id/presence
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "presence":
             if not self._require_permission("projectManage"): return
@@ -6168,6 +6347,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (LookupError, ValueError, json.JSONDecodeError) as err:
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
+            return
+        # Notifications mark-read: POST /api/v1/notifications/read
+        if path == "/api/v1/notifications/read":
+            if not self._require_permission("projectRead"): return
+            try:
+                payload = self._read_json()
+                user_id = self.session_context.get("userId") or self.session_context.get("user_id")
+                ids = payload.get("ids") if isinstance(payload, dict) else None
+                count = self.store.mark_notifications_read(self.organization_id, ids, user_id)
+                self._json(HTTPStatus.OK, {"marked": count})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         # Connectors: POST /api/v1/admin/connectors
         if path == "/api/v1/admin/connectors":
@@ -6786,6 +6977,27 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         )
                         if unblocked:
                             work_item["_unblocked"] = unblocked
+                    except Exception:
+                        pass
+                    # Notification: push for unblocked items
+                    if unblocked:
+                        try:
+                            for uid in unblocked:
+                                self.store.push_notification(
+                                    self.organization_id, "Задача разблокирована",
+                                    f"{work_item.get('title','')} завершена — {len(unblocked)} задач готовы к работе",
+                                    notif_type="work_item_unblocked",
+                                    entity_type="work_item", entity_id=uid, project_id=parts[3],
+                                )
+                        except Exception:
+                            pass
+                    # Webhook: notify connectors about completion
+                    try:
+                        self.store.queue_webhook_event(
+                            self.organization_id, None, "work_item.done",
+                            {"workItemId": parts[5], "projectId": parts[3],
+                             "title": work_item.get("title",""), "code": work_item.get("code","")},
+                        )
                     except Exception:
                         pass
                 response = {"organizationId": self.organization_id, "workItem": work_item}

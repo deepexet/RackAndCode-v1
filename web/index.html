@@ -59,6 +59,22 @@
     </a>
     <nav class="primary-nav" aria-label="Platform navigation"><a href="#overview" data-route-link="overview" data-i18n="NAV_OVERVIEW">Overview</a><a href="#projects" data-route-link="projects" data-i18n="NAV_PROJECTS">Projects</a><a href="#tech" data-route-link="tech" data-i18n="NAV_TECH">Field</a><a href="#logs" data-route-link="logs" data-i18n="NAV_LOGS">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin" data-i18n="NAV_ADMIN">Admin</a></nav>
     <div class="header-right">
+      <div class="global-search-wrap" style="position:relative">
+        <input id="globalSearchInput" type="search" placeholder="⌕ Поиск…" autocomplete="off"
+          style="padding:5px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;width:180px">
+        <div id="globalSearchResults" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;width:340px;max-height:320px;overflow-y:auto;background:var(--surface-raised,#1a2130);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:999"></div>
+      </div>
+      <button id="notificationBellBtn" type="button" style="position:relative;background:none;border:none;cursor:pointer;padding:4px;color:var(--text-secondary);font-size:18px" title="Уведомления" aria-label="Уведомления">
+        🔔
+        <span id="notifBadge" style="display:none;position:absolute;top:0;right:0;width:16px;height:16px;background:#e05353;border-radius:50%;font-size:9px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center;line-height:1"></span>
+      </button>
+      <div id="notificationPanel" style="display:none;position:fixed;top:52px;right:12px;width:340px;max-height:400px;overflow-y:auto;background:var(--surface-raised,#1a2130);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:1000">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <strong style="font-size:13px">Уведомления</strong>
+          <button id="markAllReadBtn" type="button" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--accent)">Прочитать все</button>
+        </div>
+        <div id="notificationList"><p style="padding:12px 14px;font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+      </div>
       <div class="agent-indicator idle" id="agentIndicator" title="Статус разработки" role="button" tabindex="0" style="cursor:pointer"><i></i><span><strong>Codex</strong><small id="agentStatusText">Статус загружается…</small></span><button id="requestContinueButton" type="button" title="Запросить продолжение разработки" aria-label="Запросить продолжение разработки">▶</button></div>
       <dialog id="codexInfoDialog" style="max-width:480px;width:100%">
         <div class="dialog-head"><div><p class="eyebrow">CODEX · DEVELOPMENT AGENT</p><h2>Состояние агента</h2></div><button class="icon-button" id="closeCodexDialog" type="button" aria-label="Закрыть">×</button></div>
