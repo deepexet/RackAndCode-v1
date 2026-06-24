@@ -163,8 +163,22 @@
     </section>
 
     <section class="app-view logs-page" data-view="logs" id="logs">
-      <header class="page-header"><div><p class="eyebrow">AUDIT & ACTIVITY</p><h1>Журнал событий</h1><p>Единое представление project audit и development workspace events с фильтрацией.</p></div><button class="button ghost" id="refreshLogsButton" type="button">Обновить</button></header>
-      <div class="log-filters"><label>Source<select id="logSourceFilter"><option value="all">All sources</option><option value="project">Project audit</option><option value="workspace">Workspace audit</option></select></label><label>Project<select id="logProjectFilter"><option value="">All projects</option></select></label><label>Entity<select id="logEntityFilter"><option value="all">All entities</option><option value="project">Project</option><option value="building">Building</option><option value="work_item">Work item</option><option value="location">Location</option><option value="unit">Unit</option><option value="unit_progress">Unit progress</option><option value="daily_update">Daily update</option><option value="issue">Issue</option><option value="task">Workspace task</option></select></label><label>Search<input id="logSearchInput" type="search" placeholder="Search logs…"></label></div>
+      <header class="page-header">
+        <div><p class="eyebrow">AUDIT & ACTIVITY</p><h1>Журнал событий</h1><p>Project audit, workspace events и security audit с фильтрацией, поиском и экспортом.</p></div>
+        <div style="display:flex;gap:8px">
+          <button class="button ghost" id="exportLogsBtn" type="button">↓ CSV</button>
+          <button class="button ghost" id="refreshLogsButton" type="button">Обновить</button>
+        </div>
+      </header>
+      <div class="log-filters">
+        <label>Источник<select id="logSourceFilter"><option value="all">Все</option><option value="project">Project audit</option><option value="workspace">Workspace</option><option value="security">Security</option><option value="activity">Activity</option></select></label>
+        <label>Проект<select id="logProjectFilter"><option value="">Все проекты</option></select></label>
+        <label>Тип<select id="logEntityFilter"><option value="all">Все типы</option><option value="project">Project</option><option value="building">Building</option><option value="work_item">Work item</option><option value="location">Location</option><option value="unit">Unit</option><option value="unit_progress">Unit progress</option><option value="daily_update">Daily update</option><option value="issue">Issue</option><option value="task">Task</option><option value="comment">Comment</option><option value="ai_approval">AI approval</option></select></label>
+        <label>С<input id="logDateFrom" type="date" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px"></label>
+        <label>По<input id="logDateTo" type="date" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px"></label>
+        <label>Поиск<input id="logSearchInput" type="search" placeholder="Поиск по событиям…"></label>
+      </div>
+      <div id="logsSummaryBar" style="display:flex;gap:16px;padding:8px 0;font-size:12px;color:var(--text-muted);border-bottom:1px solid var(--border);margin-bottom:12px"></div>
       <div class="logs-list" id="logsList"><article class="project-loading">Загрузка журнала…</article></div>
     </section>
 
@@ -209,6 +223,31 @@
               <label style="grid-column:1/-1">Secret (API Key)<select id="providerSecretId"><option value="">— из переменной окружения —</option></select></label>
             </div>
             <div class="dialog-actions"><span></span><button class="button ghost" type="button" id="cancelProviderButton">Отмена</button><button class="button primary" type="submit">Сохранить</button></div>
+          </form>
+        </dialog>
+      </section>
+
+      <section class="detail-section" id="teamSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">КОМАНДА</p><h2>Сотрудники и ресурсы</h2></div>
+          <button class="button primary" id="addMemberBtn" type="button">＋ Добавить</button>
+        </div>
+        <div id="teamGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:12px"></div>
+        <dialog id="memberDialog" style="max-width:520px;width:100%">
+          <div class="dialog-head"><div><p class="eyebrow">СОТРУДНИК</p><h2 id="memberDialogTitle">Новый сотрудник</h2></div><button class="icon-button" id="closeMemberDialog" type="button">×</button></div>
+          <form id="memberForm" style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+            <input id="memberEditId" type="hidden">
+            <div class="form-grid">
+              <label>Имя <input id="memberName" type="text" required maxlength="100" placeholder="Иван Иванов"></label>
+              <label>Email <input id="memberEmail" type="email" maxlength="200" placeholder="ivan@example.com"></label>
+              <label>Роль <select id="memberRole"><option value="Technician">Technician</option><option value="Supervisor">Supervisor</option><option value="ProjectManager">Project Manager</option></select></label>
+              <label>Специализация <input id="memberTrade" type="text" maxlength="100" placeholder="Low Voltage, Electrical…"></label>
+              <label>Телефон <input id="memberPhone" type="tel" maxlength="50" placeholder="+1 555 000 0000"></label>
+              <label>Статус <select id="memberAvailability"><option value="available">Доступен</option><option value="busy">Занят</option><option value="off">Нет на месте</option></select></label>
+              <label style="grid-column:1/-1">Навыки (через запятую) <input id="memberSkills" type="text" maxlength="500" placeholder="Cat6, Fiber, CCTV"></label>
+              <label style="grid-column:1/-1">Заметки <textarea id="memberNotes" rows="2" maxlength="500" style="width:100%;resize:vertical;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;box-sizing:border-box"></textarea></label>
+            </div>
+            <div class="dialog-actions"><span></span><button class="button ghost" type="button" id="cancelMemberDialog">Отмена</button><button class="button primary" type="submit">Сохранить</button></div>
           </form>
         </dialog>
       </section>

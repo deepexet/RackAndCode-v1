@@ -345,3 +345,29 @@ body[style*="padding-top"] .topbar { top:41px; }
 .comment-body { margin:0;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word }
 .comment-actions { display:flex;gap:12px }
 .comment-compose { margin-top:8px }
+
+/* ── Team members ───────────────────────────────────────────────────────── */
+.member-card { background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px }
+.member-header { display:flex;align-items:center;gap:10px }
+.member-avatar { width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#4a7fd4,#34d399);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;color:#fff;flex-shrink:0 }
+.member-skills { display:flex;flex-wrap:wrap;gap:4px }
+.skill-tag { font-size:10px;background:rgba(74,127,212,.15);color:#4a7fd4;border-radius:4px;padding:2px 6px }
+.member-contact { font-size:11px;color:var(--text-muted) }
+.member-footer { display:flex;justify-content:space-between;align-items:center;margin-top:2px }
+.avail-dot { margin-left:auto;font-size:10px }
+.team-chip { display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:6px 10px 6px 6px }
+.team-chip-avatar { width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#4a7fd4,#34d399);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;color:#fff;flex-shrink:0 }
+
+/* ── Logs Explorer ──────────────────────────────────────────────────────── */
+.log-entry { display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);border-left-width:3px;background:var(--surface);margin-bottom:4px }
+.log-icon { font-size:14px;flex-shrink:0;margin-top:1px }
+.log-body { flex:1;min-width:0 }
+.log-action { font-size:13px;display:block;margin-bottom:3px }
+.log-meta { display:flex;flex-wrap:wrap;gap:8px;align-items:center }
+.log-tag { font-size:10px;background:rgba(74,127,212,.12);color:#4a7fd4;border-radius:4px;padding:1px 6px }
+.log-project { font-size:11px;color:var(--text-muted) }
+.log-actor { font-size:11px;color:var(--text-muted) }
+.log-time { font-size:11px;color:var(--text-muted);white-space:nowrap;flex-shrink:0;margin-top:2px }
+.log-filters { display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px;align-items:flex-end }
+.log-filters label { display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted) }
+.log-filters select,.log-filters input[type=search] { padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px }

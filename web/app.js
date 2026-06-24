@@ -541,7 +541,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -1216,6 +1216,110 @@ async function hydrateAuditLog() {
   } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
 }
 
+// ── Team Members ─────────────────────────────────────────────────────────
+const AVAIL_LABEL = { available: 'Доступен', busy: 'Занят', off: 'Нет на месте' };
+const AVAIL_COLOR = { available: '#34d399', busy: '#f59e0b', off: '#778195' };
+
+async function hydrateTeam() {
+  const grid = document.getElementById('teamGrid');
+  if (!grid) return;
+  try {
+    const resp = await apiFetch('/api/v1/team');
+    const { members } = await resp.json();
+    if (!members.length) { grid.innerHTML = '<p class="empty-copy">Нет сотрудников. Добавьте первого.</p>'; return; }
+    grid.innerHTML = members.map(m => `
+      <div class="member-card" data-id="${m.id}">
+        <div class="member-header">
+          <div class="member-avatar">${(m.name||'?')[0].toUpperCase()}</div>
+          <div>
+            <strong>${escapeHtml(m.name)}</strong>
+            <small style="display:block;color:var(--text-muted)">${escapeHtml(m.trade||m.role)}</small>
+          </div>
+          <span class="avail-dot" style="color:${AVAIL_COLOR[m.availability]||'#778195'}" title="${AVAIL_LABEL[m.availability]||m.availability}">●</span>
+        </div>
+        ${m.skills?.length ? `<div class="member-skills">${m.skills.map(s=>`<span class="skill-tag">${escapeHtml(s)}</span>`).join('')}</div>` : ''}
+        ${m.email ? `<div class="member-contact"><small>✉ ${escapeHtml(m.email)}</small></div>` : ''}
+        ${m.phone ? `<div class="member-contact"><small>✆ ${escapeHtml(m.phone)}</small></div>` : ''}
+        <div class="member-footer">
+          <span style="font-size:11px;color:var(--text-muted)">${m.project_count||0} проектов</span>
+          <div style="display:flex;gap:6px">
+            <button class="text-button member-edit-btn" data-id="${m.id}">Ред.</button>
+            <button class="text-button member-del-btn" data-id="${m.id}" style="color:#e05353">Удалить</button>
+          </div>
+        </div>
+      </div>`).join('');
+    grid.querySelectorAll('.member-edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const m = members.find(x => x.id === btn.dataset.id);
+        if (!m) return;
+        openMemberDialog(m);
+      });
+    });
+    grid.querySelectorAll('.member-del-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить сотрудника?')) return;
+        await apiFetch(`/api/v1/team/${btn.dataset.id}/delete`, { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+        hydrateTeam();
+      });
+    });
+  } catch (e) { grid.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+function openMemberDialog(member = null) {
+  const dialog = document.getElementById('memberDialog');
+  if (!dialog) return;
+  const title = document.getElementById('memberDialogTitle');
+  if (title) title.textContent = member ? 'Редактировать' : 'Новый сотрудник';
+  document.getElementById('memberEditId').value = member?.id || '';
+  document.getElementById('memberName').value = member?.name || '';
+  document.getElementById('memberEmail').value = member?.email || '';
+  document.getElementById('memberRole').value = member?.role || 'Technician';
+  document.getElementById('memberTrade').value = member?.trade || '';
+  document.getElementById('memberPhone').value = member?.phone || '';
+  document.getElementById('memberAvailability').value = member?.availability || 'available';
+  document.getElementById('memberSkills').value = (member?.skills || []).join(', ');
+  document.getElementById('memberNotes').value = member?.notes || '';
+  dialog.showModal();
+}
+
+function setupTeam() {
+  const addBtn = document.getElementById('addMemberBtn');
+  const dialog = document.getElementById('memberDialog');
+  const closeBtn = document.getElementById('closeMemberDialog');
+  const cancelBtn = document.getElementById('cancelMemberDialog');
+  const form = document.getElementById('memberForm');
+  if (!dialog) return;
+
+  addBtn?.addEventListener('click', () => openMemberDialog(null));
+  closeBtn?.addEventListener('click', () => dialog.close());
+  cancelBtn?.addEventListener('click', () => dialog.close());
+
+  form?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const editId = document.getElementById('memberEditId').value;
+    const payload = {
+      name: document.getElementById('memberName').value.trim(),
+      email: document.getElementById('memberEmail').value.trim(),
+      role: document.getElementById('memberRole').value,
+      trade: document.getElementById('memberTrade').value.trim(),
+      phone: document.getElementById('memberPhone').value.trim(),
+      availability: document.getElementById('memberAvailability').value,
+      skills: document.getElementById('memberSkills').value.split(',').map(s=>s.trim()).filter(Boolean),
+      notes: document.getElementById('memberNotes').value.trim(),
+    };
+    const btn = form.querySelector('[type=submit]'); btn.disabled = true;
+    try {
+      if (editId) {
+        await apiFetch(`/api/v1/team/${editId}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+      } else {
+        await apiFetch('/api/v1/team', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+      }
+      dialog.close(); hydrateTeam();
+    } catch (err) { toast(err.message); }
+    finally { btn.disabled = false; }
+  });
+}
+
 // ── AI Approval Queue ────────────────────────────────────────────────────
 const ACTION_TYPE_LABELS = {
   'task.update': 'Обновление задачи',
@@ -1458,11 +1562,113 @@ function setupSecretsVault() {
 
 async function submitPlatformSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/platform-settings',{method:'POST',headers:apiHeaders({'Content-Type':'application/json'}),body:JSON.stringify({defaultLanguage:$('#platformLanguage').value,timezone:$('#platformTimezone').value.trim(),roleMode:$('#platformRoleMode').value,telemetryMode:$('#platformTelemetryMode').value,logRetentionDays:Number($('#platformLogRetention').value)})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Platform settings failed');platformSettings=payload.settings;renderPlatformSettings();toast('Platform settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
 
-function populateLogProjectFilter(){const filter=$('#logProjectFilter');if(!filter)return;const selected=filter.value;filter.innerHTML='<option value="">All projects</option>'+projects.map(project=>`<option value="${project.id}">${escapeHtml(project.code)} · ${escapeHtml(project.name)}</option>`).join('');filter.value=[...filter.options].some(option=>option.value===selected)?selected:'';}
+function populateLogProjectFilter() {
+  const filter = $('#logProjectFilter');
+  if (!filter) return;
+  const selected = filter.value;
+  filter.innerHTML = '<option value="">Все проекты</option>' + projects.map(p =>
+    `<option value="${p.id}">${escapeHtml(p.code)} · ${escapeHtml(p.name)}</option>`).join('');
+  filter.value = [...filter.options].some(o => o.value === selected) ? selected : '';
+}
 
-function renderLogs(unavailable=false){const container=$('#logsList');if(!container)return;populateLogProjectFilter();if(unavailable){container.innerHTML='<article class="project-loading">Журнал временно недоступен.</article>';return;}container.innerHTML=logs.length?logs.map(event=>`<article class="log-entry"><div><span>${escapeHtml(event.source)} · ${escapeHtml(event.entityType||'event')}</span><strong>${escapeHtml(event.message||event.action)}</strong><small>${escapeHtml(event.projectCode||event.projectName||'Workspace')} · ${escapeHtml(event.action||'audit')}</small></div><time datetime="${escapeHtml(event.createdAt||'')}">${event.createdAt?new Date(event.createdAt).toLocaleString('ru-RU'):'—'}</time></article>`).join(''):'<article class="project-loading">По фильтрам событий нет.</article>';}
+const LOG_SOURCE_ICON = { project:'📋', workspace:'🔧', security:'🔒', activity:'💬', unknown:'•' };
+const LOG_SOURCE_COLOR = { project:'#4a7fd4', workspace:'#a78bfa', security:'#f59e0b', activity:'#34d399' };
 
-async function hydrateLogs(){try{populateLogProjectFilter();const params=new URLSearchParams({source:$('#logSourceFilter')?.value||'all',entityType:$('#logEntityFilter')?.value||'all',q:$('#logSearchInput')?.value||'',limit:'150'});const projectId=$('#logProjectFilter')?.value;if(projectId)params.set('projectId',projectId);const response=await fetch(`/api/v1/logs?${params}`,{headers:apiHeaders()});if(!response.ok)throw new Error('logs unavailable');const payload=await response.json();logs=payload.logs||[];renderLogs();}catch{renderLogs(true);}}
+function renderLogs(unavailable = false) {
+  const container = $('#logsList');
+  if (!container) return;
+  populateLogProjectFilter();
+  if (unavailable) { container.innerHTML = '<article class="project-loading">Журнал временно недоступен.</article>'; return; }
+  if (!logs.length) { container.innerHTML = '<article class="project-loading">По выбранным фильтрам событий нет.</article>'; return; }
+
+  // Summary bar
+  const bar = $('#logsSummaryBar');
+  if (bar) {
+    const bySource = {};
+    for (const e of logs) bySource[e.source] = (bySource[e.source]||0)+1;
+    bar.innerHTML = `<span>Показано: <strong>${logs.length}</strong></span>` +
+      Object.entries(bySource).map(([s,n]) =>
+        `<span style="color:${LOG_SOURCE_COLOR[s]||'var(--text-muted)'}">
+          ${LOG_SOURCE_ICON[s]||'•'} ${s}: <strong>${n}</strong></span>`).join('');
+  }
+
+  container.innerHTML = logs.map(event => {
+    const src = event.source || 'unknown';
+    const color = LOG_SOURCE_COLOR[src] || 'var(--text-muted)';
+    const icon = LOG_SOURCE_ICON[src] || '•';
+    const ts = event.createdAt ? new Date(event.createdAt).toLocaleString('ru-RU') : '—';
+    const entity = event.entityType || event.target_type || '';
+    const project = event.projectCode || event.projectName || event.organization_id || '';
+    const actor = event.actor || event.actorId || event.actor_id || '';
+    const outcome = event.outcome;
+    const outcomeColor = outcome === 'ok' ? '#34d399' : outcome === 'denied' ? '#f59e0b' : outcome === 'error' ? '#e05353' : '';
+    return `<article class="log-entry" style="border-left:3px solid ${color}">
+      <div class="log-icon" style="color:${color}">${icon}</div>
+      <div class="log-body">
+        <strong class="log-action">${escapeHtml(event.message||event.action||event.event_type||'event')}</strong>
+        <div class="log-meta">
+          ${entity ? `<span class="log-tag">${escapeHtml(entity)}</span>` : ''}
+          ${project ? `<span class="log-project">${escapeHtml(project)}</span>` : ''}
+          ${actor ? `<span class="log-actor">👤 ${escapeHtml(actor)}</span>` : ''}
+          ${outcomeColor ? `<span style="color:${outcomeColor};font-size:10px">● ${escapeHtml(outcome)}</span>` : ''}
+        </div>
+      </div>
+      <time class="log-time" datetime="${escapeHtml(event.createdAt||'')}">${ts}</time>
+    </article>`;
+  }).join('');
+}
+
+async function hydrateLogs() {
+  try {
+    populateLogProjectFilter();
+    const src = $('#logSourceFilter')?.value || 'all';
+    const params = new URLSearchParams({
+      source: src,
+      entityType: $('#logEntityFilter')?.value || 'all',
+      q: $('#logSearchInput')?.value || '',
+      limit: '200',
+    });
+    const projectId = $('#logProjectFilter')?.value;
+    if (projectId) params.set('projectId', projectId);
+    const dateFrom = $('#logDateFrom')?.value;
+    const dateTo = $('#logDateTo')?.value;
+    if (dateFrom) params.set('from', dateFrom);
+    if (dateTo) params.set('to', dateTo + 'T23:59:59');
+
+    // Security source: pull from audit_log endpoint instead
+    if (src === 'security') {
+      const resp = await apiFetch(`/api/v1/admin/audit-log?limit=200`);
+      const { entries } = await resp.json();
+      logs = entries.map(e => ({ ...e, source: 'security', message: e.action,
+        entityType: e.target_type, actor: e.actor_id, createdAt: e.created_at }));
+    } else if (src === 'activity') {
+      // activity from all projects — not available as global endpoint yet, show workspace
+      const response = await fetch(`/api/v1/logs?${params}`, { headers: apiHeaders() });
+      if (!response.ok) throw new Error('logs unavailable');
+      const payload = await response.json();
+      logs = (payload.logs || []).map(e => ({ ...e, source: 'activity' }));
+    } else {
+      const response = await fetch(`/api/v1/logs?${params}`, { headers: apiHeaders() });
+      if (!response.ok) throw new Error('logs unavailable');
+      const payload = await response.json();
+      logs = payload.logs || [];
+    }
+    renderLogs();
+  } catch { renderLogs(true); }
+}
+
+function exportLogsCSV() {
+  if (!logs.length) { toast('Нет данных для экспорта'); return; }
+  const cols = ['createdAt','source','action','message','entityType','projectCode','actor','outcome'];
+  const header = cols.join(',');
+  const rows = logs.map(e => cols.map(c => `"${String(e[c]||'').replace(/"/g,'""')}"`).join(','));
+  const csv = [header, ...rows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `logs_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click(); URL.revokeObjectURL(url);
+}
 
 function renderApiMetrics(unavailable=false){const summary=$('#apiSummary'),status=$('#apiStatusBreakdown'),routes=$('#apiRouteList'),list=$('#apiLogList'),badge=$('#apiMetricsStatus');if(!summary||!status||!routes||!list)return;if(unavailable){summary.innerHTML='<article><span>Status</span><strong>Offline</strong><small>API telemetry unavailable</small></article>';status.innerHTML='';routes.innerHTML='';list.innerHTML='<article class="project-loading">API telemetry временно недоступна.</article>';if(badge){badge.textContent='Unavailable';badge.className='git-sync-status error';}return;}const metrics=apiMetrics||{requestCount:0,averageMs:0,p95Ms:0,errorCount:0,statusCounts:{},methodCounts:{},topRoutes:[],recent:[],updatedAt:null};summary.innerHTML=`<article><span>Total requests</span><strong>${metrics.requestCount}</strong><small>retained runtime events</small></article><article><span>Average response</span><strong>${metrics.averageMs} ms</strong><small>mean latency</small></article><article><span>P95 response</span><strong>${metrics.p95Ms} ms</strong><small>slow path signal</small></article><article><span>Errors</span><strong>${metrics.errorCount}</strong><small>HTTP 4xx/5xx</small></article>`;status.innerHTML=Object.entries(metrics.statusCounts||{}).map(([code,count])=>`<article class="${Number(code)>=400?'error':'ok'}"><span>${escapeHtml(code)}</span><strong>${count}</strong></article>`).join('')||'<p class="empty-copy">No API responses yet.</p>';routes.innerHTML=(metrics.topRoutes||[]).map(route=>`<article><strong>${escapeHtml(route.route)}</strong><span>${route.count} requests</span></article>`).join('')||'<p class="empty-copy">No route data yet.</p>';list.innerHTML=(metrics.recent||[]).map(event=>`<article class="${event.status>=400?'error':''}"><div><span>${escapeHtml(event.method)} · ${escapeHtml(event.route)}</span><strong>${event.status} · ${event.durationMs} ms</strong><small>${escapeHtml(event.requestId)} · ${escapeHtml(event.organizationId)}</small></div><time datetime="${escapeHtml(event.createdAt)}">${new Date(event.createdAt).toLocaleTimeString('ru-RU')}</time></article>`).join('')||'<article class="project-loading">No API requests recorded yet.</article>';if(badge){badge.textContent=metrics.updatedAt?`Updated ${new Date(metrics.updatedAt).toLocaleTimeString('ru-RU')}`:'Runtime';badge.className='git-sync-status configured';}}
 
@@ -1753,6 +1959,18 @@ function renderProjectDetail() {
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div></section>
     <section class="detail-grid"><article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">LOCATIONS</p><h2>Структура объекта</h2></div>${canManage ? '<button class="text-button" data-add-location>Добавить</button>' : ''}</div><div class="location-cards">${project.locations.length ? project.locations.map(location => {const parent=project.locations.find(value=>value.id===location.parentLocationId);return `<button type="button" data-open-location="${location.id}" style="--location-depth:${location.depth||0}"><span>${escapeHtml(location.code)}</span><strong>${escapeHtml(location.name)}</strong><small>${parent?`${escapeHtml(parent.name)} → `:''}${escapeHtml(location.kind)}${location.suiteTotal !== null ? ` · ${location.suiteTotal} suites` : ''}${location.audioDetails ? ` · ${location.audioDetails.speakerCount || 0} speakers` : ''}</small></button>`;}).join('') : '<p class="empty-copy">Добавьте этажи или зоны, чтобы техник мог фиксировать прогресс.</p>'}</div></article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
+    <section class="detail-section" id="projectTeamSection">
+      <div class="detail-section-title"><div><p class="eyebrow">КОМАНДА</p><h2>Назначенные сотрудники</h2></div>${canManage ? '<button class="button ghost" id="assignMemberBtn" type="button">＋ Назначить</button>' : ''}</div>
+      <div id="projectTeamList" style="display:flex;flex-wrap:wrap;gap:8px"><p class="empty-copy" style="font-size:13px">Загрузка…</p></div>
+      ${canManage ? `<dialog id="assignMemberDialog" style="max-width:400px;width:100%">
+        <div class="dialog-head"><div><p class="eyebrow">НАЗНАЧЕНИЕ</p><h2>Выбрать сотрудника</h2></div><button class="icon-button" id="closeAssignDialog" type="button">×</button></div>
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px">
+          <select id="assignMemberSelect" style="padding:8px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px"></select>
+          <input id="assignRoleInput" type="text" placeholder="Роль на проекте (Lead Tech, Foreman…)" maxlength="100" style="padding:8px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          <div class="dialog-actions"><span></span><button class="button ghost" id="cancelAssignDialog" type="button">Отмена</button><button class="button primary" id="confirmAssignBtn" type="button">Назначить</button></div>
+        </div>
+      </dialog>` : ''}
+    </section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div>${canProgress ? '<button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button>' : ''}</div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>
     <section class="detail-section" id="projectObjectsSection"><div class="detail-section-title"><div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Файлы проекта</h2></div><label class="button ghost" style="cursor:pointer">＋ Загрузить<input type="file" id="objectFileInput" multiple style="display:none"></label></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input id="objectsSearchInput" type="search" placeholder="Поиск по файлам…" style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px" autocomplete="off"></div><div id="objectsDropZone" class="objects-drop-zone">Перетащите файлы сюда или нажмите «Загрузить»</div><div id="objectsGrid" class="objects-grid"><p class="empty-copy">Загрузка…</p></div><p id="objectsStorageInfo" style="font-size:11px;color:#445060;margin-top:8px"></p></section>
     <dialog id="objectVersionsDialog" style="max-width:520px;width:100%"><div class="dialog-head"><div><p class="eyebrow">ВЕРСИИ</p><h2 id="objectVersionsName"></h2></div><button class="icon-button" id="closeObjectVersionsDialog" type="button">×</button></div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Версия</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Размер</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Дата</th><th></th></tr></thead><tbody id="objectVersionsList"></tbody></table></div></dialog>
@@ -1772,6 +1990,8 @@ function renderProjectDetail() {
   hydrateProjectObjects(project.id);
   setupProjectComments(project.id);
   hydrateProjectActivity(project.id);
+  setupProjectTeam(project.id);
+  hydrateProjectTeam(project.id);
 }
 
 // ── Comments & Activity ──────────────────────────────────────────────────────
@@ -1877,6 +2097,71 @@ function setupProjectComments(projectId) {
   };
   submitBtn.addEventListener('click', submit);
   ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit(); });
+}
+
+async function hydrateProjectTeam(projectId) {
+  const list = document.getElementById('projectTeamList');
+  if (!list) return;
+  try {
+    const resp = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/team`);
+    const { members } = await resp.json();
+    if (!members.length) { list.innerHTML = '<p class="empty-copy" style="font-size:13px">Никто не назначен.</p>'; return; }
+    list.innerHTML = members.map(m => `
+      <div class="team-chip" data-mid="${m.member_id}">
+        <span class="team-chip-avatar">${(m.name||'?')[0].toUpperCase()}</span>
+        <div>
+          <strong>${escapeHtml(m.name)}</strong>
+          <small style="display:block;color:var(--text-muted)">${escapeHtml(m.role_on_project||m.trade||'')}</small>
+        </div>
+        <span style="color:${AVAIL_COLOR[m.availability]||'#778195'};font-size:10px" title="${AVAIL_LABEL[m.availability]||''}">●</span>
+        <button class="icon-button team-unassign-btn" data-mid="${m.member_id}" type="button" title="Снять назначение" style="font-size:11px;opacity:.5">✕</button>
+      </div>`).join('');
+    list.querySelectorAll('.team-unassign-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/team/${btn.dataset.mid}/remove`,
+          { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+        hydrateProjectTeam(projectId);
+      });
+    });
+  } catch (e) { list.innerHTML = `<p class="empty-copy" style="color:#e05353;font-size:13px">${e.message}</p>`; }
+}
+
+async function setupProjectTeam(projectId) {
+  const assignBtn = document.getElementById('assignMemberBtn');
+  const dialog = document.getElementById('assignMemberDialog');
+  const closeBtn = document.getElementById('closeAssignDialog');
+  const cancelBtn = document.getElementById('cancelAssignDialog');
+  const confirmBtn = document.getElementById('confirmAssignBtn');
+  const select = document.getElementById('assignMemberSelect');
+  const roleInput = document.getElementById('assignRoleInput');
+  if (!assignBtn || !dialog) return;
+
+  assignBtn.addEventListener('click', async () => {
+    try {
+      const resp = await apiFetch('/api/v1/team');
+      const { members } = await resp.json();
+      if (select) select.innerHTML = members.map(m =>
+        `<option value="${m.id}">${escapeHtml(m.name)} — ${escapeHtml(m.trade||m.role)}</option>`).join('');
+    } catch { /* ignore */ }
+    if (roleInput) roleInput.value = '';
+    dialog.showModal();
+  });
+  closeBtn?.addEventListener('click', () => dialog.close());
+  cancelBtn?.addEventListener('click', () => dialog.close());
+  confirmBtn?.addEventListener('click', async () => {
+    const memberId = select?.value;
+    if (!memberId) return;
+    confirmBtn.disabled = true;
+    try {
+      await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/team`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ memberId, roleOnProject: roleInput?.value.trim()||'' }),
+      });
+      dialog.close();
+      hydrateProjectTeam(projectId);
+    } catch (err) { toast(err.message); }
+    finally { confirmBtn.disabled = false; }
+  });
 }
 
 // ── Object Storage ──────────────────────────────────────────────────────────
@@ -2868,8 +3153,9 @@ async function setup() {
   // Log search: text debounced (triggers network), selects instant
   const hydrateLogsDebounced = debounce(hydrateLogs, 280);
   $('#logSearchInput').addEventListener('input', hydrateLogsDebounced);
-  ['logSourceFilter','logProjectFilter','logEntityFilter'].forEach(id => $(`#${id}`).addEventListener('change', hydrateLogs));
-  $('#refreshLogsButton').addEventListener('click', hydrateLogs);
+  ['logSourceFilter','logProjectFilter','logEntityFilter','logDateFrom','logDateTo'].forEach(id => $(`#${id}`)?.addEventListener('change', hydrateLogs));
+  $('#refreshLogsButton')?.addEventListener('click', hydrateLogs);
+  $('#exportLogsBtn')?.addEventListener('click', exportLogsCSV);
   $('#refreshApiMetricsButton').addEventListener('click', hydrateApiMetrics);
   window.addEventListener('online', _onNetworkOnline);
   window.addEventListener('offline', _onNetworkOffline);
@@ -2976,6 +3262,7 @@ async function setup() {
   setupRetrievalEval();
   setupAIApprovals();
   setupCodexDialog();
+  setupTeam();
   applyRolePolicy();
   renderRoute();
   render();

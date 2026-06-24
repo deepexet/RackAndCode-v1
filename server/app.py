@@ -2316,6 +2316,129 @@ class WorkspaceStore:
                  event_type, summary, json.dumps(payload or {}, ensure_ascii=False), utc_now()),
             )
 
+    # ── Team Members ─────────────────────────────────────────────────────────
+
+    _VALID_AVAILABILITY = frozenset({"available", "busy", "off"})
+
+    def create_team_member(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name", "")).strip()
+        if not name: raise ValueError("name is required")
+        member_id = str(uuid.uuid4())
+        now = utc_now()
+        skills = payload.get("skills", [])
+        if not isinstance(skills, list): skills = []
+        availability = payload.get("availability", "available")
+        if availability not in self._VALID_AVAILABILITY: availability = "available"
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO team_members (id,organization_id,user_id,name,email,role,trade,skills,phone,availability,notes,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (member_id, org, payload.get("userId"), name,
+                 str(payload.get("email",""))[:200], str(payload.get("role","Technician"))[:50],
+                 str(payload.get("trade",""))[:100], json.dumps(skills),
+                 str(payload.get("phone",""))[:50], availability,
+                 str(payload.get("notes",""))[:500], now, now),
+            )
+        return self._member_row({"id": member_id, "organization_id": org,
+            "user_id": payload.get("userId"), "name": name,
+            "email": payload.get("email",""), "role": payload.get("role","Technician"),
+            "trade": payload.get("trade",""), "skills": json.dumps(skills),
+            "phone": payload.get("phone",""), "availability": availability,
+            "notes": payload.get("notes",""), "created_at": now, "updated_at": now})
+
+    def update_team_member(self, org: str, member_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM team_members WHERE id=? AND organization_id=?", (member_id, org)).fetchone()
+            if not row: raise LookupError("Team member not found")
+            now = utc_now()
+            skills = payload.get("skills", json.loads(row["skills"] or "[]"))
+            if not isinstance(skills, list): skills = []
+            availability = payload.get("availability", row["availability"])
+            if availability not in self._VALID_AVAILABILITY: availability = row["availability"]
+            conn.execute(
+                "UPDATE team_members SET name=?,email=?,role=?,trade=?,skills=?,phone=?,availability=?,notes=?,updated_at=? WHERE id=?",
+                (str(payload.get("name", row["name"])).strip() or row["name"],
+                 str(payload.get("email", row["email"]))[:200],
+                 str(payload.get("role", row["role"]))[:50],
+                 str(payload.get("trade", row["trade"]))[:100],
+                 json.dumps(skills),
+                 str(payload.get("phone", row["phone"]))[:50],
+                 availability,
+                 str(payload.get("notes", row["notes"]))[:500],
+                 now, member_id),
+            )
+            updated = conn.execute("SELECT * FROM team_members WHERE id=?", (member_id,)).fetchone()
+        return self._member_row(updated)
+
+    def delete_team_member(self, org: str, member_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM team_members WHERE id=? AND organization_id=?", (member_id, org))
+        return cur.rowcount > 0
+
+    def list_team_members(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT m.*, COUNT(DISTINCT a.project_id) as project_count "
+                "FROM team_members m LEFT JOIN project_assignments a ON a.member_id=m.id "
+                "WHERE m.organization_id=? GROUP BY m.id ORDER BY m.name",
+                (org,),
+            ).fetchall()
+        return [self._member_row(r) for r in rows]
+
+    def get_team_member(self, org: str, member_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM team_members WHERE id=? AND organization_id=?", (member_id, org)).fetchone()
+        return self._member_row(row) if row else None
+
+    @staticmethod
+    def _member_row(r: Any) -> dict[str, Any]:
+        d = dict(r)
+        try: d["skills"] = json.loads(d.get("skills") or "[]")
+        except Exception: d["skills"] = []
+        return d
+
+    def assign_member(self, org: str, project_id: str, member_id: str, role_on_project: str = "") -> dict[str, Any]:
+        # Verify project exists in org
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM projects WHERE id=? AND organization_id=?", (project_id, org)).fetchone():
+                raise LookupError("Project not found")
+            if not conn.execute("SELECT 1 FROM team_members WHERE id=? AND organization_id=?", (member_id, org)).fetchone():
+                raise LookupError("Team member not found")
+            asgn_id = str(uuid.uuid4())
+            now = utc_now()
+            conn.execute(
+                "INSERT OR REPLACE INTO project_assignments (id,organization_id,project_id,member_id,role_on_project,assigned_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (asgn_id, org, project_id, member_id, role_on_project[:100], now),
+            )
+        return {"id": asgn_id, "projectId": project_id, "memberId": member_id,
+                "roleOnProject": role_on_project, "assignedAt": now}
+
+    def remove_assignment(self, org: str, project_id: str, member_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM project_assignments WHERE organization_id=? AND project_id=? AND member_id=?",
+                (org, project_id, member_id),
+            )
+        return cur.rowcount > 0
+
+    def list_project_assignments(self, org: str, project_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT a.id, a.project_id, a.member_id, a.role_on_project, a.assigned_at, "
+                "m.name, m.trade, m.availability, m.skills "
+                "FROM project_assignments a JOIN team_members m ON m.id=a.member_id "
+                "WHERE a.organization_id=? AND a.project_id=? ORDER BY m.name",
+                (org, project_id),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["skills"] = json.loads(d.get("skills") or "[]")
+            except Exception: d["skills"] = []
+            result.append(d)
+        return result
+
     # ── Privacy Controls ─────────────────────────────────────────────────────
 
     _DEFAULT_PURPOSES: list[tuple[str, int]] = [
@@ -3019,6 +3142,24 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             approvals = self.store.list_ai_approvals(self.organization_id, status_filter)
             self._json(HTTPStatus.OK, {"approvals": approvals})
             return
+        # Team members: GET /api/v1/team, GET /api/v1/team/:id
+        if path == "/api/v1/team":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"members": self.store.list_team_members(self.organization_id)})
+            return
+        if path.startswith("/api/v1/team/") and len(parts) == 3:
+            if not self._require_permission("projectRead"): return
+            member = self.store.get_team_member(self.organization_id, parts[2])
+            if not member: self._error(HTTPStatus.NOT_FOUND, "not_found", "Team member not found"); return
+            assignments = self.store.list_project_assignments(self.organization_id, None) if False else []
+            self._json(HTTPStatus.OK, {"member": member})
+            return
+        # Project team: GET /api/v1/projects/:id/team
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "team":
+            if not self._require_permission("projectRead"): return
+            members = self.store.list_project_assignments(self.organization_id, parts[3])
+            self._json(HTTPStatus.OK, {"members": members})
+            return
         if path == "/api/v1/agent/context":
             if not self._require_permission("agentContext"): return
             ctx = _build_agent_context(self.store)
@@ -3375,6 +3516,43 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError,json.JSONDecodeError) as error:
                 self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
             return
+        # Team members CRUD
+        if path == "/api/v1/team":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                member = self.store.create_team_member(self.organization_id, payload)
+                self._json(HTTPStatus.CREATED, {"member": member})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/team/") and parts[-1] == "delete":
+            if not self._require_permission("projectManage"): return
+            member_id = parts[-2]
+            if self.store.delete_team_member(self.organization_id, member_id):
+                self._json(HTTPStatus.OK, {"ok": True})
+            else:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Team member not found")
+            return
+        # Project assignments: POST /api/v1/projects/:id/team (assign), :id/team/:mid/remove
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "team":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                result = self.store.assign_member(self.organization_id, parts[3],
+                    payload.get("memberId",""), payload.get("roleOnProject",""))
+                self._json(HTTPStatus.CREATED, {"assignment": result})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/projects/") and len(parts) == 7 and parts[4] == "team" and parts[6] == "remove":
+            if not self._require_permission("projectManage"): return
+            self.store.remove_assignment(self.organization_id, parts[3], parts[5])
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
         # AI approval queue
         if path == "/api/v1/admin/ai-approvals":
             if not self._require_permission("adminPanel"): return
@@ -3559,6 +3737,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         regular_route = len(parts) == 6 and parts[:3] == ["api", "v1", "projects"] and parts[4] in {"work-items", "daily-updates", "locations"}
         unit_detail_route = len(parts)==8 and parts[:3]==["api","v1","projects"] and parts[4]=="locations" and parts[6]=="units"
         unit_route = len(parts) == 9 and parts[:3] == ["api", "v1", "projects"] and parts[4] == "locations" and parts[6] == "units" and parts[8] == "progress"
+        team_route = len(parts) == 3 and parts[:2] == ["api", "v1"] and parts[2].startswith("team/") or (len(parts)==3 and parts[1]=="v1" and parts[0]=="api")
+        team_member_route = len(parts) == 4 and parts[:2] == ["api","v1"] and parts[2] == "team"
+        if team_member_route:
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                member = self.store.update_team_member(self.organization_id, parts[3], payload)
+                self._json(HTTPStatus.OK, {"member": member})
+            except LookupError as err: self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            except (ValueError, json.JSONDecodeError) as err: self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
         if not regular_route and not unit_route and not unit_detail_route and not admin_node_route and not workflow_route and not custom_field_route:
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found")
             return
