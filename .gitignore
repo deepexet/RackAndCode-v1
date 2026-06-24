@@ -10,3 +10,4 @@ __pycache__/
 .env
 .env.local
 data/.master_key
+docs/AGENT_CONTEXT.json

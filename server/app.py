@@ -264,6 +264,149 @@ def _build_platform_growth() -> dict[str, Any]:
     }
 
 
+def _build_agent_context(store: "WorkspaceStore") -> dict[str, Any]:
+    """Assemble a complete machine-readable context snapshot for AI agents."""
+    repo = Path(__file__).parent.parent
+
+    # Git: recent commits
+    try:
+        raw = subprocess.check_output(
+            ["git", "log", "--format=%ad|%s|%H", "--date=short", "-n", "20"],
+            cwd=repo, text=True, stderr=subprocess.DEVNULL, timeout=5
+        ).strip().splitlines()
+        recent_commits = [
+            {"date": p[0], "subject": p[1], "hash": p[2][:8]}
+            for line in raw
+            if len(p := line.split("|", 2)) == 3
+        ]
+    except Exception:
+        recent_commits = []
+
+    # Git: migration files list
+    try:
+        migrations_dir = repo / "server" / "migrations"
+        migrations = sorted(p.name for p in migrations_dir.glob("*.sql"))
+    except Exception:
+        migrations = []
+
+    # Tasks from workspace
+    ws = store.get()
+    tasks = ws.get("tasks", [])
+    done_ids = {t["id"] for t in tasks if t["status"] == "done"}
+
+    def task_summary(t: dict) -> dict:
+        return {
+            "id": t["id"], "title": t["title"],
+            "area": t.get("area", ""), "priority": t.get("priority", ""),
+            "dependsOn": t.get("dependsOn") or [],
+            "description": (t.get("description") or "")[:200],
+        }
+
+    ready_tasks = [
+        task_summary(t) for t in tasks
+        if t["status"] in ("ready", "backlog")
+        and t.get("priority") in ("critical", "high")
+        and all(d in done_ids for d in (t.get("dependsOn") or []))
+    ]
+    in_progress = [task_summary(t) for t in tasks if t["status"] == "progress"]
+    recently_done = [task_summary(t) for t in tasks if t["status"] == "done"][-10:]
+
+    # Feature guides summary
+    try:
+        with store._connect() as conn:
+            guide_rows = conn.execute("SELECT task_id FROM feature_guides").fetchall()
+        guided_ids = {r["task_id"] for r in guide_rows}
+    except Exception:
+        guided_ids = set()
+
+    implemented = [
+        {**task_summary(t), "hasGuide": t["id"] in guided_ids}
+        for t in tasks if t["status"] == "done"
+    ]
+
+    return {
+        "meta": {
+            "platform": "RackPilot by Valeronix",
+            "description": "AI-native field operations platform — dependency-free Python HTTP + SQLite + Vanilla JS",
+            "schemaVersion": store.migration_result.current_version,
+            "generatedAt": utc_now(),
+        },
+        "stack": {
+            "backend": "Pure Python stdlib — no pip packages ever",
+            "database": "SQLite with numbered transactional migrations (server/migrations/NNN_*.sql)",
+            "frontend": "Vanilla HTML/CSS/ES-modules — no bundler, no frameworks",
+            "auth": "scrypt passwords, SHA-256 Bearer session tokens, 8h TTL",
+            "encryption": "HMAC-CTR stream cipher (stdlib), master key at data/.master_key",
+            "testing": "npm run check — 82 Python unittest tests must pass",
+            "server": "scripts/serve.sh binds 0.0.0.0:4173",
+        },
+        "rules": [
+            "NEVER install pip packages — stdlib + SQLite only, always",
+            "ALL schema changes via numbered migrations — never ALTER TABLE manually",
+            "Every public mutation endpoint must check _require_permission()",
+            "Every material domain change must produce an audit_log entry",
+            "Run npm run check before every commit — all 82 tests must be green",
+            "Update schema version constants in test_server.py and test_backup.py after new migration",
+            "Commit message: feat/fix/perf/chore(scope): description + Co-Authored-By trailer",
+            "X-RackPilot-Role header is dev-mode only — production uses Bearer sessions",
+            "Never commit secrets, master_key, .env, or plaintext passwords",
+            "Add tasks to workspace kanban for all work done (via SQLite update or API)",
+        ],
+        "team": {
+            "agents": [
+                {"id": "claude",   "name": "Claude",   "role": "Strategic Partner",   "model": "claude-sonnet-4-6", "focus": "Architecture, security, AI features, pairing with Codex"},
+                {"id": "codex",    "name": "Codex",    "role": "Lead Developer",       "focus": "Feature implementation, refactoring, test coverage"},
+                {"id": "scout",    "name": "Scout",    "role": "System Monitor",       "focus": "Health checks, anomaly detection"},
+                {"id": "guardian", "name": "Guardian", "role": "Security & Audit",     "focus": "Permission checks, audit trail integrity"},
+                {"id": "relay",    "name": "Relay",    "role": "Sync & Integrations",  "focus": "Git sync, webhooks, external connectors"},
+                {"id": "analyst",  "name": "Analyst",  "role": "Reports & Analytics",  "focus": "Metrics, daily reports, platform growth chart"},
+            ],
+            "collaboration": "Claude and Codex are equal partners. Codex picks up ready tasks; Claude handles architecture decisions, security review, and AI integration.",
+        },
+        "development": {
+            "readyTasks": ready_tasks[:15],
+            "inProgress": in_progress,
+            "recentlyDone": recently_done,
+            "recentCommits": recent_commits,
+        },
+        "platform": {
+            "implemented": implemented,
+            "migrations": migrations,
+            "totalTasks": len(tasks),
+            "doneCount": len(done_ids),
+        },
+        "handoff": {
+            "howToStart": [
+                "1. Read this context: GET /api/v1/agent/context (or docs/AGENT_CONTEXT.json)",
+                "2. Check readyTasks — pick the highest priority item with deps satisfied",
+                "3. Implement: edit server/app.py and/or web/app.js and/or web/index.html",
+                "4. Add migration if schema changes (server/migrations/NNN_description.sql)",
+                "5. Run: npm run check — all tests must pass",
+                "6. Update schema version in tests if migration added",
+                "7. git add + git commit with proper message",
+                "8. Update workspace task status (mark done in kanban)",
+            ],
+            "keyFiles": {
+                "server": "server/app.py",
+                "migrations": "server/migrations/",
+                "frontend_js": "web/app.js",
+                "frontend_html": "web/index.html",
+                "frontend_css": "web/styles.css",
+                "tests": "tests/",
+                "startScript": "scripts/serve.sh",
+                "envExample": ".env.example",
+            },
+        },
+    }
+
+
+def _write_agent_context_file(context: dict, repo: Path) -> None:
+    """Write context snapshot to docs/AGENT_CONTEXT.json for filesystem-based agents."""
+    out = repo / "docs" / "AGENT_CONTEXT.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 class WorkspaceStore:
     """SQLite-backed tenant workspaces with optimistic concurrency."""
 
@@ -1861,6 +2004,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK, {"features": self.store.list_feature_docs()})
             return
+        if path == "/api/v1/agent/context":
+            if not self._require_permission("adminPanel"): return
+            ctx = _build_agent_context(self.store)
+            repo = Path(__file__).parent.parent
+            threading.Thread(target=_write_agent_context_file, args=(ctx, repo), daemon=True).start()
+            self._json(HTTPStatus.OK, ctx)
+            return
         if path.startswith("/api/v1/admin/secrets/") and path.endswith("/reveal"):
             if not self._require_permission("adminPanel"): return
             secret_id = path.split("/")[-2]
@@ -2509,6 +2659,12 @@ def main() -> None:
     initial_password = store.ensure_initial_credentials()
     if initial_password:
         LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.fieldos", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))
+    # Write agent context snapshot for filesystem-based agents (Codex)
+    try:
+        _write_agent_context_file(_build_agent_context(store), Path(__file__).parent.parent)
+        LOGGER.info(json.dumps({"event": "agent_context_written", "path": "docs/AGENT_CONTEXT.json"}))
+    except Exception as _e:
+        LOGGER.warning(json.dumps({"event": "agent_context_write_failed", "error": str(_e)}))
     server = FieldOSServer((args.host, args.port), store, agent_token)
 
     def stop(_signum: int, _frame: Any) -> None:
