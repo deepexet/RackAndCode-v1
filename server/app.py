@@ -3517,13 +3517,13 @@ Rules:
                                  "subtitle": r["code"], "status": r["status"]})
             # Work items
             for r in conn.execute(
-                "SELECT wi.id, wi.title, wi.code, wi.status, wi.project_id, p.name as project_name "
+                "SELECT wi.id, wi.title, COALESCE(wi.code,'') as code, wi.status, wi.project_id, p.name as project_name "
                 "FROM project_work_items wi JOIN projects p ON p.id=wi.project_id AND p.organization_id=wi.organization_id "
-                "WHERE wi.organization_id=? AND (wi.title LIKE ? OR wi.code LIKE ? OR wi.description LIKE ?) LIMIT ?",
+                "WHERE wi.organization_id=? AND (wi.title LIKE ? OR COALESCE(wi.code,'') LIKE ? OR wi.description LIKE ?) LIMIT ?",
                 (org, q, q, q, limit),
             ).fetchall():
                 results.append({"type": "work_item", "id": r["id"], "projectId": r["project_id"],
-                                 "title": r["title"], "subtitle": f"{r['code']} · {r['project_name']}", "status": r["status"]})
+                                 "title": r["title"], "subtitle": f"{r['code']} · {r['project_name']}".strip(" ·"), "status": r["status"]})
             # Locations
             for r in conn.execute(
                 "SELECT pl.id, pl.name, pl.code, pl.project_id, p.name as project_name "
@@ -3536,7 +3536,7 @@ Rules:
             # Assets
             for r in conn.execute(
                 "SELECT id, name, make, model, status FROM dt_assets "
-                "WHERE organization_id=? AND (name LIKE ? OR make LIKE ? OR model LIKE ? OR serial LIKE ?) LIMIT ?",
+                "WHERE organization_id=? AND (name LIKE ? OR make LIKE ? OR model LIKE ? OR serial_number LIKE ?) LIMIT ?",
                 (org, q, q, q, q, limit),
             ).fetchall():
                 results.append({"type": "asset", "id": r["id"],
@@ -3564,7 +3564,7 @@ Rules:
         """Velocity, risk, burndown, and milestone analytics for a project."""
         with self._connect() as conn:
             proj = conn.execute(
-                "SELECT id, name, status, start_date, target_end_date FROM projects "
+                "SELECT id, name, status, start_date, target_date FROM projects "
                 "WHERE organization_id=? AND id=?", (org, project_id)
             ).fetchone()
             if proj is None:
@@ -3573,7 +3573,7 @@ Rules:
             # Work item totals
             totals = conn.execute(
                 "SELECT status, COUNT(*) as cnt, SUM(COALESCE(estimated_minutes,0)) as est_mins "
-                "FROM work_items WHERE organization_id=? AND project_id=? GROUP BY status",
+                "FROM project_work_items WHERE organization_id=? AND project_id=? GROUP BY status",
                 (org, project_id),
             ).fetchall()
             by_status: dict[str, int] = {}
@@ -3591,7 +3591,7 @@ Rules:
             # Items past due date
             if today:
                 overdue_items = conn.execute(
-                    "SELECT COUNT(*) FROM work_items "
+                    "SELECT COUNT(*) FROM project_work_items "
                     "WHERE organization_id=? AND project_id=? AND status!='done' "
                     "AND due_date IS NOT NULL AND due_date < ?",
                     (org, project_id, today),
@@ -3600,8 +3600,8 @@ Rules:
             # Velocity: daily updates in last 14 days
             vel_rows = conn.execute(
                 "SELECT work_date, COUNT(*) as events, "
-                "AVG(CASE WHEN completion_percent IS NOT NULL THEN completion_percent END) as avg_pct "
-                "FROM daily_updates WHERE organization_id=? AND project_id=? "
+                "AVG(CAST(percent_complete AS REAL)) as avg_pct "
+                "FROM daily_progress_entries WHERE organization_id=? AND project_id=? "
                 "AND work_date >= date('now','-14 days') GROUP BY work_date ORDER BY work_date",
                 (org, project_id),
             ).fetchall()

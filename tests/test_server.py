@@ -30,7 +30,8 @@ class WorkspaceStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def http_request(self, method, path, *, role="Administrator", payload=None):
+    def http_request(self, method, path, *, role="Administrator", payload=None, idempotency_key=None):
+        import uuid as _uuid
         server = FieldOSServer(("127.0.0.1", 0), self.store, "test-agent-token")
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -39,7 +40,7 @@ class WorkspaceStoreTests(unittest.TestCase):
             headers = {"X-Organization-ID": DEFAULT_ORGANIZATION_ID, "X-RackPilot-Role": role}
             if body is not None:
                 headers["Content-Type"] = "application/json"
-                headers["Idempotency-Key"] = f"test-{method}-{path}-{role}"
+                headers["Idempotency-Key"] = idempotency_key or str(_uuid.uuid4())
             connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
             connection.request(method, path, body=body, headers=headers)
             response = connection.getresponse()
@@ -122,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "053")
+        self.assertEqual(first.current_version, "054")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -494,6 +495,183 @@ class WorkspaceStoreTests(unittest.TestCase):
         edited=self.store.update_location(DEFAULT_ORGANIZATION_ID,project["id"],location["id"],{"expectedVersion":1,"audioDetails":{"zoneType":"amenity","speakerCount":8,"displayCount":2,"sourceDescription":"TV and music","equipmentNotes":"Rack A"}})
         self.assertEqual(edited["audioDetails"]["speakerCount"],8)
         self.assertEqual(edited["audioDetails"]["equipmentNotes"],"Rack A")
+
+
+    def test_global_search_returns_results_across_entities(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "SRCH", "name": "Search Test Project"})
+        wi = self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "Install Door Camera", "status": "ready"})
+        results = self.store.global_search(DEFAULT_ORGANIZATION_ID, "Camera")
+        types = {r["type"] for r in results["results"]}
+        self.assertIn("work_item", types)
+        titles = [r["title"] for r in results["results"]]
+        self.assertTrue(any("Camera" in t for t in titles))
+
+    def test_global_search_empty_query_returns_empty(self):
+        results = self.store.global_search(DEFAULT_ORGANIZATION_ID, "")
+        self.assertEqual(results["results"], [])
+
+    def test_notification_push_and_list(self):
+        notif_id = self.store.push_notification(
+            DEFAULT_ORGANIZATION_ID, "Test notification", "Body text",
+            notif_type="system", user_id="user-1"
+        )
+        self.assertIsNotNone(notif_id)
+        result = self.store.list_notifications(DEFAULT_ORGANIZATION_ID, user_id="user-1")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["title"], "Test notification")
+        self.assertFalse(result[0]["read"])
+
+    def test_notification_mark_read(self):
+        self.store.push_notification(DEFAULT_ORGANIZATION_ID, "N1", notif_type="system")
+        self.store.push_notification(DEFAULT_ORGANIZATION_ID, "N2", notif_type="system")
+        count = self.store.mark_notifications_read(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(count, 2)
+        result = self.store.list_notifications(DEFAULT_ORGANIZATION_ID, unread_only=True)
+        self.assertEqual(result, [])
+
+    def test_service_monitor_create_and_list(self):
+        monitor = self.store.create_monitor(DEFAULT_ORGANIZATION_ID, {
+            "name": "Office Router", "checkType": "ping", "target": "192.168.1.1"
+        })
+        self.assertEqual(monitor["name"], "Office Router")
+        self.assertEqual(monitor["last_status"], "unknown")
+        monitors = self.store.list_monitors(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(monitors), 1)
+
+    def test_service_monitor_event_record_updates_status(self):
+        monitor = self.store.create_monitor(DEFAULT_ORGANIZATION_ID, {
+            "name": "Test Host", "checkType": "tcp", "target": "10.0.0.1", "port": 443
+        })
+        self.store.record_monitor_event(DEFAULT_ORGANIZATION_ID, monitor["id"], "up", latency_ms=12.5)
+        monitors = self.store.list_monitors(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(monitors[0]["last_status"], "up")
+        self.assertAlmostEqual(monitors[0]["last_latency_ms"], 12.5)
+
+    def test_monitor_delete_removes_entry(self):
+        monitor = self.store.create_monitor(DEFAULT_ORGANIZATION_ID, {"name": "X", "target": "1.1.1.1"})
+        self.store.delete_monitor(DEFAULT_ORGANIZATION_ID, monitor["id"])
+        self.assertEqual(self.store.list_monitors(DEFAULT_ORGANIZATION_ID), [])
+
+    def test_compute_job_submit_dispatch_complete(self):
+        job = self.store.submit_compute_job(DEFAULT_ORGANIZATION_ID, "report_gen", {"format": "pdf"}, priority=3)
+        self.assertEqual(job["status"], "pending")
+        dispatched = self.store.dispatch_compute_job(DEFAULT_ORGANIZATION_ID, job["id"], "node-abc")
+        self.assertEqual(dispatched["status"], "dispatched")
+        self.assertEqual(dispatched["node_id"], "node-abc")
+        self.store.complete_compute_job(DEFAULT_ORGANIZATION_ID, job["id"], {"pages": 5})
+        jobs = self.store.list_compute_jobs(DEFAULT_ORGANIZATION_ID, status="done")
+        self.assertEqual(len(jobs), 1)
+
+    def test_compute_job_invalid_type_raises(self):
+        with self.assertRaises(ValueError):
+            self.store.submit_compute_job(DEFAULT_ORGANIZATION_ID, "invalid_type", {})
+
+    def test_connector_upsert_and_list(self):
+        conn = self.store.upsert_connector(DEFAULT_ORGANIZATION_ID, "webhook", "Jobber Webhook", {"url": "https://example.com"})
+        self.assertEqual(conn["connector_type"], "webhook")
+        self.assertEqual(conn["status"], "active")
+        connectors = self.store.list_connectors(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(connectors), 1)
+
+    def test_connector_upsert_is_idempotent(self):
+        self.store.upsert_connector(DEFAULT_ORGANIZATION_ID, "jobber", "Jobber A", {})
+        self.store.upsert_connector(DEFAULT_ORGANIZATION_ID, "jobber", "Jobber B", {})
+        connectors = self.store.list_connectors(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(connectors), 1)
+        self.assertEqual(connectors[0]["name"], "Jobber B")
+
+    def test_team_presence_upsert_and_list(self):
+        member = self.store.create_team_member(DEFAULT_ORGANIZATION_ID, {"name": "Alice", "trade": "technician"})
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "P1", "name": "Site A"})
+        presence = self.store.upsert_presence(
+            DEFAULT_ORGANIZATION_ID, proj["id"], member["id"], "2026-06-24",
+            check_in="2026-06-24T08:00:00Z", notes="On site"
+        )
+        self.assertIsNotNone(presence["id"])
+        records = self.store.list_presence(DEFAULT_ORGANIZATION_ID, proj["id"], "2026-06-24", "2026-06-24")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["memberName"], "Alice")
+
+    def test_presence_upsert_is_idempotent(self):
+        member = self.store.create_team_member(DEFAULT_ORGANIZATION_ID, {"name": "Bob", "trade": "lead"})
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "P2", "name": "Site B"})
+        self.store.upsert_presence(DEFAULT_ORGANIZATION_ID, proj["id"], member["id"], "2026-06-24")
+        self.store.upsert_presence(DEFAULT_ORGANIZATION_ID, proj["id"], member["id"], "2026-06-24", notes="Updated")
+        records = self.store.list_presence(DEFAULT_ORGANIZATION_ID, proj["id"], "2026-06-24", "2026-06-24")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["notes"], "Updated")
+
+    def test_project_analytics_returns_risk_and_velocity(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "ANA", "name": "Analytics Test"})
+        self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "Task A", "status": "done"})
+        self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "Task B", "status": "ready"})
+        analytics = self.store.get_project_analytics(DEFAULT_ORGANIZATION_ID, proj["id"])
+        self.assertEqual(analytics["totalItems"], 2)
+        self.assertEqual(analytics["doneItems"], 1)
+        self.assertEqual(analytics["pctDone"], 50)
+        self.assertIn("riskScore", analytics)
+        self.assertIn(analytics["riskLevel"], ("low", "medium", "high", "critical"))
+
+    def test_bulk_status_update_via_store(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "BLK", "name": "Bulk Test"})
+        wi1 = self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "Item 1", "status": "ready"})
+        wi2 = self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "Item 2", "status": "ready"})
+        ids = [wi1["id"], wi2["id"]]
+        updated = skipped = 0
+        for item_id in ids:
+            try:
+                self.store.update_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], item_id,
+                                             {"expectedVersion": 1, "status": "progress"})
+                updated += 1
+            except Exception:
+                skipped += 1
+        self.assertEqual(updated, 2)
+        self.assertEqual(skipped, 0)
+
+    def _make_user(self):
+        import uuid as _uuid
+        with self.store._connect() as conn:
+            uid = str(_uuid.uuid4())
+            conn.execute(
+                "INSERT INTO users (id, email, display_name, created_at) VALUES (?,?,?,datetime('now'))",
+                (uid, f"{uid[:8]}@test.invalid", "Test User"),
+            )
+            conn.execute(
+                "INSERT INTO memberships (organization_id, user_id, role, status, created_at) "
+                "VALUES (?,?,?,?,datetime('now'))",
+                (DEFAULT_ORGANIZATION_ID, uid, "Administrator", "active"),
+            )
+        return uid
+
+    def test_document_entity_link(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "DOC", "name": "Doc Link Test"})
+        asset = self.store.create_asset(DEFAULT_ORGANIZATION_ID, proj["id"], {"name": "Router", "assetType": "network"})
+        uid = self._make_user()
+        dummy_bytes = b"test file content"
+        obj = self.store.store_object(DEFAULT_ORGANIZATION_ID, proj["id"], "readme.txt", "text/plain", dummy_bytes, uid)
+        linked = self.store.link_object_to_entity(DEFAULT_ORGANIZATION_ID, obj["id"], "asset", asset["id"])
+        self.assertEqual(linked["linkedEntityType"], "asset")
+        self.assertEqual(linked["linkedEntityId"], asset["id"])
+        docs = self.store.list_objects_for_entity(DEFAULT_ORGANIZATION_ID, "asset", asset["id"])
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(docs[0]["name"], "readme.txt")
+
+    def test_document_link_invalid_entity_type_raises(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "DLI", "name": "Link Invalid"})
+        uid = self._make_user()
+        obj = self.store.store_object(DEFAULT_ORGANIZATION_ID, proj["id"], "file.txt", "text/plain", b"x", uid)
+        with self.assertRaises(ValueError):
+            self.store.link_object_to_entity(DEFAULT_ORGANIZATION_ID, obj["id"], "invalid_type", "some-id")
+
+    def test_webhook_event_queued_on_work_item_done(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "WHK", "name": "Webhook Test"})
+        wi_id = self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "WHK Item", "status": "ready"})["id"]
+        event_id = self.store.queue_webhook_event(DEFAULT_ORGANIZATION_ID, None, "work_item.done", {"workItemId": wi_id})
+        self.assertIsNotNone(event_id)
+        with self.store._connect() as conn:
+            row = conn.execute("SELECT * FROM webhook_events WHERE id=?", (event_id,)).fetchone()
+        self.assertEqual(row["event_type"], "work_item.done")
+        self.assertEqual(row["status"], "pending")
 
 
 if __name__ == "__main__":
