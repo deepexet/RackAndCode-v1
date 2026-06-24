@@ -42,6 +42,70 @@ MIGRATIONS_DIR = ROOT / "server" / "migrations"
 OPENAPI_PATH = ROOT / "docs" / "openapi.yaml"
 MAX_BODY_BYTES = 2 * 1024 * 1024
 ALLOWED_STATUSES = {"ideas", "backlog", "ready", "progress", "blocked", "review", "testing", "done"}
+
+_RUNBOOKS = [
+    {
+        "id": "rb-001", "title": "High P95 Latency",
+        "trigger": "P95 latency > 500ms for 5 consecutive minutes",
+        "severity": "warning",
+        "steps": [
+            "Check /api/v1/admin/api-metrics for top slow routes",
+            "Run EXPLAIN QUERY PLAN on the top route's SQL (sqlite3 data/fieldos.db)",
+            "Verify no full table scans: add index if needed and run migration",
+            "Restart server process if latency persists after index fix",
+        ],
+        "escalation": "If p95 > 2000ms for 30min, enable request logging and notify on-call",
+    },
+    {
+        "id": "rb-002", "title": "Elevated Error Rate (>1%)",
+        "trigger": "Error rate > 1% over last 100 requests",
+        "severity": "warning",
+        "steps": [
+            "Identify which status codes are elevated in /api/v1/admin/api-metrics",
+            "For 5xx: check server log for tracebacks (grep ERROR fieldos.log)",
+            "For 4xx spike: check if a client is sending malformed requests",
+            "Roll back last migration if errors started after schema change",
+        ],
+        "escalation": "If availability < 95% for 10min, declare incident and restore from backup",
+    },
+    {
+        "id": "rb-003", "title": "Database Corruption / Write Failure",
+        "trigger": "sqlite3.DatabaseError or PRAGMA integrity_check fails",
+        "severity": "critical",
+        "steps": [
+            "STOP all write traffic: bring server offline",
+            "Run: sqlite3 data/fieldos.db 'PRAGMA integrity_check'",
+            "If corrupt: restore latest backup from data/backups/",
+            "Verify backup: python3 -c \"import sqlite3; sqlite3.connect('data/fieldos.db').execute('SELECT 1')\"",
+            "Restart server, verify migration runner completes cleanly",
+        ],
+        "escalation": "Preserve corrupted file at data/fieldos.db.corrupt.$(date +%s) before restore",
+    },
+    {
+        "id": "rb-004", "title": "Backup Verification Failure",
+        "trigger": "Backup checksum mismatch or integrity_check returns errors",
+        "severity": "critical",
+        "steps": [
+            "Do NOT overwrite the current DB with a bad backup",
+            "Run POST /api/v1/admin/backup to create a fresh verified backup",
+            "Check backup logs for retention policy issues",
+            "Verify disk space: df -h data/",
+        ],
+        "escalation": "If all recent backups fail integrity_check, treat as corruption (RB-003)",
+    },
+    {
+        "id": "rb-005", "title": "Authentication Failures Spike",
+        "trigger": ">10 failed logins in 5 minutes from one IP",
+        "severity": "warning",
+        "steps": [
+            "Review audit_log for failed_login events: SELECT * FROM audit_log WHERE event_type='failed_login' ORDER BY created_at DESC LIMIT 20",
+            "Identify source IP from X-Forwarded-For header in server logs",
+            "Force-rotate affected user's password via admin panel if account appears compromised",
+            "Consider enabling MFA for all Administrator accounts",
+        ],
+        "escalation": "If admin account locked, use CLI: python3 server/app.py --reset-admin (NOT YET IMPLEMENTED — manual DB update)",
+    },
+]
 ALLOWED_PRIORITIES = {"critical", "high", "medium", "low"}
 ALLOWED_PROJECT_STATUSES = {"planned", "active", "on_hold", "completed", "cancelled"}
 ALLOWED_BUILDING_STATUSES = {"planned", "active", "on_hold", "completed"}
@@ -979,6 +1043,7 @@ class WorkspaceStore:
                     "taskCount": len(stage_states), "progress": stage_progress,
                 })
             work_type_progress = []
+            field_evidence_values: list[int] = []
             for work_type in project_work_types:
                 typed_items = [item for item in project_items if item["work_type_id"] == work_type["id"]]
                 typed_states = [item["effective_status"] for item in typed_items]
@@ -989,8 +1054,9 @@ class WorkspaceStore:
                 daily_values = [update["percent_complete"] for update in latest_by_scope.values()]
                 unit_values = [UNIT_PROGRESS.get(progress["status"], 0) for progress in project_unit_progress if progress["work_type_id"] == work_type["id"]]
                 task_values = [TASK_PROGRESS.get(status, 0) for status in typed_states]
-                evidence_values = daily_values + unit_values + task_values
-                typed_progress = round(sum(evidence_values) / len(evidence_values)) if evidence_values else 0
+                # Combined for display in work-type card (tasks + field evidence)
+                display_values = daily_values + unit_values + task_values
+                typed_progress = round(sum(display_values) / len(display_values)) if display_values else 0
                 work_type_progress.append({
                     "id": work_type["id"], "code": work_type["code"], "name": work_type["name"],
                     "color": work_type["color"], "taskCount": len(typed_items), "progress": typed_progress,
@@ -998,8 +1064,11 @@ class WorkspaceStore:
                     "blocked": sum(status == "blocked" for status in typed_states),
                     "fieldUpdateCount": len(daily_values) + len(unit_values),
                 })
-            field_progress_values = [value["progress"] for value in work_type_progress if value["fieldUpdateCount"]]
-            project_progress_values = task_progress_values + field_progress_values
+                # For overall project progress, collect pure field evidence separately
+                # to avoid double-counting tasks that are already in task_progress_values
+                field_evidence_values.extend(daily_values + unit_values)
+            # Overall: tasks + field evidence (no double-counting)
+            project_progress_values = task_progress_values + field_evidence_values
             progress = round(sum(project_progress_values) / len(project_progress_values)) if project_progress_values else 0
             work_type_by_id = {value["id"]: value["name"] for value in project_work_types}
             action_by_id = {value["id"]: value["name"] for value in work_actions}
@@ -1425,25 +1494,111 @@ class WorkspaceStore:
         return next(value for value in next(loc for loc in refreshed["locations"] if loc["id"]==location_id)["units"] if value["id"]==unit_id)  # type: ignore[index]
 
     def generate_daily_report(self, organization_id: str, project_id: str, work_date: str) -> dict[str, Any]:
-        project=self.get_project(organization_id,project_id)
-        if project is None: raise LookupError("Project not found")
-        groups: dict[tuple[str,str,str],list[str]]={}
+        project = self.get_project(organization_id, project_id)
+        if project is None:
+            raise LookupError("Project not found")
+
+        # Unit completions grouped by location / work type / action
+        unit_groups: dict[tuple[str, str, str], list[str]] = {}
         for location in project["locations"]:
             for unit in location["units"]:
                 for progress in unit["progress"]:
-                    if progress["completedOn"]==work_date and progress["status"]=="complete":
-                        work=next((value["name"] for value in project["workTypes"] if value["id"]==progress["workTypeId"]),progress["workTypeId"])
-                        action=next((action["name"] for value in project["workTypes"] if value["id"]==progress["workTypeId"] for action in value["actions"] if action["id"]==progress["actionId"]),progress["actionId"])
-                        groups.setdefault((location["name"],work,action),[]).append(unit["name"])
-        lines=[f"Daily update — {project['name']} — {work_date}"]
-        for (location,work,action),units in groups.items(): lines.append(f"• {location} / {work} / {action}: {', '.join(units)}")
-        for update in project["dailyUpdates"]:
-            if update["workDate"]==work_date: lines.append(f"• {update['locationName']} / {update['workTypeName']} / {update['actionName']}: {update['percentComplete']}%{(' — '+update['comments']) if update['comments'] else ''}")
-        open_issues=[value for value in project["issues"] if value["status"]!="resolved" and value["createdAt"].startswith(work_date)]
+                    if progress["completedOn"] == work_date and progress["status"] == "complete":
+                        work = next((v["name"] for v in project["workTypes"] if v["id"] == progress["workTypeId"]), progress["workTypeId"])
+                        action = next((a["name"] for v in project["workTypes"] if v["id"] == progress["workTypeId"] for a in v["actions"] if a["id"] == progress["actionId"]), progress["actionId"])
+                        unit_groups.setdefault((location["name"], work, action), []).append(unit["name"])
+
+        # Daily progress updates for this date
+        day_updates = [u for u in project["dailyUpdates"] if u["workDate"] == work_date]
+
+        # Issues opened on this date (any status)
+        day_issues = [i for i in project["issues"] if i["createdAt"].startswith(work_date)]
+        open_issues = [i for i in day_issues if i["status"] != "resolved"]
+
+        # Work items changed today (from change log) — pull from audit
+        with self._connect() as conn:
+            wi_events = conn.execute(
+                """SELECT entity_type, action, old_value, new_value, created_at
+                   FROM project_change_log
+                   WHERE organization_id=? AND project_id=? AND created_at LIKE ?
+                     AND entity_type IN ('work_item','work_item_dep')
+                   ORDER BY created_at""",
+                (organization_id, project_id, f"{work_date}%"),
+            ).fetchall()
+            # Fetch any saved note for the day
+            saved_note = conn.execute(
+                "SELECT note, updated_at FROM daily_log_notes WHERE organization_id=? AND project_id=? AND work_date=?",
+                (organization_id, project_id, work_date),
+            ).fetchone() if conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='daily_log_notes'"
+            ).fetchone() else None
+
+        # Build structured sections
+        sections = []
+        if unit_groups:
+            items = []
+            for (loc, work, action), units in unit_groups.items():
+                items.append({"location": loc, "workType": work, "action": action, "units": units, "count": len(units)})
+            sections.append({"type": "unit_completions", "title": "Выполненные units", "items": items})
+
+        if day_updates:
+            sections.append({
+                "type": "progress_updates",
+                "title": "Обновления прогресса",
+                "items": [{"location": u["locationName"], "workType": u["workTypeName"],
+                            "action": u["actionName"], "percent": u["percentComplete"],
+                            "comments": u.get("comments", "")} for u in day_updates],
+            })
+
+        if wi_events:
+            wi_items = []
+            for ev in wi_events:
+                old = json.loads(ev["old_value"]) if ev["old_value"] else {}
+                new = json.loads(ev["new_value"]) if ev["new_value"] else {}
+                if old.get("status") != new.get("status"):
+                    wi_items.append({"action": "status_change", "from": old.get("status"), "to": new.get("status")})
+            if wi_items:
+                sections.append({"type": "work_item_events", "title": "Изменения задач", "items": wi_items})
+
         if open_issues:
-            lines.append("Issues:"); lines.extend(f"• [{value['severity'].upper()}] {value['description']}" for value in open_issues)
-        if len(lines)==1: lines.append("No completed work recorded for this date.")
-        return {"projectId":project_id,"date":work_date,"text":"\n".join(lines),"unitCompletions":sum(len(value) for value in groups.values()),"updates":sum(value["workDate"]==work_date for value in project["dailyUpdates"]),"issues":len(open_issues)}
+            sections.append({
+                "type": "issues",
+                "title": f"Проблемы ({len(open_issues)} открыто)",
+                "items": [{"severity": i["severity"], "description": i["description"], "status": i["status"]} for i in open_issues],
+            })
+
+        # Plain-text summary for copy-paste / field note
+        lines = [f"Daily update — {project['name']} — {work_date}"]
+        for (loc, work, action), units in unit_groups.items():
+            lines.append(f"• {loc} / {work} / {action}: {', '.join(units)}")
+        for u in day_updates:
+            lines.append(f"• {u['locationName']} / {u['workTypeName']} / {u['actionName']}: {u['percentComplete']}%"
+                         + (f" — {u['comments']}" if u.get("comments") else ""))
+        for i in open_issues:
+            lines.append(f"• [{i['severity'].upper()}] {i['description']}")
+        if len(lines) == 1:
+            lines.append("No completed work recorded for this date.")
+
+        unit_completions = sum(len(v) for v in unit_groups.values())
+        return {
+            "projectId": project_id,
+            "projectName": project["name"],
+            "date": work_date,
+            "text": "\n".join(lines),
+            "manualNote": saved_note["note"] if saved_note else "",
+            "sections": sections,
+            # top-level fields kept for backwards compat
+            "unitCompletions": unit_completions,
+            "updates": len(day_updates),
+            "issues": len(open_issues),
+            "stats": {
+                "unitCompletions": unit_completions,
+                "progressUpdates": len(day_updates),
+                "issuesOpened": len(day_issues),
+                "issuesOpen": len(open_issues),
+                "workItemEvents": len(wi_events),
+            },
+        }
 
     def save_daily_update(self, organization_id: str, project_id: str, payload: dict[str, Any], entry_id: str | None = None) -> dict[str, Any]:
         project = self.get_project(organization_id, project_id)
@@ -1524,6 +1679,116 @@ class WorkspaceStore:
                               "daily_update" if action_name == "created" else "daily_update_edit",
                               f"{'Создан' if action_name == 'created' else 'Обновлён'} отчёт — {loc_name} · {wt_name} · {percent}%")
         return result
+
+    def calculate_critical_path(self, organization_id: str, project_id: str) -> dict[str, Any]:
+        """Longest dependency chain and per-item slack using topological DP."""
+        with self._connect() as conn:
+            items = conn.execute(
+                "SELECT id, code, title, status, estimated_minutes FROM project_work_items "
+                "WHERE organization_id=? AND project_id=? AND status<>'done'",
+                (organization_id, project_id),
+            ).fetchall()
+            deps = conn.execute(
+                "SELECT dependent_item_id, predecessor_item_id FROM work_item_dependencies "
+                "WHERE organization_id=? AND project_id=?",
+                (organization_id, project_id),
+            ).fetchall()
+
+        id_to_item = {r['id']: dict(r) for r in items}
+        successors: dict[str, list[str]] = {i: [] for i in id_to_item}
+        predecessors: dict[str, list[str]] = {i: [] for i in id_to_item}
+        for dep in deps:
+            dep_id, pred_id = dep['dependent_item_id'], dep['predecessor_item_id']
+            if dep_id in id_to_item and pred_id in id_to_item:
+                successors.setdefault(pred_id, []).append(dep_id)
+                predecessors.setdefault(dep_id, []).append(pred_id)
+
+        # Topological sort (Kahn's algorithm)
+        in_degree = {i: len(predecessors.get(i, [])) for i in id_to_item}
+        queue = [i for i, d in in_degree.items() if d == 0]
+        topo: list[str] = []
+        while queue:
+            node = queue.pop(0)
+            topo.append(node)
+            for s in successors.get(node, []):
+                in_degree[s] -= 1
+                if in_degree[s] == 0:
+                    queue.append(s)
+
+        # Earliest start (forward pass)
+        est: dict[str, int] = {i: 0 for i in id_to_item}
+        dur: dict[str, int] = {i: (id_to_item[i].get('estimated_minutes') or 60) for i in id_to_item}
+        for node in topo:
+            for s in successors.get(node, []):
+                est[s] = max(est[s], est[node] + dur[node])
+
+        project_duration = max((est[i] + dur[i] for i in id_to_item), default=0)
+
+        # Latest finish (backward pass)
+        lft: dict[str, int] = {i: project_duration for i in id_to_item}
+        for node in reversed(topo):
+            for s in successors.get(node, []):
+                lft[node] = min(lft[node], lft[s] - dur[node])
+
+        # Slack = LFT − EST − duration; critical = slack == 0
+        critical_ids: set[str] = set()
+        item_data = []
+        for i in id_to_item:
+            slack = lft[i] - est[i] - dur[i]
+            is_critical = slack <= 0 and est[i] + dur[i] <= project_duration
+            if is_critical:
+                critical_ids.add(i)
+            item_data.append({
+                'id': i, 'code': id_to_item[i]['code'], 'title': id_to_item[i]['title'],
+                'status': id_to_item[i]['status'],
+                'est_minutes': dur[i], 'earliest_start': est[i],
+                'slack_minutes': max(0, slack), 'is_critical': is_critical,
+            })
+
+        # Critical path sequence (topological order among critical nodes)
+        cp_sequence = [d for d in item_data if d['is_critical']]
+        cp_sequence.sort(key=lambda x: x['earliest_start'])
+
+        return {
+            'project_duration_minutes': project_duration,
+            'critical_path': cp_sequence,
+            'all_items': item_data,
+        }
+
+    def sync_blocked_status(self, organization_id: str, project_id: str, completed_item_id: str) -> list[str]:
+        """After item completes, auto-unblock items that were only waiting on it.
+        Returns list of item IDs that transitioned from blocked→ready."""
+        with self._connect() as conn:
+            # Find items that depended on the completed item
+            dependents = conn.execute(
+                "SELECT dependent_item_id FROM work_item_dependencies "
+                "WHERE organization_id=? AND project_id=? AND predecessor_item_id=?",
+                (organization_id, project_id, completed_item_id),
+            ).fetchall()
+            unblocked: list[str] = []
+            for dep in dependents:
+                dep_id = dep['dependent_item_id']
+                item_row = conn.execute(
+                    "SELECT status FROM project_work_items WHERE organization_id=? AND id=?",
+                    (organization_id, dep_id),
+                ).fetchone()
+                if not item_row or item_row['status'] != 'blocked':
+                    continue
+                # Check if there are any remaining incomplete predecessors
+                remaining = conn.execute(
+                    "SELECT COUNT(*) as cnt FROM work_item_dependencies d "
+                    "JOIN project_work_items p ON p.id=d.predecessor_item_id "
+                    "WHERE d.organization_id=? AND d.dependent_item_id=? AND p.status<>'done'",
+                    (organization_id, dep_id),
+                ).fetchone()
+                if remaining and remaining['cnt'] == 0:
+                    conn.execute(
+                        "UPDATE project_work_items SET status='ready', version=version+1, updated_at=? "
+                        "WHERE organization_id=? AND id=?",
+                        (_now(), organization_id, dep_id),
+                    )
+                    unblocked.append(dep_id)
+        return unblocked
 
     def add_work_item_dependency(self, organization_id: str, project_id: str, item_id: str, predecessor_id: str) -> dict[str, Any]:
         project = self.get_project(organization_id, project_id)
@@ -4421,6 +4686,11 @@ class ApiMetricsRecorder:
             if len(self._events) > self.retention:
                 self._events = self._events[-self.retention:]
 
+    # SLO targets — tunable constants
+    SLO_AVAILABILITY = 99.5   # % of non-5xx responses
+    SLO_P95_MS = 500.0        # p95 latency budget ms
+    SLO_ERROR_RATE = 1.0      # max % 4xx+5xx
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             events = list(self._events)
@@ -4430,17 +4700,48 @@ class ApiMetricsRecorder:
         method_counts = Counter(str(event["method"]) for event in events)
         route_counts = Counter(str(event["route"]) for event in events)
         p95_index = max(0, min(count - 1, int(count * 0.95) - 1)) if count else 0
+        avg_ms = round(sum(durations) / count, 2) if count else 0
+        p95_ms = round(durations[p95_index], 2) if count else 0
+        error_count = sum(1 for e in events if int(e["status"]) >= 400)
+        server_error_count = sum(1 for e in events if int(e["status"]) >= 500)
+        error_rate = round(100.0 * error_count / count, 2) if count else 0.0
+        availability = round(100.0 * (count - server_error_count) / count, 2) if count else 100.0
+
+        # SLO status
+        slos = [
+            {
+                "name": "Availability",
+                "target": f"{self.SLO_AVAILABILITY}%",
+                "current": f"{availability}%",
+                "ok": availability >= self.SLO_AVAILABILITY,
+            },
+            {
+                "name": "P95 latency",
+                "target": f"≤{self.SLO_P95_MS}ms",
+                "current": f"{p95_ms}ms",
+                "ok": p95_ms <= self.SLO_P95_MS or count == 0,
+            },
+            {
+                "name": "Error rate",
+                "target": f"≤{self.SLO_ERROR_RATE}%",
+                "current": f"{error_rate}%",
+                "ok": error_rate <= self.SLO_ERROR_RATE or count == 0,
+            },
+        ]
         return {
             "requestCount": count,
-            "averageMs": round(sum(durations) / count, 2) if count else 0,
-            "p95Ms": round(durations[p95_index], 2) if count else 0,
-            "errorCount": sum(1 for event in events if int(event["status"]) >= 400),
+            "averageMs": avg_ms,
+            "p95Ms": p95_ms,
+            "errorCount": error_count,
+            "errorRate": error_rate,
+            "availability": availability,
             "statusCounts": dict(sorted(status_counts.items())),
             "methodCounts": dict(sorted(method_counts.items())),
             "topRoutes": [{"route": route, "count": value} for route, value in route_counts.most_common(8)],
             "recent": list(reversed(events[-80:])),
             "updatedAt": utc_now(),
             "retention": self.retention,
+            "slos": slos,
         }
 
 
@@ -4523,6 +4824,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/admin/git-sync":
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"settings":self.store.get_git_sync_settings(self.organization_id)})
+            return
+        if path == "/api/v1/admin/runbooks":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, {"runbooks": _RUNBOOKS})
             return
         if path == "/api/v1/admin/api-metrics":
             if not self._require_permission("apiMonitor"): return
@@ -4737,6 +5042,48 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"comments": comments})
             except LookupError as err:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        # Daily log note: GET /api/v1/projects/:id/daily-log-note?date=YYYY-MM-DD
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "daily-log-note":
+            if not self._require_permission("projectRead"): return
+            work_date = self._params().get("date", utc_now()[:10])
+            with self.store._connect() as conn:
+                row = conn.execute(
+                    "SELECT note, updated_at FROM daily_log_notes WHERE organization_id=? AND project_id=? AND work_date=?",
+                    (self.organization_id, parts[3], work_date),
+                ).fetchone()
+            self._json(HTTPStatus.OK, {"note": row["note"] if row else "", "updatedAt": row["updated_at"] if row else None})
+            return
+        # Critical path: GET /api/v1/projects/:id/critical-path
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "critical-path":
+            if not self._require_permission("projectRead"): return
+            try:
+                result = self.store.calculate_critical_path(self.organization_id, parts[3])
+                self._json(HTTPStatus.OK, result)
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        # Unit registry: GET /api/v1/projects/:id/units
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "units":
+            if not self._require_permission("projectRead"): return
+            project = self.store.get_project(self.organization_id, parts[3])
+            if project is None:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Project not found")
+                return
+            flat_units = []
+            for loc in project.get("locations", []):
+                for unit in loc.get("units", []):
+                    flat_units.append({
+                        "id": unit["id"],
+                        "code": unit["code"],
+                        "name": unit["name"],
+                        "notes": unit["notes"],
+                        "version": unit["version"],
+                        "locationId": loc["id"],
+                        "locationName": loc["name"],
+                        "customFields": unit.get("customFields", {}),
+                    })
+            self._json(HTTPStatus.OK, {"units": flat_units, "projectId": parts[3]})
             return
         # Field note drafts: GET /api/v1/projects/:id/notes
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "notes":
@@ -5514,6 +5861,27 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 )
                 self._error(HTTPStatus.BAD_GATEWAY, "llm_error", str(err))
             return
+        # Daily log note save: POST /api/v1/projects/:id/daily-log-note
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "daily-log-note":
+            if not self._require_permission("projectRead"): return
+            try:
+                data = json.loads(self.body)
+                work_date = data.get("date", utc_now()[:10])
+                note = str(data.get("note", ""))[:5000]
+                actor = self.session_context.get("user_id", "system")
+                now = utc_now()
+                with self.store._connect() as conn:
+                    conn.execute(
+                        """INSERT INTO daily_log_notes (id, organization_id, project_id, work_date, note, author_id, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT (organization_id, project_id, work_date)
+                           DO UPDATE SET note=excluded.note, author_id=excluded.author_id, updated_at=excluded.updated_at""",
+                        (str(uuid.uuid4()), self.organization_id, parts[3], work_date, note, actor, now, now),
+                    )
+                self._json(HTTPStatus.OK, {"note": note, "updatedAt": now})
+            except (ValueError, KeyError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_payload", str(err))
+            return
         # Project import: POST /api/v1/projects/import
         if path == "/api/v1/projects/import":
             if not self._require_permission("projectManage"): return
@@ -5710,6 +6078,16 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 response = {"organizationId": self.organization_id, "unit": unit}
             elif parts[4] == "work-items":
                 work_item = self.store.update_work_item(self.organization_id, parts[3], parts[5], payload)
+                # Auto-unblock dependents when a work item completes
+                if work_item.get("status") == "done":
+                    try:
+                        unblocked = self.store.sync_blocked_status(
+                            self.organization_id, parts[3], parts[5]
+                        )
+                        if unblocked:
+                            work_item["_unblocked"] = unblocked
+                    except Exception:
+                        pass
                 response = {"organizationId": self.organization_id, "workItem": work_item}
             elif parts[4] == "daily-updates":
                 daily_update = self.store.save_daily_update(self.organization_id, parts[3], payload, parts[5])

@@ -12,510 +12,1469 @@
       "id": "FS-013",
       "title": "Версионируемый API contract",
       "description": "Определить REST conventions, error envelope, pagination, idempotency и machine-readable OpenAPI contract.",
-      "type": "Feature", "status": "done", "priority": "critical", "area": "foundation",
+      "type": "Feature",
+      "status": "done",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "Нестабильный контракт заблокирует все клиенты.",
-      "parentId": "FS-001", "dependsOn": ["FS-001"], "priorityReason": "Единый API требуется каждому клиенту и интеграции.", "unblocks": ["FS-003", "FS-005", "FS-011", "FS-029"]
+      "parentId": "FS-001",
+      "dependsOn": [
+        "FS-001"
+      ],
+      "priorityReason": "Единый API требуется каждому клиенту и интеграции.",
+      "unblocks": [
+        "FS-003",
+        "FS-005",
+        "FS-011",
+        "FS-029"
+      ]
     },
     {
       "id": "FS-014",
       "title": "Система миграций базы данных",
       "description": "Добавить versioned migrations, forward/backward compatibility, backup gate и безопасный rollback.",
-      "type": "Feature", "status": "ready", "priority": "critical", "area": "foundation",
+      "type": "Feature",
+      "status": "ready",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "Несовместимая схема может привести к потере данных.",
-      "parentId": "FS-001", "dependsOn": ["FS-001"], "priorityReason": "Все доменные модули требуют управляемой эволюции схемы.", "unblocks": ["FS-015", "FS-019", "FS-023", "FS-026"]
+      "parentId": "FS-001",
+      "dependsOn": [
+        "FS-001"
+      ],
+      "priorityReason": "Все доменные модули требуют управляемой эволюции схемы.",
+      "unblocks": [
+        "FS-015",
+        "FS-019",
+        "FS-023",
+        "FS-026"
+      ]
     },
     {
       "id": "FS-015",
       "title": "Модель Organization и tenant isolation",
       "description": "Реализовать Organization, memberships, tenant_id, database policies и тесты изоляции.",
-      "type": "Feature", "status": "ready", "priority": "critical", "area": "platform",
+      "type": "Feature",
+      "status": "ready",
+      "priority": "critical",
+      "area": "platform",
       "risk": "Ошибка изоляции раскрывает данные другой организации.",
-      "parentId": "FS-003", "dependsOn": ["FS-014"], "priorityReason": "Tenant boundary — главный security-инвариант платформы.", "unblocks": ["FS-016", "FS-017", "FS-019", "FS-023"]
+      "parentId": "FS-003",
+      "dependsOn": [
+        "FS-014"
+      ],
+      "priorityReason": "Tenant boundary — главный security-инвариант платформы.",
+      "unblocks": [
+        "FS-016",
+        "FS-017",
+        "FS-019",
+        "FS-023"
+      ]
     },
     {
       "id": "FS-016",
       "title": "Аутентификация OIDC и MFA",
       "description": "Добавить OIDC/OAuth 2.1 sessions, device tracking, recovery и обязательный MFA для администраторов.",
-      "type": "Feature", "status": "backlog", "priority": "critical", "area": "platform",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "platform",
       "risk": "Требуется выбрать identity provider и session strategy.",
-      "parentId": "FS-003", "dependsOn": ["FS-013", "FS-015"], "priorityReason": "Без надежной идентификации нельзя защищать данные и аудит.", "unblocks": ["FS-017", "FS-004", "FS-029"]
+      "parentId": "FS-003",
+      "dependsOn": [
+        "FS-013",
+        "FS-015"
+      ],
+      "priorityReason": "Без надежной идентификации нельзя защищать данные и аудит.",
+      "unblocks": [
+        "FS-017",
+        "FS-004",
+        "FS-029"
+      ]
     },
     {
       "id": "FS-017",
       "title": "RBAC и контекстная авторизация",
       "description": "Реализовать роли Technician, Supervisor, PM, Administrator и ограничения tenant/project/object.",
-      "type": "Feature", "status": "backlog", "priority": "critical", "area": "platform",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "platform",
       "risk": "Policy drift и неполное покрытие object-level checks.",
-      "parentId": "FS-003", "dependsOn": ["FS-015", "FS-016"], "priorityReason": "Авторизация обязательна до доступа к проектам, документам и AI.", "unblocks": ["FS-004", "FS-007", "FS-008", "FS-032"]
+      "parentId": "FS-003",
+      "dependsOn": [
+        "FS-015",
+        "FS-016"
+      ],
+      "priorityReason": "Авторизация обязательна до доступа к проектам, документам и AI.",
+      "unblocks": [
+        "FS-004",
+        "FS-007",
+        "FS-008",
+        "FS-032"
+      ]
     },
     {
       "id": "FS-018",
       "title": "Object storage для документов и медиа",
       "description": "Реализовать versioned object storage, signed URLs, metadata, quotas и resumable uploads.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "platform",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "platform",
       "risk": "Большие видео и DWG требуют лимитов и фоновой обработки.",
-      "parentId": "FS-007", "dependsOn": ["FS-013", "FS-015"], "priorityReason": "Фото и документация входят в основной field workflow.", "unblocks": ["FS-007", "FS-030", "FS-031", "FS-043"]
+      "parentId": "FS-007",
+      "dependsOn": [
+        "FS-013",
+        "FS-015"
+      ],
+      "priorityReason": "Фото и документация входят в основной field workflow.",
+      "unblocks": [
+        "FS-007",
+        "FS-030",
+        "FS-031",
+        "FS-043"
+      ]
     },
     {
       "id": "FS-019",
       "title": "Домен Projects, Buildings и Work Items",
       "description": "Создать core-модель проектов, зданий, этапов, задач, сроков, исполнителей и статусов.",
-      "type": "Epic", "status": "backlog", "priority": "critical", "area": "platform",
+      "type": "Epic",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "platform",
       "risk": "Нужно отделить Development Workspace от клиентских проектов.",
-      "dependsOn": ["FS-013", "FS-014", "FS-015"], "priorityReason": "Project Management — центральный операционный контекст.", "unblocks": ["FS-020", "FS-021", "FS-023", "FS-038", "FS-039"]
+      "dependsOn": [
+        "FS-013",
+        "FS-014",
+        "FS-015"
+      ],
+      "priorityReason": "Project Management — центральный операционный контекст.",
+      "unblocks": [
+        "FS-020",
+        "FS-021",
+        "FS-023",
+        "FS-038",
+        "FS-039"
+      ]
     },
     {
       "id": "FS-020",
       "title": "Workflow зависимостей и блокировок",
       "description": "Добавить граф зависимостей, автоматический blocked state, critical path и правила переходов статусов.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "platform",
+      "type": "Feature",
+      "status": "done",
+      "priority": "high",
+      "area": "platform",
       "risk": "Циклические зависимости и дорогой пересчет графа.",
-      "parentId": "FS-019", "dependsOn": ["FS-019"], "priorityReason": "Необходим для планирования и Development Orchestrator.", "unblocks": ["FS-033", "FS-039"]
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-019"
+      ],
+      "priorityReason": "Необходим для планирования и Development Orchestrator.",
+      "unblocks": [
+        "FS-033",
+        "FS-039"
+      ]
     },
     {
       "id": "FS-021",
       "title": "Комментарии, activity feed и уведомления",
       "description": "Реализовать threaded comments, mentions, subscriptions и permission-aware notifications.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "platform",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "platform",
       "risk": "Notification noise и утечка контекста через сообщения.",
-      "parentId": "FS-019", "dependsOn": ["FS-017", "FS-019"], "priorityReason": "Командная координация нужна до полевого пилота.", "unblocks": ["FS-029", "FS-033"]
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-017",
+        "FS-019"
+      ],
+      "priorityReason": "Командная координация нужна до полевого пилота.",
+      "unblocks": [
+        "FS-029",
+        "FS-033"
+      ]
     },
     {
       "id": "FS-022",
       "title": "Сотрудники, команды и ресурсы",
       "description": "Добавить профили, skills, availability, team assignments и загрузку сотрудников.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "platform",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "platform",
       "risk": "Персональные данные требуют retention и privacy controls.",
-      "parentId": "FS-019", "dependsOn": ["FS-015", "FS-017", "FS-019"], "priorityReason": "Распределение работ требуется Supervisor и PM.", "unblocks": ["FS-038", "FS-039"]
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-015",
+        "FS-017",
+        "FS-019"
+      ],
+      "priorityReason": "Распределение работ требуется Supervisor и PM.",
+      "unblocks": [
+        "FS-038",
+        "FS-039"
+      ]
     },
     {
       "id": "FS-023",
       "title": "Граф связей Digital Twin",
       "description": "Реализовать Building → Floor → Room → Door/Camera/Reader/Controller/Network/Cable и typed links.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "field",
       "risk": "Нужно утвердить Postgres graph representation.",
-      "parentId": "FS-006", "dependsOn": ["FS-006", "FS-014", "FS-019"], "priorityReason": "Цифровой двойник — основа технического контекста продукта.", "unblocks": ["FS-024", "FS-030", "FS-032", "FS-034"]
+      "parentId": "FS-006",
+      "dependsOn": [
+        "FS-006",
+        "FS-014",
+        "FS-019"
+      ],
+      "priorityReason": "Цифровой двойник — основа технического контекста продукта.",
+      "unblocks": [
+        "FS-024",
+        "FS-030",
+        "FS-032",
+        "FS-034"
+      ]
     },
     {
       "id": "FS-024",
       "title": "Реестр оборудования и service history",
       "description": "Добавить manufacturer, model, serial, location, configuration, status и обслуживание активов.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "field",
       "risk": "Разные классы оборудования имеют разные configuration schemas.",
-      "parentId": "FS-006", "dependsOn": ["FS-023"], "priorityReason": "Учет активов входит в ежедневную работу техника.", "unblocks": ["FS-029", "FS-034", "FS-040"]
+      "parentId": "FS-006",
+      "dependsOn": [
+        "FS-023"
+      ],
+      "priorityReason": "Учет активов входит в ежедневную работу техника.",
+      "unblocks": [
+        "FS-029",
+        "FS-034",
+        "FS-040"
+      ]
     },
     {
       "id": "FS-025",
       "title": "Версии и привязки документации",
       "description": "Связать документы с проектами, этажами, комнатами, дверями, устройствами и кабелями.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "field",
       "risk": "Version conflicts и permission inheritance.",
-      "parentId": "FS-007", "dependsOn": ["FS-017", "FS-018", "FS-023"], "priorityReason": "Single Source of Truth требует версий и точных связей.", "unblocks": ["FS-031", "FS-034", "FS-043"]
+      "parentId": "FS-007",
+      "dependsOn": [
+        "FS-017",
+        "FS-018",
+        "FS-023"
+      ],
+      "priorityReason": "Single Source of Truth требует версий и точных связей.",
+      "unblocks": [
+        "FS-031",
+        "FS-034",
+        "FS-043"
+      ]
     },
     {
       "id": "FS-026",
       "title": "Backup, PITR и автоматизация restore",
       "description": "Настроить versioned backups, point-in-time recovery, retention и измеряемый restore workflow.",
-      "type": "Feature", "status": "testing", "priority": "critical", "area": "foundation",
+      "type": "Feature",
+      "status": "testing",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "RPO/RTO нельзя считать подтвержденными без restore drill.",
-      "parentId": "FS-012", "dependsOn": ["FS-014"], "priorityReason": "Защита данных обязательна до production-пилота.", "unblocks": ["FS-012", "FS-052"]
+      "parentId": "FS-012",
+      "dependsOn": [
+        "FS-014"
+      ],
+      "priorityReason": "Защита данных обязательна до production-пилота.",
+      "unblocks": [
+        "FS-012",
+        "FS-052"
+      ]
     },
     {
       "id": "FS-027",
       "title": "Durable offline cache и outbox",
       "description": "Создать локальную read model, очередь команд, sync cursor, retries и видимый sync state.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "field",
       "risk": "Размер локального хранилища и миграции client schema.",
-      "parentId": "FS-005", "dependsOn": ["FS-005", "FS-013", "FS-019"], "priorityReason": "Offline First обязателен для объектов с плохой связью.", "unblocks": ["FS-028", "FS-029", "FS-030"]
+      "parentId": "FS-005",
+      "dependsOn": [
+        "FS-005",
+        "FS-013",
+        "FS-019"
+      ],
+      "priorityReason": "Offline First обязателен для объектов с плохой связью.",
+      "unblocks": [
+        "FS-028",
+        "FS-029",
+        "FS-030"
+      ]
     },
     {
       "id": "FS-028",
       "title": "Разрешение sync-конфликтов",
       "description": "Определить merge policies, entity versions, tombstones и экран ручного разрешения конфликтов.",
-      "type": "Feature", "status": "ideas", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "high",
+      "area": "field",
       "risk": "Last-write-wins недопустим для конфигураций и удаления.",
-      "parentId": "FS-005", "dependsOn": ["FS-027"], "priorityReason": "Защищает целостность offline-изменений.", "unblocks": ["FS-029"]
+      "parentId": "FS-005",
+      "dependsOn": [
+        "FS-027"
+      ],
+      "priorityReason": "Защищает целостность offline-изменений.",
+      "unblocks": [
+        "FS-029"
+      ]
     },
     {
       "id": "FS-029",
       "title": "Technician PWA workflow",
       "description": "Собрать мобильный поток: задачи, планы, оборудование, фото, чек-листы, отчеты и offline mode.",
-      "type": "Epic", "status": "ideas", "priority": "high", "area": "field",
+      "type": "Epic",
+      "status": "ideas",
+      "priority": "high",
+      "area": "field",
       "risk": "Нужно проверить UX в перчатках и на слабых устройствах.",
-      "dependsOn": ["FS-017", "FS-019", "FS-024", "FS-027", "FS-028"], "priorityReason": "Это главный пользовательский поток полевой команды.", "unblocks": ["FS-044", "FS-045"]
+      "dependsOn": [
+        "FS-017",
+        "FS-019",
+        "FS-024",
+        "FS-027",
+        "FS-028"
+      ],
+      "priorityReason": "Это главный пользовательский поток полевой команды.",
+      "unblocks": [
+        "FS-044",
+        "FS-045"
+      ]
     },
     {
       "id": "FS-030",
       "title": "Фото, видео и голосовые заметки",
       "description": "Добавить capture, metadata, compression, background upload и привязку к объектам Twin.",
-      "type": "Feature", "status": "ideas", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "high",
+      "area": "field",
       "risk": "Privacy, storage cost и нестабильная загрузка больших файлов.",
-      "parentId": "FS-029", "dependsOn": ["FS-018", "FS-023", "FS-027"], "priorityReason": "Полевые доказательства и заметки входят в core workflow.", "unblocks": ["FS-031", "FS-034"]
+      "parentId": "FS-029",
+      "dependsOn": [
+        "FS-018",
+        "FS-023",
+        "FS-027"
+      ],
+      "priorityReason": "Полевые доказательства и заметки входят в core workflow.",
+      "unblocks": [
+        "FS-031",
+        "FS-034"
+      ]
     },
     {
       "id": "FS-031",
       "title": "Knowledge ingestion и индексирование",
       "description": "Построить OCR/parsing/chunking pipeline, metadata extraction, search и rebuildable vector index.",
-      "type": "Feature", "status": "ideas", "priority": "high", "area": "intelligence",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "high",
+      "area": "intelligence",
       "risk": "DWG, видео и vendor configurations требуют разных processors.",
-      "parentId": "FS-008", "dependsOn": ["FS-007", "FS-018", "FS-025"], "priorityReason": "AI Knowledge зависит от качественного и воспроизводимого индекса.", "unblocks": ["FS-032", "FS-034", "FS-037"]
+      "parentId": "FS-008",
+      "dependsOn": [
+        "FS-007",
+        "FS-018",
+        "FS-025"
+      ],
+      "priorityReason": "AI Knowledge зависит от качественного и воспроизводимого индекса.",
+      "unblocks": [
+        "FS-032",
+        "FS-034",
+        "FS-037"
+      ]
     },
     {
       "id": "FS-032",
       "title": "Permission-aware retrieval",
       "description": "Фильтровать retrieval по tenant/project/object permissions до передачи контекста модели.",
-      "type": "Feature", "status": "ideas", "priority": "critical", "area": "intelligence",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "critical",
+      "area": "intelligence",
       "risk": "Ошибка фильтрации может раскрыть чужие документы модели.",
-      "parentId": "FS-008", "dependsOn": ["FS-017", "FS-031"], "priorityReason": "AI нельзя запускать без доказуемой изоляции контекста.", "unblocks": ["FS-033", "FS-034", "FS-035"]
+      "parentId": "FS-008",
+      "dependsOn": [
+        "FS-017",
+        "FS-031"
+      ],
+      "priorityReason": "AI нельзя запускать без доказуемой изоляции контекста.",
+      "unblocks": [
+        "FS-033",
+        "FS-034",
+        "FS-035"
+      ]
     },
     {
       "id": "FS-033",
       "title": "Project Agent и Development Orchestrator",
       "description": "Анализировать прогресс, зависимости, блокировки, technical debt и формировать приоритетную очередь.",
-      "type": "Epic", "status": "ideas", "priority": "medium", "area": "intelligence",
+      "type": "Epic",
+      "status": "ideas",
+      "priority": "medium",
+      "area": "intelligence",
       "risk": "Автоматизация не должна перезаписывать pinned/manual priorities.",
-      "dependsOn": ["FS-008", "FS-020", "FS-032", "FS-036"], "priorityReason": "Высокая ценность после безопасного AI foundation.", "unblocks": ["FS-039"]
+      "dependsOn": [
+        "FS-008",
+        "FS-020",
+        "FS-032",
+        "FS-036"
+      ],
+      "priorityReason": "Высокая ценность после безопасного AI foundation.",
+      "unblocks": [
+        "FS-039"
+      ]
     },
     {
       "id": "FS-034",
       "title": "Technical и Documentation Agents",
       "description": "Отвечать по планам, устройствам, кабелям, конфигурациям и истории с указанием источников.",
-      "type": "Epic", "status": "ideas", "priority": "medium", "area": "intelligence",
+      "type": "Epic",
+      "status": "ideas",
+      "priority": "medium",
+      "area": "intelligence",
       "risk": "Нужны grounded answers и abstention при недостатке данных.",
-      "dependsOn": ["FS-023", "FS-025", "FS-032", "FS-036"], "priorityReason": "Агенты опираются на готовый Digital Twin и knowledge layer.", "unblocks": ["FS-043"]
+      "dependsOn": [
+        "FS-023",
+        "FS-025",
+        "FS-032",
+        "FS-036"
+      ],
+      "priorityReason": "Агенты опираются на готовый Digital Twin и knowledge layer.",
+      "unblocks": [
+        "FS-043"
+      ]
     },
     {
       "id": "FS-035",
       "title": "Analytics и Reporting Agents",
       "description": "Генерировать аналитику сроков, времени, рисков и управляемые отчеты с provenance.",
-      "type": "Epic", "status": "ideas", "priority": "medium", "area": "intelligence",
+      "type": "Epic",
+      "status": "ideas",
+      "priority": "medium",
+      "area": "intelligence",
       "risk": "Численные ответы должны вычисляться, а не угадываться LLM.",
-      "dependsOn": ["FS-032", "FS-038", "FS-039"], "priorityReason": "Требует стабильных операционных данных и метрик.", "unblocks": ["FS-043"]
+      "dependsOn": [
+        "FS-032",
+        "FS-038",
+        "FS-039"
+      ],
+      "priorityReason": "Требует стабильных операционных данных и метрик.",
+      "unblocks": [
+        "FS-043"
+      ]
     },
     {
       "id": "FS-036",
       "title": "Human approval для AI-действий",
       "description": "Добавить tool allowlist, policy gate, preview/diff, approval и полный AI audit trail.",
-      "type": "Feature", "status": "backlog", "priority": "critical", "area": "intelligence",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "intelligence",
       "risk": "AI-действия могут менять критичные данные без контроля.",
-      "parentId": "FS-008", "dependsOn": ["FS-004", "FS-008", "FS-017"], "priorityReason": "Safety gate обязателен до запуска любых изменяющих агентов.", "unblocks": ["FS-033", "FS-034", "FS-035"]
+      "parentId": "FS-008",
+      "dependsOn": [
+        "FS-004",
+        "FS-008",
+        "FS-017"
+      ],
+      "priorityReason": "Safety gate обязателен до запуска любых изменяющих агентов.",
+      "unblocks": [
+        "FS-033",
+        "FS-034",
+        "FS-035"
+      ]
     },
     {
       "id": "FS-037",
       "title": "Local AI router и model abstraction",
       "description": "Реализовать локальную классификацию, суммаризацию, маршрутизацию и fallback внешних LLM.",
-      "type": "Feature", "status": "ideas", "priority": "medium", "area": "intelligence",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "medium",
+      "area": "intelligence",
       "risk": "Различия capabilities, latency и privacy между моделями.",
-      "parentId": "FS-008", "dependsOn": ["FS-008", "FS-031"], "priorityReason": "Оптимизирует стоимость и privacy после готовности AI gateway.", "unblocks": ["FS-033", "FS-034"]
+      "parentId": "FS-008",
+      "dependsOn": [
+        "FS-008",
+        "FS-031"
+      ],
+      "priorityReason": "Оптимизирует стоимость и privacy после готовности AI gateway.",
+      "unblocks": [
+        "FS-033",
+        "FS-034"
+      ]
     },
     {
       "id": "FS-038",
       "title": "Time Tracking и загрузка сотрудников",
       "description": "Реализовать work sessions, approvals, статистику, utilization и прогнозирование сроков.",
-      "type": "Epic", "status": "ideas", "priority": "high", "area": "field",
+      "type": "Epic",
+      "status": "ideas",
+      "priority": "high",
+      "area": "field",
       "risk": "Labor rules, rounding и offline duplicate sessions.",
-      "dependsOn": ["FS-019", "FS-022", "FS-027"], "priorityReason": "Время влияет на стоимость проекта и планирование ресурсов.", "unblocks": ["FS-035", "FS-039"]
+      "dependsOn": [
+        "FS-019",
+        "FS-022",
+        "FS-027"
+      ],
+      "priorityReason": "Время влияет на стоимость проекта и планирование ресурсов.",
+      "unblocks": [
+        "FS-035",
+        "FS-039"
+      ]
     },
     {
       "id": "FS-039",
       "title": "Project analytics, сроки и риски",
       "description": "Добавить progress metrics, critical path, forecasting, resource load и risk dashboard.",
-      "type": "Feature", "status": "ideas", "priority": "high", "area": "platform",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "high",
+      "area": "platform",
       "risk": "Прогнозы должны показывать confidence и источник данных.",
-      "parentId": "FS-019", "dependsOn": ["FS-020", "FS-022", "FS-038"], "priorityReason": "Ключевой поток Supervisor и Project Manager.", "unblocks": ["FS-035", "FS-043"]
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-020",
+        "FS-022",
+        "FS-038"
+      ],
+      "priorityReason": "Ключевой поток Supervisor и Project Manager.",
+      "unblocks": [
+        "FS-035",
+        "FS-043"
+      ]
     },
     {
       "id": "FS-040",
       "title": "Monitoring сервисов и устройств",
       "description": "Собирать health, errors, service state, sync lag и device connectivity с configurable alerts.",
-      "type": "Epic", "status": "ideas", "priority": "high", "area": "ecosystem",
+      "type": "Epic",
+      "status": "ideas",
+      "priority": "high",
+      "area": "ecosystem",
       "risk": "Высокая кардинальность метрик и alert fatigue.",
-      "dependsOn": ["FS-010", "FS-024"], "priorityReason": "Нужен для эксплуатации платформы и подключенного оборудования.", "unblocks": ["FS-041", "FS-053", "FS-054"]
+      "dependsOn": [
+        "FS-010",
+        "FS-024"
+      ],
+      "priorityReason": "Нужен для эксплуатации платформы и подключенного оборудования.",
+      "unblocks": [
+        "FS-041",
+        "FS-053",
+        "FS-054"
+      ]
     },
     {
       "id": "FS-041",
       "title": "Application device telemetry",
       "description": "Отслеживать app/OS version, sync state, performance, connectivity и diagnostics клиентов.",
-      "type": "Feature", "status": "ideas", "priority": "medium", "area": "ecosystem",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "medium",
+      "area": "ecosystem",
       "risk": "Telemetry может содержать персональные или чувствительные данные.",
-      "parentId": "FS-040", "dependsOn": ["FS-040", "FS-042"], "priorityReason": "Полезно после определения privacy boundary.", "unblocks": ["FS-044", "FS-045"]
+      "parentId": "FS-040",
+      "dependsOn": [
+        "FS-040",
+        "FS-042"
+      ],
+      "priorityReason": "Полезно после определения privacy boundary.",
+      "unblocks": [
+        "FS-044",
+        "FS-045"
+      ]
     },
     {
       "id": "FS-042",
       "title": "Privacy controls для мониторинга",
       "description": "Определить purpose, consent, minimization, retention, redaction и административную конфигурацию telemetry.",
-      "type": "Feature", "status": "backlog", "priority": "critical", "area": "foundation",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "Несоразмерный сбор данных нарушает конфиденциальность.",
-      "dependsOn": ["FS-015", "FS-017"], "priorityReason": "Privacy by design должен предшествовать device monitoring.", "unblocks": ["FS-041"]
+      "dependsOn": [
+        "FS-015",
+        "FS-017"
+      ],
+      "priorityReason": "Privacy by design должен предшествовать device monitoring.",
+      "unblocks": [
+        "FS-041"
+      ]
     },
     {
       "id": "FS-043",
       "title": "Отчеты, экспорт и scheduled delivery",
       "description": "Создать шаблоны, PDF/CSV export, scheduled reports и permission-aware sharing.",
-      "type": "Feature", "status": "ideas", "priority": "medium", "area": "platform",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "medium",
+      "area": "platform",
       "risk": "Экспорт может обойти обычные object permissions.",
-      "dependsOn": ["FS-017", "FS-025", "FS-039"], "priorityReason": "Отчетность нужна после появления надежных проектных данных.", "unblocks": []
+      "dependsOn": [
+        "FS-017",
+        "FS-025",
+        "FS-039"
+      ],
+      "priorityReason": "Отчетность нужна после появления надежных проектных данных.",
+      "unblocks": []
     },
     {
       "id": "FS-044",
       "title": "iOS и Android приложения",
       "description": "Упаковать field workflow, secure storage, background sync, camera и push notifications.",
-      "type": "Epic", "status": "ideas", "priority": "low", "area": "ecosystem",
+      "type": "Epic",
+      "status": "ideas",
+      "priority": "low",
+      "area": "ecosystem",
       "risk": "Platform-specific lifecycle и store release process.",
-      "dependsOn": ["FS-029", "FS-041"], "priorityReason": "По решению владельца native delivery имеет минимальный приоритет до готовности и проверки MVP/PWA workflow.", "unblocks": []
+      "dependsOn": [
+        "FS-029",
+        "FS-041"
+      ],
+      "priorityReason": "По решению владельца native delivery имеет минимальный приоритет до готовности и проверки MVP/PWA workflow.",
+      "unblocks": []
     },
     {
       "id": "FS-045",
       "title": "Desktop приложения macOS и Windows",
       "description": "Создать secure desktop shell, updates, local diagnostics и document integrations.",
-      "type": "Epic", "status": "ideas", "priority": "low", "area": "ecosystem",
+      "type": "Epic",
+      "status": "ideas",
+      "priority": "low",
+      "area": "ecosystem",
       "risk": "Code signing, auto-update и расширение attack surface.",
-      "dependsOn": ["FS-029", "FS-041"], "priorityReason": "Web покрывает ранний desktop use case; упаковка не блокирует MVP.", "unblocks": []
+      "dependsOn": [
+        "FS-029",
+        "FS-041"
+      ],
+      "priorityReason": "Web покрывает ранний desktop use case; упаковка не блокирует MVP.",
+      "unblocks": []
     },
     {
       "id": "FS-046",
       "title": "Runtime опциональных интеграций",
       "description": "Добавить isolated connectors, secrets, scopes, retries, webhooks, DLQ и health controls.",
-      "type": "Feature", "status": "ideas", "priority": "medium", "area": "ecosystem",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "medium",
+      "area": "ecosystem",
       "risk": "Внешние сбои не должны влиять на core-платформу.",
-      "parentId": "FS-011", "dependsOn": ["FS-011", "FS-013", "FS-051"], "priorityReason": "Безопасная основа нужна до любого конкретного connector.", "unblocks": ["FS-047", "FS-048", "FS-049"]
+      "parentId": "FS-011",
+      "dependsOn": [
+        "FS-011",
+        "FS-013",
+        "FS-051"
+      ],
+      "priorityReason": "Безопасная основа нужна до любого конкретного connector.",
+      "unblocks": [
+        "FS-047",
+        "FS-048",
+        "FS-049"
+      ]
     },
     {
       "id": "FS-047",
       "title": "Microsoft 365 connector",
       "description": "Спроектировать опциональную синхронизацию документов, календарей и identity context.",
-      "type": "Feature", "status": "ideas", "priority": "low", "area": "ecosystem",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "low",
+      "area": "ecosystem",
       "risk": "Graph permissions и customer tenant consent.",
-      "parentId": "FS-011", "dependsOn": ["FS-046"], "priorityReason": "Опциональная интеграция после стабильного connector runtime.", "unblocks": []
+      "parentId": "FS-011",
+      "dependsOn": [
+        "FS-046"
+      ],
+      "priorityReason": "Опциональная интеграция после стабильного connector runtime.",
+      "unblocks": []
     },
     {
       "id": "FS-048",
       "title": "Google Workspace connector",
       "description": "Спроектировать опциональную синхронизацию Drive, Calendar и directory context.",
-      "type": "Feature", "status": "ideas", "priority": "low", "area": "ecosystem",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "low",
+      "area": "ecosystem",
       "risk": "OAuth scopes, rate limits и ownership документов.",
-      "parentId": "FS-011", "dependsOn": ["FS-046"], "priorityReason": "Опциональная интеграция после стабильного connector runtime.", "unblocks": []
+      "parentId": "FS-011",
+      "dependsOn": [
+        "FS-046"
+      ],
+      "priorityReason": "Опциональная интеграция после стабильного connector runtime.",
+      "unblocks": []
     },
     {
       "id": "FS-049",
       "title": "Jobber connector",
       "description": "Опционально синхронизировать jobs, schedules, employees, time, clients, addresses и notes.",
-      "type": "Feature", "status": "ideas", "priority": "low", "area": "ecosystem",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "low",
+      "area": "ecosystem",
       "risk": "Интеграция не должна становиться обязательной зависимостью core.",
-      "parentId": "FS-011", "dependsOn": ["FS-046"], "priorityReason": "TRD явно определяет Jobber как Low Priority.", "unblocks": []
+      "parentId": "FS-011",
+      "dependsOn": [
+        "FS-046"
+      ],
+      "priorityReason": "TRD явно определяет Jobber как Low Priority.",
+      "unblocks": []
     },
     {
       "id": "FS-050",
       "title": "CI/CD security и quality gates",
       "description": "Добавить tests, lint, SAST, dependency scan, SBOM, signed artifacts и protected progressive releases.",
-      "type": "Feature", "status": "testing", "priority": "critical", "area": "foundation",
+      "type": "Feature",
+      "status": "testing",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "Небезопасная supply chain компрометирует все компоненты.",
-      "parentId": "FS-001", "dependsOn": ["FS-001"], "priorityReason": "Каждый следующий модуль должен проходить единый quality gate.", "unblocks": ["FS-016", "FS-019", "FS-029", "FS-044"]
+      "parentId": "FS-001",
+      "dependsOn": [
+        "FS-001"
+      ],
+      "priorityReason": "Каждый следующий модуль должен проходить единый quality gate.",
+      "unblocks": [
+        "FS-016",
+        "FS-019",
+        "FS-029",
+        "FS-044"
+      ]
     },
     {
       "id": "FS-051",
       "title": "Secrets и encryption key management",
       "description": "Добавить secret manager abstraction, key rotation, envelope encryption и запрет секретов в логах/AI.",
-      "type": "Feature", "status": "backlog", "priority": "critical", "area": "foundation",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "Компрометация секретов затрагивает данные и интеграции.",
-      "dependsOn": ["FS-015"], "priorityReason": "Нужен до production credentials и внешних connectors.", "unblocks": ["FS-008", "FS-016", "FS-046"]
+      "dependsOn": [
+        "FS-015"
+      ],
+      "priorityReason": "Нужен до production credentials и внешних connectors.",
+      "unblocks": [
+        "FS-008",
+        "FS-016",
+        "FS-046"
+      ]
     },
     {
       "id": "FS-052",
       "title": "File security scanning",
       "description": "Реализовать content-type validation, malware scan, quarantine и безопасные previews.",
-      "type": "Feature", "status": "backlog", "priority": "critical", "area": "foundation",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "Пользовательские файлы являются недоверенным вводом.",
-      "dependsOn": ["FS-018"], "priorityReason": "Документы нельзя обрабатывать до security gate.", "unblocks": ["FS-007", "FS-025", "FS-031"]
+      "dependsOn": [
+        "FS-018"
+      ],
+      "priorityReason": "Документы нельзя обрабатывать до security gate.",
+      "unblocks": [
+        "FS-007",
+        "FS-025",
+        "FS-031"
+      ]
     },
     {
       "id": "FS-053",
       "title": "Исправить мобильное отображение в веб сервисе",
       "description": "Адаптировать dashboard, roadmap, фильтры, Kanban и task dialog для телефонного viewport и touch navigation.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "foundation",
+      "type": "Task",
+      "status": "testing",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "Большая Kanban-доска и диалоги могут создавать горизонтальный overflow и мелкие touch targets.",
-      "parentId": "FS-002", "dependsOn": ["FS-002"], "priorityReason": "LAN-доступ с телефона уже используется; мобильный web workflow нужен раньше native apps.", "unblocks": ["FS-029", "FS-044"]
+      "parentId": "FS-002",
+      "dependsOn": [
+        "FS-002"
+      ],
+      "priorityReason": "LAN-доступ с телефона уже используется; мобильный web workflow нужен раньше native apps.",
+      "unblocks": [
+        "FS-029",
+        "FS-044"
+      ]
     },
     {
       "id": "FS-054",
       "title": "Адаптация размера шрифта на мобильных устройствах",
       "description": "Увеличить читаемость карточек и исключить изменение масштаба iPhone при фокусе на полях создания задачи.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "foundation",
+      "type": "Task",
+      "status": "testing",
+      "priority": "critical",
+      "area": "foundation",
       "risk": "Слишком крупная типографика может нарушить карточки и horizontal snap на узких экранах.",
-      "parentId": "FS-053", "dependsOn": ["FS-053"], "priorityReason": "Задача вручную создана и повышена пользователем после проверки на физическом мобильном устройстве.", "unblocks": ["FS-029"]
+      "parentId": "FS-053",
+      "dependsOn": [
+        "FS-053"
+      ],
+      "priorityReason": "Задача вручную создана и повышена пользователем после проверки на физическом мобильном устройстве.",
+      "unblocks": [
+        "FS-029"
+      ]
     },
     {
       "id": "FS-055",
       "title": "История прогресса проекта и activity timeline",
       "description": "Добавить выбор даты, снимок прогресса по видам работ, этажам и units, а также итоговый график активности по периодам.",
-      "type": "Feature", "status": "backlog", "priority": "medium", "area": "field",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "medium",
+      "area": "field",
       "risk": "Исторические агрегаты должны быть воспроизводимыми и не искажаться поздними исправлениями.",
-      "parentId": "FS-019", "dependsOn": ["FS-019", "FS-020", "FS-027"], "priorityReason": "Полезно для Supervisor и PM при анализе темпа проекта, но не блокирует ежедневный technician workflow.", "unblocks": ["FS-035", "FS-039", "FS-043"]
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-019",
+        "FS-020",
+        "FS-027"
+      ],
+      "priorityReason": "Полезно для Supervisor и PM при анализе темпа проекта, но не блокирует ежедневный technician workflow.",
+      "unblocks": [
+        "FS-035",
+        "FS-039",
+        "FS-043"
+      ]
     },
     {
       "id": "FS-056",
       "title": "macOS Compute Agent и мониторинг ресурсов",
       "description": "Собирать CPU, RAM, battery, power и thermal metrics с opt-in Mac-узлов и показывать их в Admin в реальном времени.",
-      "type": "Feature", "status": "testing", "priority": "high", "area": "ecosystem",
+      "type": "Feature",
+      "status": "testing",
+      "priority": "high",
+      "area": "ecosystem",
       "risk": "Telemetry и enrollment token должны оставаться в доверенной LAN и не раскрывать чувствительные данные.",
-      "parentId": "FS-041", "dependsOn": ["FS-013", "FS-040", "FS-042"], "priorityReason": "Нужен сейчас для контроля Mac, на котором работает платформа и будущий Local AI.", "unblocks": ["FS-057", "FS-037"]
+      "parentId": "FS-041",
+      "dependsOn": [
+        "FS-013",
+        "FS-040",
+        "FS-042"
+      ],
+      "priorityReason": "Нужен сейчас для контроля Mac, на котором работает платформа и будущий Local AI.",
+      "unblocks": [
+        "FS-057",
+        "FS-037"
+      ]
     },
     {
       "id": "FS-057",
       "title": "Планировщик распределенных локальных вычислений",
       "description": "Добавить очередь AI jobs, capability discovery, load-aware scheduling, leases, cancellation и явный opt-in каждого узла.",
-      "type": "Feature", "status": "ideas", "priority": "low", "area": "intelligence",
+      "type": "Feature",
+      "status": "ideas",
+      "priority": "low",
+      "area": "intelligence",
       "risk": "Слабый узел или медленная сеть могут снизить общую производительность вместо ускорения.",
-      "parentId": "FS-037", "dependsOn": ["FS-008", "FS-036", "FS-037", "FS-056"], "priorityReason": "Отложено владельцем до готовности основного MVP; tensor/model parallelism потребует отдельного benchmark.", "unblocks": ["FS-033", "FS-034", "FS-035"]
+      "parentId": "FS-037",
+      "dependsOn": [
+        "FS-008",
+        "FS-036",
+        "FS-037",
+        "FS-056"
+      ],
+      "priorityReason": "Отложено владельцем до готовности основного MVP; tensor/model parallelism потребует отдельного benchmark.",
+      "unblocks": [
+        "FS-033",
+        "FS-034",
+        "FS-035"
+      ]
     },
     {
       "id": "FS-059",
       "title": "Редактируемый реестр units",
       "description": "Добавить создание и редактирование кода, названия, заметок и расширяемых полей unit без смешивания с быстрым progress workflow.",
-      "type": "Feature", "status": "testing", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "done",
+      "priority": "high",
+      "area": "field",
       "risk": "Редактирование карточки не должно вызывать случайное изменение progress и наоборот.",
-      "parentId": "FS-006", "dependsOn": ["FS-006", "FS-019"], "priorityReason": "Детальная структура этажей и units входит в основной MVP проектов.", "unblocks": ["FS-023", "FS-024", "FS-029"]
+      "parentId": "FS-006",
+      "dependsOn": [
+        "FS-006",
+        "FS-019"
+      ],
+      "priorityReason": "Детальная структура этажей и units входит в основной MVP проектов.",
+      "unblocks": [
+        "FS-023",
+        "FS-024",
+        "FS-029"
+      ]
     },
     {
       "id": "FS-060",
       "title": "Конфигурируемые виды работ и этапы",
       "description": "Разрешить Administrator создавать и редактировать organization-scoped WorkType, цвет и набор этапов без изменения кода.",
-      "type": "Feature", "status": "testing", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "done",
+      "priority": "high",
+      "area": "field",
       "risk": "Изменение workflow не должно повреждать ранее сохраненную историю progress.",
-      "parentId": "FS-006", "dependsOn": ["FS-006", "FS-015", "FS-019"], "priorityReason": "Гибкая структура проектов необходима до масштабного наполнения данными разных компаний.", "unblocks": ["FS-029", "FS-039", "FS-043"]
+      "parentId": "FS-006",
+      "dependsOn": [
+        "FS-006",
+        "FS-015",
+        "FS-019"
+      ],
+      "priorityReason": "Гибкая структура проектов необходима до масштабного наполнения данными разных компаний.",
+      "unblocks": [
+        "FS-029",
+        "FS-039",
+        "FS-043"
+      ]
     },
     {
       "id": "FS-061",
       "title": "Versioned custom fields и динамические формы",
       "description": "Добавить organization-scoped определения полей для Location и Unit и автоматически строить формы по schema.",
-      "type": "Feature", "status": "testing", "priority": "high", "area": "field",
+      "type": "Feature",
+      "status": "testing",
+      "priority": "high",
+      "area": "field",
       "risk": "Изменение schema должно сохранять совместимость с ранее записанными значениями.",
-      "parentId": "FS-006", "dependsOn": ["FS-006", "FS-015", "FS-059"], "priorityReason": "Устраняет необходимость менять код при добавлении характеристик объектов для разных компаний.", "unblocks": ["FS-023", "FS-024", "FS-029"]
+      "parentId": "FS-006",
+      "dependsOn": [
+        "FS-006",
+        "FS-015",
+        "FS-059"
+      ],
+      "priorityReason": "Устраняет необходимость менять код при добавлении характеристик объектов для разных компаний.",
+      "unblocks": [
+        "FS-023",
+        "FS-024",
+        "FS-029"
+      ]
     },
     {
-      "id": "FS-062", "title": "Desktop typography и стабильная навигация", "description": "Увеличить читаемость Overview, Projects, Kanban и Admin на desktop; закрепить табы в единой позиции на всех routes.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "foundation", "risk": "Изменения desktop CSS не должны ухудшить жизнеспособную mobile layout.",
-      "parentId": "FS-053", "dependsOn": ["FS-053", "FS-054"], "priorityReason": "Пользователь подтвердил системную нечитаемость desktop UI.", "unblocks": ["FS-029"]
+      "id": "FS-062",
+      "title": "Desktop typography и стабильная навигация",
+      "description": "Увеличить читаемость Overview, Projects, Kanban и Admin на desktop; закрепить табы в единой позиции на всех routes.",
+      "type": "Task",
+      "status": "done",
+      "priority": "critical",
+      "area": "foundation",
+      "risk": "Изменения desktop CSS не должны ухудшить жизнеспособную mobile layout.",
+      "parentId": "FS-053",
+      "dependsOn": [
+        "FS-053",
+        "FS-054"
+      ],
+      "priorityReason": "Пользователь подтвердил системную нечитаемость desktop UI.",
+      "unblocks": [
+        "FS-029"
+      ]
     },
     {
-      "id": "FS-063", "title": "Статус Codex и запрос продолжения в шапке", "description": "Показывать working, idle, waiting, blocked и limit state, причину и регистрировать запрос пользователя на продолжение.",
-      "type": "Feature", "status": "testing", "priority": "critical", "area": "foundation", "risk": "Web UI не может самостоятельно запускать Codex без поддерживаемого session API; статус требует heartbeat.",
-      "parentId": "FS-002", "dependsOn": ["FS-002", "FS-010"], "priorityReason": "Явно назначено пользователем Priority 1 для наблюдения за разработкой.", "unblocks": ["FS-033"]
+      "id": "FS-063",
+      "title": "Статус Codex и запрос продолжения в шапке",
+      "description": "Показывать working, idle, waiting, blocked и limit state, причину и регистрировать запрос пользователя на продолжение.",
+      "type": "Feature",
+      "status": "testing",
+      "priority": "critical",
+      "area": "foundation",
+      "risk": "Web UI не может самостоятельно запускать Codex без поддерживаемого session API; статус требует heartbeat.",
+      "parentId": "FS-002",
+      "dependsOn": [
+        "FS-002",
+        "FS-010"
+      ],
+      "priorityReason": "Явно назначено пользователем Priority 1 для наблюдения за разработкой.",
+      "unblocks": [
+        "FS-033"
+      ]
     },
     {
-      "id": "FS-064", "title": "Выбор видов работ при создании проекта", "description": "При создании проекта выбирать применимые WorkType; скрывать CCTV, AV и другие неиспользуемые scopes из progress и technician forms. Реализован первый инкремент: project_work_type_scopes, create-project picker и server-side validation.",
-      "type": "Feature", "status": "testing", "priority": "high", "area": "field", "risk": "Изменение scope проекта не должно скрывать существующий progress; редактирование scope после создания требует отдельного безопасного workflow.",
-      "parentId": "FS-019", "dependsOn": ["FS-019", "FS-060"], "priorityReason": "Разные объекты включают разные виды работ; текущий общий список искажает UX и статистику.", "unblocks": ["FS-029", "FS-039"]
+      "id": "FS-064",
+      "title": "Выбор видов работ при создании проекта",
+      "description": "При создании проекта выбирать применимые WorkType; скрывать CCTV, AV и другие неиспользуемые scopes из progress и technician forms. Реализован первый инкремент: project_work_type_scopes, create-project picker и server-side validation.",
+      "type": "Feature",
+      "status": "done",
+      "priority": "high",
+      "area": "field",
+      "risk": "Изменение scope проекта не должно скрывать существующий progress; редактирование scope после создания требует отдельного безопасного workflow.",
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-019",
+        "FS-060"
+      ],
+      "priorityReason": "Разные объекты включают разные виды работ; текущий общий список искажает UX и статистику.",
+      "unblocks": [
+        "FS-029",
+        "FS-039"
+      ]
     },
     {
-      "id": "FS-065", "title": "Building-centric представление проекта", "description": "Показывать отдельные блоки зданий с их этажами, зонами, progress и задачами; сохранить быстрый режим для проекта с одним зданием.",
-      "type": "Feature", "status": "backlog", "priority": "medium", "area": "field", "risk": "80% проектов имеют одно здание, поэтому лишний уровень не должен усложнять основной поток.",
-      "parentId": "FS-019", "dependsOn": ["FS-019", "FS-023"], "priorityReason": "Нужно изменить представление сейчас, глубокую доработку можно выполнить после core MVP.", "unblocks": ["FS-024", "FS-039"]
+      "id": "FS-065",
+      "title": "Building-centric представление проекта",
+      "description": "Показывать отдельные блоки зданий с их этажами, зонами, progress и задачами; сохранить быстрый режим для проекта с одним зданием.",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "medium",
+      "area": "field",
+      "risk": "80% проектов имеют одно здание, поэтому лишний уровень не должен усложнять основной поток.",
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-019",
+        "FS-023"
+      ],
+      "priorityReason": "Нужно изменить представление сейчас, глубокую доработку можно выполнить после core MVP.",
+      "unblocks": [
+        "FS-024",
+        "FS-039"
+      ]
     },
     {
-      "id": "FS-066", "title": "Недельное планирование полевых задач", "description": "Добавить week view, даты, исполнителей, порядок Supervisor и личную очередь Technician/Manager.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "platform", "risk": "Порядок задач должен учитывать зависимости, доступность сотрудников и ручные overrides.",
-      "parentId": "FS-019", "dependsOn": ["FS-020", "FS-022"], "priorityReason": "Превращает базовые Work Items в практический недельный план команды.", "unblocks": ["FS-029", "FS-038", "FS-039"]
+      "id": "FS-066",
+      "title": "Недельное планирование полевых задач",
+      "description": "Добавить week view, даты, исполнителей, порядок Supervisor и личную очередь Technician/Manager.",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "platform",
+      "risk": "Порядок задач должен учитывать зависимости, доступность сотрудников и ручные overrides.",
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-020",
+        "FS-022"
+      ],
+      "priorityReason": "Превращает базовые Work Items в практический недельный план команды.",
+      "unblocks": [
+        "FS-029",
+        "FS-038",
+        "FS-039"
+      ]
     },
     {
-      "id": "FS-067", "title": "Сотрудники, назначения и присутствие на проектах", "description": "Добавить employee directory, project assignments и вывод сотрудников по дням на основе авторизованных progress events и time records.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "platform", "risk": "Нельзя достоверно определять автора прогресса до authentication и actor-aware audit.",
-      "parentId": "FS-022", "dependsOn": ["FS-016", "FS-017", "FS-022", "FS-055"], "priorityReason": "Необходим для Supervisor, timeline и анализа фактической работы.", "unblocks": ["FS-038", "FS-039"]
+      "id": "FS-067",
+      "title": "Сотрудники, назначения и присутствие на проектах",
+      "description": "Добавить employee directory, project assignments и вывод сотрудников по дням на основе авторизованных progress events и time records.",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "platform",
+      "risk": "Нельзя достоверно определять автора прогресса до authentication и actor-aware audit.",
+      "parentId": "FS-022",
+      "dependsOn": [
+        "FS-016",
+        "FS-017",
+        "FS-022",
+        "FS-055"
+      ],
+      "priorityReason": "Необходим для Supervisor, timeline и анализа фактической работы.",
+      "unblocks": [
+        "FS-038",
+        "FS-039"
+      ]
     },
     {
-      "id": "FS-068", "title": "Централизованный Logs Explorer", "description": "Создать отдельную страницу логов с фильтрами по времени, проекту, пользователю, entity, action, source и severity.",
-      "type": "Feature", "status": "testing", "priority": "high", "area": "platform", "risk": "Логи могут содержать PII; доступ и redaction должны зависеть от роли.",
-      "parentId": "FS-004", "dependsOn": ["FS-004", "FS-017"], "priorityReason": "Audit уже пишется, но отсутствует единая user-facing поверхность расследования.", "unblocks": ["FS-039", "FS-043"]
+      "id": "FS-068",
+      "title": "Централизованный Logs Explorer",
+      "description": "Создать отдельную страницу логов с фильтрами по времени, проекту, пользователю, entity, action, source и severity.",
+      "type": "Feature",
+      "status": "testing",
+      "priority": "high",
+      "area": "platform",
+      "risk": "Логи могут содержать PII; доступ и redaction должны зависеть от роли.",
+      "parentId": "FS-004",
+      "dependsOn": [
+        "FS-004",
+        "FS-017"
+      ],
+      "priorityReason": "Audit уже пишется, но отсутствует единая user-facing поверхность расследования.",
+      "unblocks": [
+        "FS-039",
+        "FS-043"
+      ]
     },
     {
-      "id": "FS-069", "title": "English-first localization и русский профиль", "description": "Сделать английский языком по умолчанию, добавить i18n catalog и выбор English/Russian в профиле пользователя.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "platform", "risk": "Строки, статусы и generated reports должны использовать единые locale keys.",
-      "dependsOn": ["FS-016", "FS-017"], "priorityReason": "Продукт ориентирован на англоязычный рынок, но текущая команда требует русского интерфейса.", "unblocks": ["FS-029", "FS-043", "FS-044"]
+      "id": "FS-069",
+      "title": "English-first localization и русский профиль",
+      "description": "Сделать английский языком по умолчанию, добавить i18n catalog и выбор English/Russian в профиле пользователя.",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "platform",
+      "risk": "Строки, статусы и generated reports должны использовать единые locale keys.",
+      "dependsOn": [
+        "FS-016",
+        "FS-017"
+      ],
+      "priorityReason": "Продукт ориентирован на англоязычный рынок, но текущая команда требует русского интерфейса.",
+      "unblocks": [
+        "FS-029",
+        "FS-043",
+        "FS-044"
+      ]
     },
     {
-      "id": "FS-070", "title": "Аудит корректности статистики и progress formulas", "description": "Проверить project/platform metrics, denominators, inactive scopes, units и latest-per-scope calculations; добавить deterministic fixtures.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Некорректные проценты приводят к неверным управленческим решениям.",
-      "parentId": "FS-039", "dependsOn": ["FS-019", "FS-020", "FS-064"], "priorityReason": "Пользователь обнаружил визуально некорректную статистику; доверие к данным является core-инвариантом.", "unblocks": ["FS-035", "FS-039", "FS-043"]
+      "id": "FS-070",
+      "title": "Аудит корректности статистики и progress formulas",
+      "description": "Проверить project/platform metrics, denominators, inactive scopes, units и latest-per-scope calculations; добавить deterministic fixtures.",
+      "type": "Task",
+      "status": "done",
+      "priority": "critical",
+      "area": "platform",
+      "risk": "Некорректные проценты приводят к неверным управленческим решениям.",
+      "parentId": "FS-039",
+      "dependsOn": [
+        "FS-019",
+        "FS-020",
+        "FS-064"
+      ],
+      "priorityReason": "Пользователь обнаружил визуально некорректную статистику; доверие к данным является core-инвариантом.",
+      "unblocks": [
+        "FS-035",
+        "FS-039",
+        "FS-043"
+      ]
     },
     {
-      "id": "FS-071", "title": "AI-разбор свободных полевых заметок с preview", "description": "Хранить исходную заметку, строить proposed changes, показывать распознанное и нераспознанное, принимать уточнения и применять только после approval.",
-      "type": "Feature", "status": "backlog", "priority": "high", "area": "intelligence", "risk": "Agent не должен менять progress без permission checks, evidence, preview и human approval.",
-      "parentId": "FS-033", "dependsOn": ["FS-008", "FS-031", "FS-032", "FS-036", "FS-069"], "priorityReason": "Высокая гибкость полевого ввода, но безопасное применение требует готового AI foundation.", "unblocks": ["FS-034", "FS-035"]
+      "id": "FS-071",
+      "title": "AI-разбор свободных полевых заметок с preview",
+      "description": "Хранить исходную заметку, строить proposed changes, показывать распознанное и нераспознанное, принимать уточнения и применять только после approval.",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "high",
+      "area": "intelligence",
+      "risk": "Agent не должен менять progress без permission checks, evidence, preview и human approval.",
+      "parentId": "FS-033",
+      "dependsOn": [
+        "FS-008",
+        "FS-031",
+        "FS-032",
+        "FS-036",
+        "FS-069"
+      ],
+      "priorityReason": "Высокая гибкость полевого ввода, но безопасное применение требует готового AI foundation.",
+      "unblocks": [
+        "FS-034",
+        "FS-035"
+      ]
     },
     {
-      "id": "FS-072", "title": "Разделить и усилить Export/Import", "description": "Явно обозначить текущий Development Workspace export, добавить validation/preview и спроектировать отдельный project data export/import.",
-      "type": "Task", "status": "backlog", "priority": "medium", "area": "foundation", "risk": "Импорт без preview может перезаписать задачи или смешать tenant data.",
-      "parentId": "FS-002", "dependsOn": ["FS-013", "FS-017", "FS-025"], "priorityReason": "Текущие кнопки работают только с Kanban и создают неверное ожидание полного backup/export.", "unblocks": ["FS-043"]
+      "id": "FS-072",
+      "title": "Разделить и усилить Export/Import",
+      "description": "Явно обозначить текущий Development Workspace export, добавить validation/preview и спроектировать отдельный project data export/import.",
+      "type": "Task",
+      "status": "backlog",
+      "priority": "medium",
+      "area": "foundation",
+      "risk": "Импорт без preview может перезаписать задачи или смешать tenant data.",
+      "parentId": "FS-002",
+      "dependsOn": [
+        "FS-013",
+        "FS-017",
+        "FS-025"
+      ],
+      "priorityReason": "Текущие кнопки работают только с Kanban и создают неверное ожидание полного backup/export.",
+      "unblocks": [
+        "FS-043"
+      ]
     },
     {
-      "id": "FS-073", "title": "Role-aware UI и матрица доступа", "description": "Применить Technician, Supervisor, PM и Administrator policies ко всем страницам, действиям, логам, статистике и AI preview. Готовый инкремент: централизованная UI policy matrix, role preview switcher, route/action visibility, dev-role API header и server-side route permission checks.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Dev-role header является foundation для MVP-проверки; production enforcement требует real identity, memberships, signed sessions и server-side policy storage.",
-      "parentId": "FS-017", "dependsOn": ["FS-016", "FS-017"], "priorityReason": "Разграничение доступа должно учитываться в каждом следующем модуле.", "unblocks": ["FS-029", "FS-032", "FS-068", "FS-071"]
+      "id": "FS-073",
+      "title": "Role-aware UI и матрица доступа",
+      "description": "Применить Technician, Supervisor, PM и Administrator policies ко всем страницам, действиям, логам, статистике и AI preview. Готовый инкремент: централизованная UI policy matrix, role preview switcher, route/action visibility, dev-role API header и server-side route permission checks.",
+      "type": "Task",
+      "status": "testing",
+      "priority": "critical",
+      "area": "platform",
+      "risk": "Dev-role header является foundation для MVP-проверки; production enforcement требует real identity, memberships, signed sessions и server-side policy storage.",
+      "parentId": "FS-017",
+      "dependsOn": [
+        "FS-016",
+        "FS-017"
+      ],
+      "priorityReason": "Разграничение доступа должно учитываться в каждом следующем модуле.",
+      "unblocks": [
+        "FS-029",
+        "FS-032",
+        "FS-068",
+        "FS-071"
+      ]
     },
     {
-      "id": "FS-074", "title": "Product naming, trademark screening и rebrand", "description": "Рабочее имя RackPilot by Valeronix выбрано; закрепить brand foundation, проверить trademark/domain conflicts и завершить controlled rebrand.",
-      "type": "Task", "status": "progress", "priority": "high", "area": "foundation", "risk": "Финальная доступность названия требует профессионального trademark search по целевым рынкам.",
-      "dependsOn": [], "priorityReason": "Явно назначено пользователем Priority 2 для подготовки коммерческого продукта.", "unblocks": ["FS-043", "FS-044", "FS-045"]
+      "id": "FS-074",
+      "title": "Product naming, trademark screening и rebrand",
+      "description": "Рабочее имя RackPilot by Valeronix выбрано; закрепить brand foundation, проверить trademark/domain conflicts и завершить controlled rebrand.",
+      "type": "Task",
+      "status": "progress",
+      "priority": "high",
+      "area": "foundation",
+      "risk": "Финальная доступность названия требует профессионального trademark search по целевым рынкам.",
+      "dependsOn": [],
+      "priorityReason": "Явно назначено пользователем Priority 2 для подготовки коммерческого продукта.",
+      "unblocks": [
+        "FS-043",
+        "FS-044",
+        "FS-045"
+      ]
     },
     {
-      "id": "FS-075", "title": "Информационное окно о работе Codex", "description": "Показывать в интерфейсе статус работы Codex: работает, ожидает действия, уперся в лимит или доступен к продолжению.",
-      "type": "Feature", "status": "backlog", "priority": "critical", "area": "foundation", "risk": "Web UI может только показывать durable status/continue request; реальный запуск Codex требует интеграции с host/session API.",
-      "dependsOn": ["FS-063"], "priorityReason": "Пользователь явно назначил это Priority 1 для наблюдения за разработкой прямо в платформе.", "unblocks": ["FS-043", "FS-045"]
+      "id": "FS-075",
+      "title": "Информационное окно о работе Codex",
+      "description": "Показывать в интерфейсе статус работы Codex: работает, ожидает действия, уперся в лимит или доступен к продолжению.",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "foundation",
+      "risk": "Web UI может только показывать durable status/continue request; реальный запуск Codex требует интеграции с host/session API.",
+      "dependsOn": [
+        "FS-063"
+      ],
+      "priorityReason": "Пользователь явно назначил это Priority 1 для наблюдения за разработкой прямо в платформе.",
+      "unblocks": [
+        "FS-043",
+        "FS-045"
+      ]
     },
     {
-      "id": "FS-076", "title": "Корректировка размера полей при добавлении новой задачи", "description": "Увеличить и стабилизировать размеры полей и подписей в dialog forms, чтобы ввод задач и проектных данных был читаемым на desktop и mobile.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Формы должны оставаться компактными, но не должны провоцировать zoom, обрезание текста или ошибки touch ввода.",
-      "dependsOn": ["FS-053"], "priorityReason": "Непригодные формы блокируют ежедневное заполнение задач и прогресса.", "unblocks": ["FS-019", "FS-071"]
+      "id": "FS-076",
+      "title": "Корректировка размера полей при добавлении новой задачи",
+      "description": "Увеличить и стабилизировать размеры полей и подписей в dialog forms, чтобы ввод задач и проектных данных был читаемым на desktop и mobile.",
+      "type": "Task",
+      "status": "done",
+      "priority": "critical",
+      "area": "platform",
+      "risk": "Формы должны оставаться компактными, но не должны провоцировать zoom, обрезание текста или ошибки touch ввода.",
+      "dependsOn": [
+        "FS-053"
+      ],
+      "priorityReason": "Непригодные формы блокируют ежедневное заполнение задач и прогресса.",
+      "unblocks": [
+        "FS-019",
+        "FS-071"
+      ]
     },
     {
-      "id": "FS-077", "title": "Корректировка размера текста в целом на платформе", "description": "Увеличить и унифицировать размер текста в Overview, Projects, Admin и Kanban без нарушения мобильной верстки.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "platform", "risk": "Глобальные изменения typography могут увеличить высоту карточек и потребовать дополнительной проверки плотности интерфейса.",
-      "dependsOn": ["FS-053"], "priorityReason": "Читаемость интерфейса критична для desktop-проверки и полевой работы.", "unblocks": ["FS-019", "FS-043", "FS-069"]
+      "id": "FS-077",
+      "title": "Корректировка размера текста в целом на платформе",
+      "description": "Увеличить и унифицировать размер текста в Overview, Projects, Admin и Kanban без нарушения мобильной верстки.",
+      "type": "Task",
+      "status": "done",
+      "priority": "critical",
+      "area": "platform",
+      "risk": "Глобальные изменения typography могут увеличить высоту карточек и потребовать дополнительной проверки плотности интерфейса.",
+      "dependsOn": [
+        "FS-053"
+      ],
+      "priorityReason": "Читаемость интерфейса критична для desktop-проверки и полевой работы.",
+      "unblocks": [
+        "FS-019",
+        "FS-043",
+        "FS-069"
+      ]
     },
     {
-      "id": "FS-078", "title": "Автоматический Daily Log из project audit", "description": "Формировать дневной журнал из unit progress, задач, структуры объекта и issues; объединять с редактируемыми ручными пояснениями без дублирования источников истины.",
-      "type": "Feature", "status": "testing", "priority": "critical", "area": "projects", "risk": "Неверное объединение событий или timezone может исказить фактический отчет за день.",
-      "parentId": "FS-019", "dependsOn": ["FS-004", "FS-019", "FS-020"], "priorityReason": "Daily Log должен отражать фактическую работу автоматически и служит основой отчетности техников.", "unblocks": ["FS-035", "FS-039", "FS-043"]
+      "id": "FS-078",
+      "title": "Автоматический Daily Log из project audit",
+      "description": "Формировать дневной журнал из unit progress, задач, структуры объекта и issues; объединять с редактируемыми ручными пояснениями без дублирования источников истины.",
+      "type": "Feature",
+      "status": "done",
+      "priority": "critical",
+      "area": "projects",
+      "risk": "Неверное объединение событий или timezone может исказить фактический отчет за день.",
+      "parentId": "FS-019",
+      "dependsOn": [
+        "FS-004",
+        "FS-019",
+        "FS-020"
+      ],
+      "priorityReason": "Daily Log должен отражать фактическую работу автоматически и служит основой отчетности техников.",
+      "unblocks": [
+        "FS-035",
+        "FS-039",
+        "FS-043"
+      ]
     },
     {
-      "id": "FS-079", "title": "Private GitHub repository и development provenance", "description": "Вести решения, development log и AI provenance в Git; исключить runtime secrets; подключить private GitHub remote и защитить main после предоставления repository URL.",
-      "type": "Task", "status": "progress", "priority": "high", "area": "foundation", "risk": "Ошибочная публикация runtime data или публичный remote может раскрыть секреты и незавершенную интеллектуальную собственность.",
-      "dependsOn": ["FS-004", "FS-025"], "priorityReason": "История авторства, резервная копия кода и контролируемая публикация важны до расширения команды.", "unblocks": ["FS-043", "FS-045"]
+      "id": "FS-079",
+      "title": "Private GitHub repository и development provenance",
+      "description": "Вести решения, development log и AI provenance в Git; исключить runtime secrets; подключить private GitHub remote и защитить main после предоставления repository URL.",
+      "type": "Task",
+      "status": "progress",
+      "priority": "high",
+      "area": "foundation",
+      "risk": "Ошибочная публикация runtime data или публичный remote может раскрыть секреты и незавершенную интеллектуальную собственность.",
+      "dependsOn": [
+        "FS-004",
+        "FS-025"
+      ],
+      "priorityReason": "История авторства, резервная копия кода и контролируемая публикация важны до расширения команды.",
+      "unblocks": [
+        "FS-043",
+        "FS-045"
+      ]
     },
     {
-      "id": "FS-080", "title": "Admin GitHub sync settings", "description": "Добавить в административную панель настройки remote URL, branch, commit strategy, auto commit, auto push и docs inclusion без хранения секретов в платформе.",
-      "type": "Task", "status": "testing", "priority": "high", "area": "foundation", "risk": "Push нельзя автоматизировать безопасно без внешнего credential manager или SSH key; токены не должны сохраняться в браузере/SQLite.",
-      "dependsOn": ["FS-079"], "priorityReason": "Пользователь запросил управлять синхронизацией репозитория из Admin панели.", "unblocks": ["FS-043", "FS-045"]
+      "id": "FS-080",
+      "title": "Admin GitHub sync settings",
+      "description": "Добавить в административную панель настройки remote URL, branch, commit strategy, auto commit, auto push и docs inclusion без хранения секретов в платформе.",
+      "type": "Task",
+      "status": "testing",
+      "priority": "high",
+      "area": "foundation",
+      "risk": "Push нельзя автоматизировать безопасно без внешнего credential manager или SSH key; токены не должны сохраняться в браузере/SQLite.",
+      "dependsOn": [
+        "FS-079"
+      ],
+      "priorityReason": "Пользователь запросил управлять синхронизацией репозитория из Admin панели.",
+      "unblocks": [
+        "FS-043",
+        "FS-045"
+      ]
     },
     {
-      "id": "FS-082", "title": "Admin Platform Settings foundation", "description": "Добавить базовые organization settings: default language, timezone, role mode, telemetry privacy и log retention.",
-      "type": "Task", "status": "testing", "priority": "high", "area": "platform", "risk": "Настройки ролей не должны создавать ложное ощущение безопасности до server-side RBAC enforcement.",
-      "dependsOn": ["FS-017", "FS-069"], "priorityReason": "Пользователь запросил пополнение настроек в административной панели.", "unblocks": ["FS-043", "FS-068", "FS-073"]
+      "id": "FS-082",
+      "title": "Admin Platform Settings foundation",
+      "description": "Добавить базовые organization settings: default language, timezone, role mode, telemetry privacy и log retention.",
+      "type": "Task",
+      "status": "done",
+      "priority": "high",
+      "area": "platform",
+      "risk": "Настройки ролей не должны создавать ложное ощущение безопасности до server-side RBAC enforcement.",
+      "dependsOn": [
+        "FS-017",
+        "FS-069"
+      ],
+      "priorityReason": "Пользователь запросил пополнение настроек в административной панели.",
+      "unblocks": [
+        "FS-043",
+        "FS-068",
+        "FS-073"
+      ]
     },
     {
-      "id": "FS-083", "title": "Controlled cleanup legacy FieldOS mentions", "description": "Найти и убрать публичные упоминания FieldOS из UI, docs и seed data; внутренние storage/class identifiers переносить только через совместимый migration plan.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "foundation", "risk": "Слепой rename может повредить SQLite filename, localStorage keys, audit hash compatibility и существующие тестовые fixtures.",
-      "dependsOn": ["FS-074", "FS-079"], "priorityReason": "Название FieldOS было временно сгенерировано до выбора реального продукта RackPilot by Valeronix.", "unblocks": ["FS-043", "FS-045", "FS-069"]
+      "id": "FS-083",
+      "title": "Controlled cleanup legacy FieldOS mentions",
+      "description": "Найти и убрать публичные упоминания FieldOS из UI, docs и seed data; внутренние storage/class identifiers переносить только через совместимый migration plan.",
+      "type": "Task",
+      "status": "testing",
+      "priority": "critical",
+      "area": "foundation",
+      "risk": "Слепой rename может повредить SQLite filename, localStorage keys, audit hash compatibility и существующие тестовые fixtures.",
+      "dependsOn": [
+        "FS-074",
+        "FS-079"
+      ],
+      "priorityReason": "Название FieldOS было временно сгенерировано до выбора реального продукта RackPilot by Valeronix.",
+      "unblocks": [
+        "FS-043",
+        "FS-045",
+        "FS-069"
+      ]
     },
     {
-      "id": "FS-084", "title": "API Monitoring Console", "description": "Добавить отдельную admin-only страницу API telemetry: request count, latency average/p95, status codes, top routes и recent API logs.",
-      "type": "Feature", "status": "testing", "priority": "high", "area": "platform", "risk": "Runtime metrics не заменяют долговременные observability metrics; доступ должен быть ограничен Administrator после server-side RBAC.",
-      "dependsOn": ["FS-010", "FS-068", "FS-073"], "priorityReason": "Пользователь запросил видеть статистику работы API, логи, количество и скорость ответа.", "unblocks": ["FS-039", "FS-043"]
+      "id": "FS-084",
+      "title": "API Monitoring Console",
+      "description": "Добавить отдельную admin-only страницу API telemetry: request count, latency average/p95, status codes, top routes и recent API logs.",
+      "type": "Feature",
+      "status": "done",
+      "priority": "high",
+      "area": "platform",
+      "risk": "Runtime metrics не заменяют долговременные observability metrics; доступ должен быть ограничен Administrator после server-side RBAC.",
+      "dependsOn": [
+        "FS-010",
+        "FS-068",
+        "FS-073"
+      ],
+      "priorityReason": "Пользователь запросил видеть статистику работы API, логи, количество и скорость ответа.",
+      "unblocks": [
+        "FS-039",
+        "FS-043"
+      ]
     },
     {
-      "id": "FS-085", "title": "Desktop header collision fix", "description": "Перестроить desktop topbar так, чтобы Codex status и action controls не налезали на центральные navigation tabs на широких экранах.",
-      "type": "Task", "status": "testing", "priority": "critical", "area": "foundation", "risk": "Header должен сохранить mobile wrapping и не скрыть development status.",
-      "dependsOn": ["FS-063", "FS-077"], "priorityReason": "Пользователь подтвердил, что Codex status всё еще перекрывает tabs на PC версии.", "unblocks": ["FS-029", "FS-043"]
+      "id": "FS-085",
+      "title": "Desktop header collision fix",
+      "description": "Перестроить desktop topbar так, чтобы Codex status и action controls не налезали на центральные navigation tabs на широких экранах.",
+      "type": "Task",
+      "status": "testing",
+      "priority": "critical",
+      "area": "foundation",
+      "risk": "Header должен сохранить mobile wrapping и не скрыть development status.",
+      "dependsOn": [
+        "FS-063",
+        "FS-077"
+      ],
+      "priorityReason": "Пользователь подтвердил, что Codex status всё еще перекрывает tabs на PC версии.",
+      "unblocks": [
+        "FS-029",
+        "FS-043"
+      ]
     },
     {
-      "id": "FS-086", "title": "Development task dependency graph", "description": "Добавить вкладку Graph рядом с Kanban, где задачи показаны как цветные вершины по статусам, а связи отображают parent, dependsOn и unblocks.",
-      "type": "Feature", "status": "testing", "priority": "high", "area": "foundation", "risk": "Граф должен работать без тяжелых зависимостей и использовать те же фильтры, что Kanban.",
-      "dependsOn": ["FS-002", "FS-073"], "priorityReason": "Граф связей ускоряет понимание roadmap и зависимостей по аналогии с Obsidian.", "unblocks": ["FS-033", "FS-043"]
+      "id": "FS-086",
+      "title": "Development task dependency graph",
+      "description": "Добавить вкладку Graph рядом с Kanban, где задачи показаны как цветные вершины по статусам, а связи отображают parent, dependsOn и unblocks.",
+      "type": "Feature",
+      "status": "testing",
+      "priority": "high",
+      "area": "foundation",
+      "risk": "Граф должен работать без тяжелых зависимостей и использовать те же фильтры, что Kanban.",
+      "dependsOn": [
+        "FS-002",
+        "FS-073"
+      ],
+      "priorityReason": "Граф связей ускоряет понимание roadmap и зависимостей по аналогии с Obsidian.",
+      "unblocks": [
+        "FS-033",
+        "FS-043"
+      ]
     },
     {
-      "id": "FS-087", "title": "Production identity, memberships и signed sessions", "description": "Заменить development-only role header на настоящую identity модель: пользователи, memberships, роли, signed sessions, logout, session expiry и server-side policy evaluation.",
-      "type": "Feature", "status": "backlog", "priority": "critical", "area": "security", "risk": "Без настоящей identity/session модели multi-company доступ нельзя считать безопасным или коммерчески готовым.",
-      "parentId": "FS-017", "dependsOn": ["FS-016", "FS-017", "FS-073", "FS-082"], "priorityReason": "Route-level RBAC foundation готов, но коммерческий multi-tenant режим требует реальной авторизации.", "unblocks": ["FS-032", "FS-043", "FS-068", "FS-071"]
+      "id": "FS-087",
+      "title": "Production identity, memberships и signed sessions",
+      "description": "Заменить development-only role header на настоящую identity модель: пользователи, memberships, роли, signed sessions, logout, session expiry и server-side policy evaluation.",
+      "type": "Feature",
+      "status": "backlog",
+      "priority": "critical",
+      "area": "security",
+      "risk": "Без настоящей identity/session модели multi-company доступ нельзя считать безопасным или коммерчески готовым.",
+      "parentId": "FS-017",
+      "dependsOn": [
+        "FS-016",
+        "FS-017",
+        "FS-073",
+        "FS-082"
+      ],
+      "priorityReason": "Route-level RBAC foundation готов, но коммерческий multi-tenant режим требует реальной авторизации.",
+      "unblocks": [
+        "FS-032",
+        "FS-043",
+        "FS-068",
+        "FS-071"
+      ]
     }
   ]
 }

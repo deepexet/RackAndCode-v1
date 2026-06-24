@@ -193,11 +193,21 @@
       <header class="page-header"><div><p class="eyebrow">ADMIN · API OBSERVABILITY</p><h1>API Monitoring</h1><p>Runtime telemetry по локальному API: количество запросов, скорость ответа, ошибки, маршруты и последние события. Доступ должен быть только для Administrator после включения RBAC.</p></div><button class="button ghost" id="refreshApiMetricsButton" type="button">Refresh</button></header>
       <div class="access-note"><strong>Role policy:</strong> Administrator only. Current build shows the section as a prepared admin surface; server-side enforcement is tracked by FS-073.</div>
       <div class="api-summary" id="apiSummary"></div>
+      <section class="detail-section" style="margin-bottom:18px">
+        <div class="detail-section-title"><div><p class="eyebrow">SLO TARGETS</p><h2>Service Level Objectives</h2></div></div>
+        <div id="apiSloCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+          <p class="empty-copy">Loading SLOs…</p>
+        </div>
+      </section>
       <div class="api-grid">
         <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">STATUS CODES</p><h2>Responses</h2></div></div><div class="api-breakdown" id="apiStatusBreakdown"></div></section>
         <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">HOT PATHS</p><h2>Top routes</h2></div></div><div class="api-route-list" id="apiRouteList"></div></section>
       </div>
       <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">RECENT API LOGS</p><h2>Последние запросы</h2></div><span class="git-sync-status" id="apiMetricsStatus">Runtime</span></div><div class="api-log-list" id="apiLogList"><article class="project-loading">Загрузка API telemetry…</article></div></section>
+      <section class="detail-section" style="margin-top:18px">
+        <div class="detail-section-title"><div><p class="eyebrow">RUNBOOKS</p><h2>Incident response</h2></div></div>
+        <div id="runbookList"><p class="empty-copy">Loading runbooks…</p></div>
+      </section>
     </section>
 
     <section class="app-view admin-page" data-view="admin" id="admin">
@@ -624,6 +634,17 @@
       <section class="detail-section git-sync-admin" data-permission="adminPanel"><div class="detail-section-title"><div><p class="eyebrow">SOURCE CONTROL</p><h2>GitHub sync</h2></div><span class="git-sync-status" id="gitSyncStatus">Not configured</span></div><form id="gitSyncForm"><label>Repository URL<input id="gitRemoteUrl" maxlength="500" placeholder="git@github.com:deepexet/RackAndCode-v1.git"></label><div class="form-grid"><label>Branch<input id="gitBranchName" maxlength="120" value="main"></label><label>Commit strategy<select id="gitCommitStrategy"><option value="per_task">After completed task</option><option value="per_release">After release batch</option><option value="manual">Manual only</option></select></label></div><div class="git-sync-options"><label class="check-label"><input id="gitAutoCommit" type="checkbox" checked> Auto commit finished work</label><label class="check-label"><input id="gitAutoPush" type="checkbox"> Auto push after commit</label><label class="check-label"><input id="gitIncludeDocs" type="checkbox" checked> Include docs/provenance logs</label></div><p class="empty-copy" id="gitSyncMessage">Credentials are not stored in RackPilot. Use SSH key or local Git credential manager.</p><div class="dialog-actions"><span></span><button class="button primary" type="submit">Save Git settings</button></div></form></section>
       <section class="detail-section workflow-admin" data-permission="adminPanel"><div class="detail-section-title"><div><p class="eyebrow">PROJECT WORKFLOW</p><h2>Виды работ и этапы</h2></div><button class="button primary" id="addWorkTypeButton" type="button">＋ Вид работ</button></div><p>Настройка применяется ко всем проектам текущей организации.</p><div class="workflow-admin-list" id="workflowAdminList"></div></section>
       <section class="detail-section workflow-admin" data-permission="adminPanel"><div class="detail-section-title"><div><p class="eyebrow">FORM SCHEMA</p><h2>Дополнительные поля</h2></div><button class="button primary" id="addCustomFieldButton" type="button">＋ Поле</button></div><p>Поля автоматически появляются в формах локаций и units.</p><div class="workflow-admin-list" id="customFieldAdminList"></div></section>
+      <section class="detail-section" data-permission="adminPanel" id="unitRegistrySection">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">UNIT REGISTRY</p><h2>Реестр units</h2></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="unitRegistryProjectFilter" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px"><option value="">— Проект —</option></select>
+            <button class="button ghost" id="unitRegistryRefreshBtn" type="button" style="font-size:12px">↺ Обновить</button>
+          </div>
+        </div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Просмотр и редактирование кода, названия и заметок всех units в разрезе проектов. Прогресс недоступен здесь — используйте карточку проекта.</p>
+        <div id="unitRegistryList"><p class="empty-copy">Выберите проект для просмотра units.</p></div>
+      </section>
     </section>
 
     <!-- ── Tech View (PWA mobile flow) ─────────────────────────────────── -->

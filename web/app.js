@@ -640,7 +640,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -3205,9 +3205,47 @@ function exportLogsCSV() {
   a.click(); URL.revokeObjectURL(url);
 }
 
-function renderApiMetrics(unavailable=false){const summary=$('#apiSummary'),status=$('#apiStatusBreakdown'),routes=$('#apiRouteList'),list=$('#apiLogList'),badge=$('#apiMetricsStatus');if(!summary||!status||!routes||!list)return;if(unavailable){summary.innerHTML='<article><span>Status</span><strong>Offline</strong><small>API telemetry unavailable</small></article>';status.innerHTML='';routes.innerHTML='';list.innerHTML='<article class="project-loading">API telemetry временно недоступна.</article>';if(badge){badge.textContent='Unavailable';badge.className='git-sync-status error';}return;}const metrics=apiMetrics||{requestCount:0,averageMs:0,p95Ms:0,errorCount:0,statusCounts:{},methodCounts:{},topRoutes:[],recent:[],updatedAt:null};summary.innerHTML=`<article><span>Total requests</span><strong>${metrics.requestCount}</strong><small>retained runtime events</small></article><article><span>Average response</span><strong>${metrics.averageMs} ms</strong><small>mean latency</small></article><article><span>P95 response</span><strong>${metrics.p95Ms} ms</strong><small>slow path signal</small></article><article><span>Errors</span><strong>${metrics.errorCount}</strong><small>HTTP 4xx/5xx</small></article>`;status.innerHTML=Object.entries(metrics.statusCounts||{}).map(([code,count])=>`<article class="${Number(code)>=400?'error':'ok'}"><span>${escapeHtml(code)}</span><strong>${count}</strong></article>`).join('')||'<p class="empty-copy">No API responses yet.</p>';routes.innerHTML=(metrics.topRoutes||[]).map(route=>`<article><strong>${escapeHtml(route.route)}</strong><span>${route.count} requests</span></article>`).join('')||'<p class="empty-copy">No route data yet.</p>';list.innerHTML=(metrics.recent||[]).map(event=>`<article class="${event.status>=400?'error':''}"><div><span>${escapeHtml(event.method)} · ${escapeHtml(event.route)}</span><strong>${event.status} · ${event.durationMs} ms</strong><small>${escapeHtml(event.requestId)} · ${escapeHtml(event.organizationId)}</small></div><time datetime="${escapeHtml(event.createdAt)}">${new Date(event.createdAt).toLocaleTimeString('ru-RU')}</time></article>`).join('')||'<article class="project-loading">No API requests recorded yet.</article>';if(badge){badge.textContent=metrics.updatedAt?`Updated ${new Date(metrics.updatedAt).toLocaleTimeString('ru-RU')}`:'Runtime';badge.className='git-sync-status configured';}}
+function renderApiMetrics(unavailable=false){
+  const summary=$('#apiSummary'),status=$('#apiStatusBreakdown'),routes=$('#apiRouteList'),list=$('#apiLogList'),badge=$('#apiMetricsStatus'),sloEl=$('#apiSloCards');
+  if(!summary||!status||!routes||!list)return;
+  if(unavailable){summary.innerHTML='<article><span>Status</span><strong>Offline</strong><small>API telemetry unavailable</small></article>';status.innerHTML='';routes.innerHTML='';list.innerHTML='<article class="project-loading">API telemetry временно недоступна.</article>';if(sloEl)sloEl.innerHTML='';if(badge){badge.textContent='Unavailable';badge.className='git-sync-status error';}return;}
+  const metrics=apiMetrics||{requestCount:0,averageMs:0,p95Ms:0,errorCount:0,errorRate:0,availability:100,statusCounts:{},methodCounts:{},topRoutes:[],recent:[],updatedAt:null,slos:[]};
+  summary.innerHTML=`<article><span>Total requests</span><strong>${metrics.requestCount}</strong><small>retained runtime events</small></article><article><span>Average response</span><strong>${metrics.averageMs} ms</strong><small>mean latency</small></article><article><span>P95 response</span><strong>${metrics.p95Ms} ms</strong><small>slow path signal</small></article><article><span>Error rate</span><strong>${metrics.errorRate??'0'}%</strong><small>${metrics.errorCount} errors</small></article><article><span>Availability</span><strong>${metrics.availability??'100'}%</strong><small>non-5xx</small></article>`;
+  if(sloEl&&metrics.slos&&metrics.slos.length){
+    sloEl.innerHTML=metrics.slos.map(s=>`<article style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:${s.ok?'rgba(59,185,105,.07)':'rgba(224,80,83,.07)'};border:1px solid ${s.ok?'rgba(59,185,105,.3)':'rgba(224,80,83,.3)'};border-radius:8px;gap:12px"><div><strong style="font-size:12px">${escapeHtml(s.name)}</strong><small style="font-size:10px;color:var(--text-secondary);display:block">Target: ${escapeHtml(s.target)}</small></div><div style="text-align:right"><b style="font-size:14px;color:${s.ok?'#3bb969':'#e05353'}">${escapeHtml(s.current)}</b><small style="font-size:10px;display:block;color:${s.ok?'#3bb969':'#e05353'}">${s.ok?'✓ OK':'✗ BREACH'}</small></div></article>`).join('');
+  }
+  status.innerHTML=Object.entries(metrics.statusCounts||{}).map(([code,count])=>`<article class="${Number(code)>=400?'error':'ok'}"><span>${escapeHtml(code)}</span><strong>${count}</strong></article>`).join('')||'<p class="empty-copy">No API responses yet.</p>';
+  routes.innerHTML=(metrics.topRoutes||[]).map(route=>`<article><strong>${escapeHtml(route.route)}</strong><span>${route.count} requests</span></article>`).join('')||'<p class="empty-copy">No route data yet.</p>';
+  list.innerHTML=(metrics.recent||[]).map(event=>`<article class="${event.status>=400?'error':''}"><div><span>${escapeHtml(event.method)} · ${escapeHtml(event.route)}</span><strong>${event.status} · ${event.durationMs} ms</strong><small>${escapeHtml(event.requestId)} · ${escapeHtml(event.organizationId)}</small></div><time datetime="${escapeHtml(event.createdAt)}">${new Date(event.createdAt).toLocaleTimeString('ru-RU')}</time></article>`).join('')||'<article class="project-loading">No API requests recorded yet.</article>';
+  if(badge){badge.textContent=metrics.updatedAt?`Updated ${new Date(metrics.updatedAt).toLocaleTimeString('ru-RU')}`:'Runtime';badge.className='git-sync-status configured';}
+}
 
-async function hydrateApiMetrics(){try{const response=await fetch('/api/v1/admin/api-metrics',{headers:apiHeaders()});if(!response.ok)throw new Error('api metrics unavailable');const payload=await response.json();apiMetrics=payload.metrics;renderApiMetrics();}catch{renderApiMetrics(true);}}
+async function hydrateApiMetrics(){
+  try{const response=await fetch('/api/v1/admin/api-metrics',{headers:apiHeaders()});if(!response.ok)throw new Error('api metrics unavailable');const payload=await response.json();apiMetrics=payload.metrics;renderApiMetrics();}catch{renderApiMetrics(true);}
+  hydrateRunbooks();
+}
+
+async function hydrateRunbooks(){
+  const el=$('#runbookList');if(!el)return;
+  try{
+    const {runbooks=[]}=await apiFetch('/api/v1/admin/runbooks');
+    const sev={critical:'#e05353',warning:'#f59e0b',info:'var(--text-secondary)'};
+    el.innerHTML=runbooks.map(rb=>`
+      <details style="border:1px solid var(--border);border-radius:8px;padding:0;overflow:hidden;margin-bottom:8px">
+        <summary style="padding:12px 14px;cursor:pointer;display:flex;gap:10px;align-items:center;list-style:none">
+          <span style="width:8px;height:8px;border-radius:50%;background:${sev[rb.severity]||sev.info};flex-shrink:0"></span>
+          <strong style="flex:1;font-size:13px">${escapeHtml(rb.title)}</strong>
+          <small style="color:var(--text-secondary);font-size:11px">${escapeHtml(rb.trigger)}</small>
+        </summary>
+        <div style="padding:12px 14px;border-top:1px solid var(--border)">
+          <ol style="margin:0 0 10px;padding-left:18px;font-size:12px;line-height:1.7">
+            ${rb.steps.map(s=>`<li>${escapeHtml(s)}</li>`).join('')}
+          </ol>
+          <p style="font-size:11px;color:${sev[rb.severity]||sev.info};margin:0">⚡ Escalation: ${escapeHtml(rb.escalation||'—')}</p>
+        </div>
+      </details>`).join('')||'<p class="empty-copy">No runbooks configured.</p>';
+  }catch{el.innerHTML='<p class="empty-copy">Runbooks unavailable.</p>';}
+}
 
 let _lastAgentData = null;
 
@@ -3587,9 +3625,9 @@ function renderProjectDetail() {
   const openIssues = project.issues.filter(value => value.status !== 'resolved');
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
-  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ Экспорт</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ Экспорт</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis"><article><span>Общий прогресс</span><strong>${project.progress}%</strong></article><article><span>Сегодня обновлено</span><strong>${updatesToday.length}</strong></article><article><span>Открытые проблемы</span><strong>${openIssues.length}</strong></article><article><span>Локации</span><strong>${project.locations.length}</strong></article></section>
-    <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div></section>
+    <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div><button class="button ghost" id="criticalPathBtn" type="button" style="font-size:12px">⛓ Critical path</button></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div><div id="criticalPathPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div></section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
     <section class="detail-section" id="projectTeamSection">
@@ -3628,6 +3666,89 @@ function renderProjectDetail() {
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
 
   container.querySelector('#smartNoteBtn')?.addEventListener('click', () => openFieldNoteDialog(project.id));
+
+  container.querySelector('#dailyLogReportBtn')?.addEventListener('click', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    let panel = container.querySelector('#dailyLogReportPanel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'dailyLogReportPanel';
+      panel.style.cssText = 'margin-top:18px;padding:18px;background:var(--surface,#0d121b);border:1px solid var(--border,#242c3a);border-radius:12px';
+      container.querySelector('.detail-header')?.after(panel);
+    }
+    if (panel.dataset.open === '1') { panel.style.display = 'none'; panel.dataset.open = '0'; return; }
+    panel.style.display = 'block';
+    panel.dataset.open = '1';
+    panel.innerHTML = '<p style="font-size:12px;color:var(--text-secondary)">Формирование лога…</p>';
+    try {
+      const report = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/daily-report?date=${today}`);
+      const noteResp = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/daily-log-note?date=${today}`).catch(() => ({note:''}));
+      const sectionHtml = (report.sections || []).map(sec => `
+        <div style="margin-bottom:14px">
+          <p style="font-size:10px;font-weight:700;color:var(--accent);margin:0 0 8px;letter-spacing:.08em">${escapeHtml(sec.title.toUpperCase())}</p>
+          ${sec.type === 'unit_completions' ? sec.items.map(i => `<p style="font-size:12px;margin:4px 0">• <strong>${escapeHtml(i.location)}</strong> / ${escapeHtml(i.workType)} / ${escapeHtml(i.action)}: <b>${i.count} units</b></p>`).join('') : ''}
+          ${sec.type === 'progress_updates' ? sec.items.map(i => `<p style="font-size:12px;margin:4px 0">• ${escapeHtml(i.location)} / ${escapeHtml(i.workType)}: <b>${i.percent}%</b>${i.comments ? ` — ${escapeHtml(i.comments)}` : ''}</p>`).join('') : ''}
+          ${sec.type === 'issues' ? sec.items.map(i => `<p style="font-size:12px;margin:4px 0;color:#e05353">• [${escapeHtml(i.severity.toUpperCase())}] ${escapeHtml(i.description)}</p>`).join('') : ''}
+        </div>`).join('') || '<p style="font-size:12px;color:var(--text-secondary)">Нет записей за сегодня.</p>';
+      panel.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div><p style="margin:0;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--accent)">DAILY LOG · ${today}</p>
+          <p style="margin:4px 0 0;font-size:11px;color:var(--text-secondary)">${report.stats?.unitCompletions||0} units · ${report.stats?.progressUpdates||0} обновлений · ${report.stats?.issuesOpened||0} проблем</p></div>
+          <button class="button ghost" id="copyDailyLogBtn" type="button" style="font-size:11px">Копировать текст</button>
+        </div>
+        ${sectionHtml}
+        <div style="margin-top:16px;border-top:1px solid var(--border,#242c3a);padding-top:14px">
+          <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:6px">Ручные пояснения (сохраняются)</label>
+          <textarea id="dailyLogNote" rows="4" style="width:100%;padding:10px 12px;background:#0b1018;border:1px solid #2b3443;border-radius:8px;color:var(--text);font-size:13px;resize:vertical">${escapeHtml(noteResp.note||'')}</textarea>
+          <div style="display:flex;justify-content:flex-end;margin-top:8px">
+            <button class="button primary" id="saveDailyLogNoteBtn" type="button" style="font-size:12px">Сохранить заметку</button>
+          </div>
+        </div>`;
+      panel.querySelector('#copyDailyLogBtn')?.addEventListener('click', () => {
+        navigator.clipboard?.writeText(report.text + (noteResp.note ? '\n\n' + noteResp.note : '')).then(() => toast('Скопировано'));
+      });
+      panel.querySelector('#saveDailyLogNoteBtn')?.addEventListener('click', async () => {
+        const note = panel.querySelector('#dailyLogNote')?.value || '';
+        try {
+          await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/daily-log-note`, {
+            method: 'POST', body: JSON.stringify({ date: today, note })
+          });
+          toast('Заметка сохранена');
+        } catch(e) { toast(e.message || 'Ошибка сохранения'); }
+      });
+    } catch(e) { panel.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
+  });
+
+  container.querySelector('#criticalPathBtn')?.addEventListener('click', async () => {
+    const panel = container.querySelector('#criticalPathPanel');
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    panel.innerHTML = '<p style="font-size:12px;color:var(--text-secondary)">Calculating…</p>';
+    try {
+      const { critical_path = [], project_duration_minutes = 0, all_items = [] } =
+        await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/critical-path`);
+      const blocked = all_items.filter(i => i.status === 'blocked');
+      if (!critical_path.length) {
+        panel.innerHTML = '<p class="empty-copy">No dependencies found — nothing to analyze.</p>';
+        return;
+      }
+      const hrs = m => m >= 60 ? `${Math.round(m/60)}h` : `${m}m`;
+      panel.innerHTML = `
+        <p style="font-size:11px;font-weight:700;color:var(--accent);margin:0 0 10px">CRITICAL PATH · ${hrs(project_duration_minutes)} total</p>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${critical_path.map((item, i) => `
+            <div style="display:flex;gap:8px;align-items:center">
+              ${i > 0 ? '<div style="width:16px;text-align:center;color:var(--text-secondary);font-size:10px">↓</div>' : '<div style="width:16px"></div>'}
+              <div style="flex:1;padding:7px 10px;background:rgba(224,80,83,.08);border:1px solid rgba(224,80,83,.25);border-radius:7px">
+                <strong style="font-size:12px">${escapeHtml(item.code||'')} ${escapeHtml(item.title)}</strong>
+                <span style="font-size:10px;color:var(--text-secondary);margin-left:8px">${hrs(item.est_minutes)}</span>
+              </div>
+            </div>`).join('')}
+        </div>
+        ${blocked.length ? `<p style="font-size:12px;margin:12px 0 0;color:#e05353">⛔ ${blocked.length} items blocked by dependencies</p>` : ''}`;
+    } catch(e) { panel.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
+  });
   container.querySelector('#exportProjectBtn')?.addEventListener('click', () => exportProjectData(project.id, project.name));
   container.querySelector('#importProjectInput')?.addEventListener('change', e => {
     if (e.target.files[0]) openProjectImportPreview(e.target.files[0]);
@@ -4808,6 +4929,80 @@ async function openProjectImportPreview(file) {
   } catch { toast('Не удалось прочитать файл'); }
 }
 
+function setupUnitRegistry() {
+  const filterEl = document.getElementById('unitRegistryProjectFilter');
+  const listEl = document.getElementById('unitRegistryList');
+  const refreshBtn = document.getElementById('unitRegistryRefreshBtn');
+  if (!filterEl || !listEl) return;
+
+  async function hydrateUnitRegistry() {
+    const projectId = filterEl.value;
+    if (!projectId) { listEl.innerHTML = '<p class="empty-copy">Выберите проект для просмотра units.</p>'; return; }
+    listEl.innerHTML = '<p class="empty-copy">Загрузка…</p>';
+    try {
+      const { units = [] } = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/units`);
+      if (!units.length) { listEl.innerHTML = '<p class="empty-copy">Units не найдены.</p>'; return; }
+      listEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:8px 10px">Код</th><th style="padding:8px 10px">Название</th>
+          <th style="padding:8px 10px">Локация</th><th style="padding:8px 10px">Заметки</th>
+          <th style="padding:8px 10px"></th>
+        </tr></thead>
+        <tbody>${units.map(u => `
+          <tr data-unit-id="${escapeHtml(u.id)}" style="border-bottom:1px solid var(--border)">
+            <td style="padding:8px 10px"><code>${escapeHtml(u.code)}</code></td>
+            <td style="padding:8px 10px">${escapeHtml(u.name)}</td>
+            <td style="padding:8px 10px;color:var(--text-secondary);font-size:12px">${escapeHtml(u.locationName)}</td>
+            <td style="padding:8px 10px;color:var(--text-secondary);font-size:12px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(u.notes||'—')}</td>
+            <td style="padding:8px 10px"><button class="button ghost unit-edit-btn" type="button" style="font-size:11px;padding:4px 8px"
+              data-unit='${JSON.stringify({id:u.id,code:u.code,name:u.name,notes:u.notes||'',locationId:u.locationId,version:u.version,projectId})}'
+            >Изменить</button></td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    } catch(e) { listEl.innerHTML = `<p class="empty-copy">${e.message}</p>`; }
+  }
+
+  // Populate project filter from loaded projects
+  async function populateFilter() {
+    try {
+      const { projects = [] } = await apiFetch('/api/v1/projects');
+      filterEl.innerHTML = '<option value="">— Проект —</option>' +
+        projects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+    } catch { /* silently skip */ }
+  }
+
+  filterEl.addEventListener('change', hydrateUnitRegistry);
+  refreshBtn?.addEventListener('click', hydrateUnitRegistry);
+
+  // Inline edit via event delegation
+  listEl.addEventListener('click', async e => {
+    const btn = e.target.closest('.unit-edit-btn');
+    if (!btn) return;
+    let u;
+    try { u = JSON.parse(btn.dataset.unit); } catch { return; }
+
+    const newCode = prompt('Код unit (макс. 32 символа):', u.code);
+    if (!newCode) return;
+    const newName = prompt('Название unit (макс. 120 символов):', u.name);
+    if (!newName) return;
+    const newNotes = prompt('Заметки (макс. 2000):', u.notes);
+    if (newNotes === null) return;
+
+    try {
+      await apiFetch(
+        `/api/v1/projects/${encodeURIComponent(u.projectId)}/locations/${encodeURIComponent(u.locationId)}/units/${encodeURIComponent(u.id)}`,
+        { method: 'PATCH', body: JSON.stringify({ code: newCode, name: newName, notes: newNotes, expectedVersion: u.version }) }
+      );
+      toast('Unit обновлён');
+      hydrateUnitRegistry();
+    } catch(err) { toast(err.message || 'Ошибка обновления'); }
+  });
+
+  // Auto-populate filter when admin section loads
+  if (document.body.dataset.route === 'admin') populateFilter();
+  document.addEventListener('routeChange', e => { if (e.detail === 'admin') populateFilter(); });
+}
+
 function setupProjectImport() {
   document.getElementById('confirmProjectImportBtn')?.addEventListener('click', async () => {
     if (!_pendingProjectImport) return;
@@ -4910,6 +5105,7 @@ async function setup() {
   $('#exportLogsBtn')?.addEventListener('click', exportLogsCSV);
   $('#refreshApiMetricsButton').addEventListener('click', hydrateApiMetrics);
   setupProjectImport();
+  setupUnitRegistry();
   window.addEventListener('online', _onNetworkOnline);
   window.addEventListener('offline', _onNetworkOffline);
   _updateOfflineBanner();
