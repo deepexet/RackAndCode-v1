@@ -368,7 +368,7 @@ function renderRoute() {
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
-  if (route === 'admin') Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions()]);
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -380,6 +380,36 @@ function renderComputeNodes(unavailable=false){
   summary.innerHTML=`<article><span>Online</span><strong>${online}</strong></article><article><span>Compute enabled</span><strong>${enabled}</strong></article><article><span>Доступная память узлов</span><strong>${formatMemory(totalMemory)}</strong></article>`;
   container.innerHTML=computeNodes.length?computeNodes.map(node=>{const latest=node.metrics.at(-1)||{};const memoryPercent=latest.memoryTotalBytes?Math.round(latest.memoryUsedBytes/latest.memoryTotalBytes*100):0;const chart=node.metrics.slice(-24).map(metric=>`<i style="height:${Math.max(3,metric.cpuPercent)}%" title="CPU ${metric.cpuPercent}%"></i>`).join('');return `<article class="compute-card ${node.online?'online':'offline'}"><header><div><span class="node-state"></span><div><strong>${escapeHtml(node.name)}</strong><small>${escapeHtml(node.hostname)} · ${escapeHtml(node.architecture)}</small></div></div><label class="compute-toggle"><input type="checkbox" data-compute-node="${node.id}" ${node.computeEnabled?'checked':''} ${!node.agentOptIn?'disabled':''}><span>Вычисления</span></label></header><div class="node-metrics"><div><span>CPU</span><strong>${latest.cpuPercent??0}%</strong></div><div><span>Memory</span><strong>${memoryPercent}%</strong><small>${formatMemory(latest.memoryUsedBytes)} / ${formatMemory(latest.memoryTotalBytes)}</small></div><div><span>Battery</span><strong>${latest.batteryPercent??'—'}${latest.batteryPercent==null?'':'%'}</strong><small>${escapeHtml(latest.powerSource||'unknown')}</small></div><div><span>Thermal</span><strong>${escapeHtml(latest.thermalState||'unknown')}</strong></div></div><div class="compute-chart">${chart}</div><footer><span>${node.online?'Online':'Offline'}</span><small>Agent ${escapeHtml(node.agentVersion)} · ${new Date(node.lastSeenAt).toLocaleTimeString('ru-RU')}</small></footer></article>`;}).join(''):'<article class="compute-card project-loading">Ожидание первого Compute Agent…</article>';
   container.querySelectorAll('[data-compute-node]').forEach(toggle=>toggle.addEventListener('change',async()=>{toggle.disabled=true;try{await apiPatch(`/api/v1/admin/compute-nodes/${encodeURIComponent(toggle.dataset.computeNode)}/enabled`,{enabled:toggle.checked});await hydrateComputeNodes();toast(toggle.checked?'Узел разрешен для вычислений':'Вычисления на узле отключены');}catch(error){toggle.checked=!toggle.checked;toast(error.message);}finally{toggle.disabled=false;}}));
+}
+
+const AI_TEAM = [
+  { id:'codex',    emoji:'🧠', name:'Codex',    role:'Lead Developer',       desc:'Разрабатывает платформу, архитектура, код, тесты',              status:'working',  mood:'Анализирую приоритеты бэклога...' },
+  { id:'scout',    emoji:'🔭', name:'Scout',    role:'System Monitor',       desc:'Следит за API-метриками, uptime и здоровьем сервера',           status:'sleeping', mood:'Всё тихо. Сплю до инцидента.' },
+  { id:'guardian', emoji:'🛡️', name:'Guardian', role:'Security & Audit',     desc:'Аудит данных, целостность цепочки событий, изоляция тенантов',  status:'sleeping', mood:'Периметр защищён. Не беспокоить.' },
+  { id:'relay',    emoji:'📡', name:'Relay',    role:'Sync & Integrations',  desc:'Git sync, GitHub Actions CI, внешние интеграции',               status:'working',  mood:'Синхронизирую последние коммиты...' },
+  { id:'analyst',  emoji:'📊', name:'Analyst',  role:'Reports & Analytics',  desc:'Jobber-отчёты, прогресс по видам работ, дневные сводки',        status:'thinking', mood:'Считаю прогресс по проектам...' },
+  { id:'janitor',  emoji:'🧹', name:'Janitor',  role:'Maintenance',          desc:'Архивирование логов, чистка кэша, контроль миграций БД',        status:'sleeping', mood:'Убрался. Не будите без причины.' },
+];
+const AGENT_STATUS_LABEL = { sleeping:'Спит', working:'Работает', thinking:'Думает', waiting:'Ждёт агента', error:'Ошибка' };
+
+function renderAITeam() {
+  const grid = document.getElementById('aiTeamGrid');
+  if (!grid) return;
+  grid.innerHTML = AI_TEAM.map(a => `
+    <article class="agent-card" data-status="${a.status}" data-id="${a.id}">
+      <div class="agent-avatar">${a.emoji}</div>
+      <div class="agent-info">
+        <strong class="agent-name">${a.name}</strong>
+        <span class="agent-role">${a.role}</span>
+        <p class="agent-desc">${a.desc}</p>
+        <p class="agent-mood">&ldquo;${a.mood}&rdquo;</p>
+        <div class="agent-status-badge">
+          <span class="agent-status-dot"></span>
+          <span class="agent-status-label">${AGENT_STATUS_LABEL[a.status] || a.status}</span>
+        </div>
+      </div>
+    </article>
+  `).join('');
 }
 
 async function hydrateComputeNodes(){try{const response=await fetch('/api/v1/admin/compute-nodes',{headers:apiHeaders()});if(!response.ok)throw new Error('monitor unavailable');const payload=await response.json();computeNodes=payload.nodes||[];renderComputeNodes();}catch{renderComputeNodes(true);}}
