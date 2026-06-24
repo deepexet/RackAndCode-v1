@@ -306,3 +306,8 @@ dialog { width:min(570px,92vw); padding:0; border:1px solid #30394a; border-radi
 #offlineBanner { font-weight:500; }
 #offlineBanner strong { color:#fbbf24; }
 body[style*="padding-top"] .topbar { top:41px; }
+
+/* ── Document index badges ──────────────────────────────────────────────── */
+.badge-warn { font-size:10px;color:#f59e0b;background:rgba(245,158,11,.1);border-radius:4px;padding:2px 5px }
+.badge-muted { font-size:10px;color:var(--text-muted);background:var(--surface-alt,rgba(128,128,128,.1));border-radius:4px;padding:2px 5px }
+.obj-desc { display:block;font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px }

@@ -1496,7 +1496,8 @@ function renderProjectDetail() {
     <section class="detail-grid"><article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">LOCATIONS</p><h2>Структура объекта</h2></div>${canManage ? '<button class="text-button" data-add-location>Добавить</button>' : ''}</div><div class="location-cards">${project.locations.length ? project.locations.map(location => {const parent=project.locations.find(value=>value.id===location.parentLocationId);return `<button type="button" data-open-location="${location.id}" style="--location-depth:${location.depth||0}"><span>${escapeHtml(location.code)}</span><strong>${escapeHtml(location.name)}</strong><small>${parent?`${escapeHtml(parent.name)} → `:''}${escapeHtml(location.kind)}${location.suiteTotal !== null ? ` · ${location.suiteTotal} suites` : ''}${location.audioDetails ? ` · ${location.audioDetails.speakerCount || 0} speakers` : ''}</small></button>`;}).join('') : '<p class="empty-copy">Добавьте этажи или зоны, чтобы техник мог фиксировать прогресс.</p>'}</div></article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div>${canProgress ? '<button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button>' : ''}</div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>
-    <section class="detail-section" id="projectObjectsSection"><div class="detail-section-title"><div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Файлы проекта</h2></div><label class="button ghost" style="cursor:pointer">＋ Загрузить<input type="file" id="objectFileInput" multiple style="display:none"></label></div><div id="objectsDropZone" class="objects-drop-zone">Перетащите файлы сюда или нажмите «Загрузить»</div><div id="objectsGrid" class="objects-grid"><p class="empty-copy">Загрузка…</p></div><p id="objectsStorageInfo" style="font-size:11px;color:#445060;margin-top:8px"></p></section>`;
+    <section class="detail-section" id="projectObjectsSection"><div class="detail-section-title"><div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Файлы проекта</h2></div><label class="button ghost" style="cursor:pointer">＋ Загрузить<input type="file" id="objectFileInput" multiple style="display:none"></label></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input id="objectsSearchInput" type="search" placeholder="Поиск по файлам…" style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px" autocomplete="off"></div><div id="objectsDropZone" class="objects-drop-zone">Перетащите файлы сюда или нажмите «Загрузить»</div><div id="objectsGrid" class="objects-grid"><p class="empty-copy">Загрузка…</p></div><p id="objectsStorageInfo" style="font-size:11px;color:#445060;margin-top:8px"></p></section>
+    <dialog id="objectVersionsDialog" style="max-width:520px;width:100%"><div class="dialog-head"><div><p class="eyebrow">ВЕРСИИ</p><h2 id="objectVersionsName"></h2></div><button class="icon-button" id="closeObjectVersionsDialog" type="button">×</button></div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Версия</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Размер</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Дата</th><th></th></tr></thead><tbody id="objectVersionsList"></tbody></table></div></dialog>`;
   container.querySelectorAll('[data-add-location]').forEach(button => button.addEventListener('click', () => openLocationDialog(project)));
   container.querySelectorAll('[data-daily-update]').forEach(button => button.addEventListener('click', () => openDailyDialog(project)));
   container.querySelectorAll('[data-edit-daily]').forEach(button => button.addEventListener('click', () => openDailyDialog(project, project.dailyUpdates.find(value => value.id === button.dataset.editDaily))));
@@ -1526,31 +1527,47 @@ function fmtBytes(b) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function hydrateProjectObjects(projectId) {
+function _renderObjectCard(o, projectId) {
+  const quarantine = o.scan_result === 'quarantine';
+  const scanBadge = quarantine
+    ? '<span class="badge-warn">⚠ Карантин</span>'
+    : (o.version_number > 1 ? `<span class="badge-muted">v${o.version_number}</span>` : '');
+  const versionBtn = o.version_number >= 1
+    ? `<button class="button ghost obj-versions-btn" data-id="${o.id}" data-name="${escapeHtml(o.name)}" type="button" title="История версий" style="padding:4px 8px;font-size:12px">⊞</button>`
+    : '';
+  return `<div class="object-card${quarantine ? ' quarantine' : ''}" data-obj-id="${o.id}">
+    <div class="object-icon">${mimeIcon(o.mime_type)}</div>
+    <div class="object-info">
+      <strong title="${escapeHtml(o.name)}">${escapeHtml(o.name)}</strong>
+      <small>${fmtBytes(o.size_bytes)} · ${(o.created_at || '').slice(0,10)}</small>
+      ${scanBadge}
+      ${o.description ? `<span class="obj-desc">${escapeHtml(o.description)}</span>` : ''}
+    </div>
+    <div class="object-actions">
+      ${!quarantine ? `<a class="button ghost" href="/api/v1/objects/${o.id}" download="${escapeHtml(o.name)}" style="padding:4px 8px;font-size:12px">↓</a>` : ''}
+      ${versionBtn}
+      <button class="button ghost obj-delete-btn" data-id="${o.id}" type="button" style="padding:4px 8px;font-size:12px">✕</button>
+    </div>
+  </div>`;
+}
+
+async function hydrateProjectObjects(projectId, query = '') {
   const grid = document.getElementById('objectsGrid');
   const info = document.getElementById('objectsStorageInfo');
   if (!grid) return;
   try {
-    const resp = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/objects`);
-    const { objects, stats } = await resp.json();
-    if (info) info.textContent = `${stats.count} файлов · ${fmtBytes(stats.totalBytes)} из ${fmtBytes(stats.quotaBytes)}`;
-    if (!objects.length) { grid.innerHTML = '<p class="empty-copy">Нет файлов. Загрузите первый.</p>'; return; }
-    grid.innerHTML = objects.map(o => {
-      const quarantine = o.scan_result === 'quarantine';
-      const scanBadge = quarantine ? '<span style="font-size:10px;color:#f59e0b;background:rgba(245,158,11,.1);border-radius:4px;padding:2px 5px">⚠ Карантин</span>' : '';
-      return `<div class="object-card${quarantine ? ' quarantine' : ''}" data-obj-id="${o.id}">
-        <div class="object-icon">${mimeIcon(o.mime_type)}</div>
-        <div class="object-info">
-          <strong title="${escapeHtml(o.name)}">${escapeHtml(o.name)}</strong>
-          <small>${fmtBytes(o.size_bytes)} · ${(o.created_at || '').slice(0,10)}</small>
-          ${scanBadge}
-        </div>
-        <div class="object-actions">
-          ${!quarantine ? `<a class="button ghost" href="/api/v1/objects/${o.id}" download="${escapeHtml(o.name)}" style="padding:4px 8px;font-size:12px">↓</a>` : ''}
-          <button class="button ghost obj-delete-btn" data-id="${o.id}" type="button" style="padding:4px 8px;font-size:12px">✕</button>
-        </div>
-      </div>`;
-    }).join('');
+    if (query) {
+      const resp = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/objects?q=${encodeURIComponent(query)}`);
+      const { results } = await resp.json();
+      if (!results.length) { grid.innerHTML = `<p class="empty-copy">По запросу «${escapeHtml(query)}» ничего не найдено.</p>`; return; }
+      grid.innerHTML = results.map(o => _renderObjectCard(o, projectId)).join('');
+    } else {
+      const resp = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/objects`);
+      const { objects, stats } = await resp.json();
+      if (info) info.textContent = `${stats.count} файлов · ${fmtBytes(stats.totalBytes)} из ${fmtBytes(stats.quotaBytes)}`;
+      if (!objects.length) { grid.innerHTML = '<p class="empty-copy">Нет файлов. Загрузите первый.</p>'; return; }
+      grid.innerHTML = objects.map(o => _renderObjectCard(o, projectId)).join('');
+    }
     grid.querySelectorAll('.obj-delete-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         if (!confirm('Удалить файл?')) return;
@@ -1558,7 +1575,27 @@ async function hydrateProjectObjects(projectId) {
         hydrateProjectObjects(projectId);
       });
     });
+    grid.querySelectorAll('.obj-versions-btn').forEach(btn => {
+      btn.addEventListener('click', () => showObjectVersions(btn.dataset.id, btn.dataset.name, projectId));
+    });
   } catch (e) { grid.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+async function showObjectVersions(objId, name, projectId) {
+  try {
+    const resp = await apiFetch(`/api/v1/objects/${encodeURIComponent(objId)}/versions`);
+    const { versions } = await resp.json();
+    const dialog = document.getElementById('objectVersionsDialog');
+    if (!dialog) return;
+    document.getElementById('objectVersionsName').textContent = name;
+    const list = document.getElementById('objectVersionsList');
+    list.innerHTML = versions.map(v =>
+      `<tr><td>v${v.version_number}</td><td>${fmtBytes(v.size_bytes)}</td>
+       <td>${(v.created_at || '').slice(0,10)}</td>
+       <td><a href="/api/v1/objects/${v.id}" download="${escapeHtml(v.name)}" class="button ghost" style="padding:2px 8px;font-size:11px">↓</a></td></tr>`
+    ).join('');
+    dialog.showModal();
+  } catch (e) { toast(e.message); }
 }
 
 async function uploadFiles(projectId, files) {
@@ -1582,12 +1619,22 @@ async function uploadFiles(projectId, files) {
 function setupProjectObjects(projectId) {
   const input = document.getElementById('objectFileInput');
   const zone = document.getElementById('objectsDropZone');
+  const searchInput = document.getElementById('objectsSearchInput');
+  const closeVersions = document.getElementById('closeObjectVersionsDialog');
   if (input) input.addEventListener('change', () => { if (input.files.length) uploadFiles(projectId, [...input.files]); input.value = ''; });
   if (zone) {
     zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
     zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('drag-over'); uploadFiles(projectId, [...e.dataTransfer.files]); });
   }
+  if (searchInput) {
+    let searchTimer;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => hydrateProjectObjects(projectId, searchInput.value.trim()), 300);
+    });
+  }
+  if (closeVersions) closeVersions.addEventListener('click', () => document.getElementById('objectVersionsDialog')?.close());
 }
 
 function localDateKey(value) {

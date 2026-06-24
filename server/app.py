@@ -1829,24 +1829,101 @@ class WorkspaceStore:
     def _org_quota_bytes(self) -> int:
         return 500 * 1024 * 1024  # 500 MB default
 
-    def list_objects(self, org: str, project_id: str | None = None) -> list[dict[str, Any]]:
+    _TEXT_MIMES: frozenset[str] = frozenset({
+        "text/plain", "text/csv", "text/markdown", "text/html",
+        "application/json", "application/xml", "text/xml",
+    })
+
+    def _extract_text(self, mime_type: str, data: bytes) -> str | None:
+        """Extract indexable plain text from file content."""
+        if mime_type.split(";")[0].strip() not in self._TEXT_MIMES:
+            return None
+        try:
+            text = data.decode("utf-8", errors="replace")
+            return text[:65536]  # cap at 64 KB for FTS index
+        except Exception:
+            return None
+
+    def _fts_index(self, conn: Any, obj_id: str, name: str, description: str,
+                   extracted_text: str | None, tags: list[str]) -> None:
+        conn.execute("DELETE FROM objects_fts WHERE obj_id=?", (obj_id,))
+        if extracted_text or name:
+            conn.execute(
+                "INSERT INTO objects_fts (obj_id,name,description,extracted_text,tags) VALUES (?,?,?,?,?)",
+                (obj_id, name, description, extracted_text or "", json.dumps(tags)),
+            )
+
+    def list_objects(self, org: str, project_id: str | None = None,
+                     root_only: bool = True) -> list[dict[str, Any]]:
+        """List objects. root_only=True returns only version roots (parent_id IS NULL)."""
         with self._connect() as conn:
+            parent_clause = "AND parent_id IS NULL" if root_only else ""
             if project_id:
                 rows = conn.execute(
-                    "SELECT id,name,mime_type,size_bytes,scan_result,safe_preview,project_id,created_by,created_at FROM objects "
-                    "WHERE organization_id=? AND project_id=? ORDER BY created_at DESC",
+                    f"SELECT id,name,mime_type,size_bytes,scan_result,safe_preview,version_number,"
+                    f"parent_id,description,tags,project_id,created_by,created_at FROM objects "
+                    f"WHERE organization_id=? AND project_id=? {parent_clause} ORDER BY created_at DESC",
                     (org, project_id),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id,name,mime_type,size_bytes,scan_result,safe_preview,project_id,created_by,created_at FROM objects "
-                    "WHERE organization_id=? ORDER BY created_at DESC LIMIT 200",
+                    f"SELECT id,name,mime_type,size_bytes,scan_result,safe_preview,version_number,"
+                    f"parent_id,description,tags,project_id,created_by,created_at FROM objects "
+                    f"WHERE organization_id=? {parent_clause} ORDER BY created_at DESC LIMIT 200",
                     (org,),
                 ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["tags"] = json.loads(d["tags"] or "[]")
+            except Exception: d["tags"] = []
+            result.append(d)
+        return result
+
+    def list_object_versions(self, org: str, obj_id: str) -> list[dict[str, Any]]:
+        """Return all versions of a document (the root + its children), newest first."""
+        with self._connect() as conn:
+            root = conn.execute(
+                "SELECT id,parent_id FROM objects WHERE id=? AND organization_id=?", (obj_id, org)
+            ).fetchone()
+            if not root:
+                return []
+            root_id = root["id"] if root["parent_id"] is None else root["parent_id"]
+            rows = conn.execute(
+                "SELECT id,name,mime_type,size_bytes,version_number,scan_result,created_by,created_at "
+                "FROM objects WHERE organization_id=? AND (id=? OR parent_id=?) ORDER BY version_number DESC",
+                (org, root_id, root_id),
+            ).fetchall()
         return [dict(r) for r in rows]
 
+    def search_objects(self, org: str, query: str, project_id: str | None = None,
+                       limit: int = 20) -> list[dict[str, Any]]:
+        """FTS5 full-text search over documents."""
+        if not query.strip():
+            return []
+        fts_query = " OR ".join(f'"{w}"' for w in query.split()[:10])
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT o.id,o.name,o.mime_type,o.size_bytes,o.scan_result,o.version_number,"
+                "o.project_id,o.created_at,o.description,o.tags, "
+                "snippet(objects_fts,3,'<b>','</b>','…',20) AS snippet "
+                "FROM objects_fts f JOIN objects o ON o.id=f.obj_id "
+                "WHERE objects_fts MATCH ? AND o.organization_id=?"
+                + (" AND o.project_id=?" if project_id else "")
+                + " ORDER BY rank LIMIT ?",
+                (fts_query, org) + ((project_id,) if project_id else ()) + (limit,),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["tags"] = json.loads(d["tags"] or "[]")
+            except Exception: d["tags"] = []
+            result.append(d)
+        return result
+
     def store_object(self, org: str, project_id: str | None, name: str,
-                     mime_type: str, data: bytes, created_by: str) -> dict[str, Any]:
+                     mime_type: str, data: bytes, created_by: str,
+                     description: str = "", tags: list[str] | None = None) -> dict[str, Any]:
         # Security scan — raises ValueError for blocked content
         scan_result, safe_preview = scan_file(name, mime_type, data)
 
@@ -1858,6 +1935,26 @@ class WorkspaceStore:
         if used + len(data) > self._org_quota_bytes():
             raise ValueError(f"Storage quota exceeded ({used // (1024*1024)} MB used)")
 
+        # Versioning: if a root document with the same name exists in this project, create a child version
+        parent_id: str | None = None
+        version_number = 1
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id, version_number FROM objects "
+                "WHERE organization_id=? AND project_id IS ? AND name=? AND parent_id IS NULL "
+                "ORDER BY version_number DESC LIMIT 1",
+                (org, project_id, name),
+            ).fetchone()
+            if existing:
+                parent_id = existing["id"]
+                # Find max version among all siblings
+                max_v = conn.execute(
+                    "SELECT MAX(version_number) as m FROM objects "
+                    "WHERE organization_id=? AND (id=? OR parent_id=?)",
+                    (org, existing["id"], existing["id"]),
+                ).fetchone()["m"] or 1
+                version_number = max_v + 1
+
         obj_id = str(uuid.uuid4())
         ext = Path(name).suffix[:10] or ""
         rel_path = f"{org}/{obj_id}{ext}"
@@ -1865,15 +1962,26 @@ class WorkspaceStore:
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         abs_path.write_bytes(data)
 
+        extracted_text = self._extract_text(mime_type, data)
+        tags_list = tags or []
         now = utc_now()
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO objects (id,organization_id,project_id,name,mime_type,size_bytes,storage_path,scan_result,safe_preview,created_by,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (obj_id, org, project_id, name, mime_type, len(data), rel_path, scan_result, 1 if safe_preview else 0, created_by, now, now),
+                "INSERT INTO objects (id,organization_id,project_id,name,mime_type,size_bytes,storage_path,"
+                "scan_result,safe_preview,parent_id,version_number,extracted_text,description,tags,"
+                "created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (obj_id, org, project_id, name, mime_type, len(data), rel_path,
+                 scan_result, 1 if safe_preview else 0,
+                 parent_id, version_number, extracted_text,
+                 description, json.dumps(tags_list), created_by, now, now),
             )
-        return {"id": obj_id, "name": name, "mimeType": mime_type, "sizeBytes": len(data),
-                "scanResult": scan_result, "safePreview": safe_preview, "createdAt": now}
+            self._fts_index(conn, obj_id, name, description, extracted_text, tags_list)
+        return {
+            "id": obj_id, "name": name, "mimeType": mime_type, "sizeBytes": len(data),
+            "scanResult": scan_result, "safePreview": safe_preview,
+            "versionNumber": version_number, "parentId": parent_id,
+            "hasText": extracted_text is not None, "createdAt": now,
+        }
 
     def get_object(self, org: str, obj_id: str) -> tuple[dict[str, Any], bytes] | None:
         with self._connect() as conn:
@@ -1895,6 +2003,7 @@ class WorkspaceStore:
             if not row:
                 return False
             conn.execute("DELETE FROM objects WHERE id=? AND organization_id=?", (obj_id, org))
+            conn.execute("DELETE FROM objects_fts WHERE obj_id=?", (obj_id,))
         try:
             (self._objects_dir / row["storage_path"]).unlink(missing_ok=True)
         except OSError:
@@ -2644,10 +2753,23 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.NOT_FOUND, "project_not_found", str(error))
                 return
             if len(parts) == 5 and parts[4] == "objects":
-                objects = self.store.list_objects(self.organization_id, parts[3])
-                stats = self.store.get_storage_stats(self.organization_id)
-                self._json(HTTPStatus.OK, {"objects": objects, "stats": stats})
+                qs = parse_qs(urlparse(self.path).query)
+                q = qs.get("q", [None])[0]
+                if q:
+                    results = self.store.search_objects(self.organization_id, q, parts[3])
+                    self._json(HTTPStatus.OK, {"results": results})
+                else:
+                    objects = self.store.list_objects(self.organization_id, parts[3])
+                    stats = self.store.get_storage_stats(self.organization_id)
+                    self._json(HTTPStatus.OK, {"objects": objects, "stats": stats})
                 return
+        # Object versions: GET /api/v1/objects/:id/versions
+        if path.startswith("/api/v1/objects/") and path.endswith("/versions"):
+            obj_id = path[len("/api/v1/objects/"):-len("/versions")]
+            if not self._require_permission("projectRead"): return
+            versions = self.store.list_object_versions(self.organization_id, obj_id)
+            self._json(HTTPStatus.OK, {"versions": versions})
+            return
         # Object download / delete
         if path.startswith("/api/v1/objects/"):
             obj_id = path[len("/api/v1/objects/"):]
