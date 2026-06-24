@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Floor Plan 3D · RackPilot [EXPERIMENTAL]</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b1018;color:#dde4f0;font-family:-apple-system,'Inter',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;gap:12px;padding:10px 20px;background:#0f1923;border-bottom:1px solid #1e2d3f;flex-shrink:0}
+.brand{font-size:17px;font-weight:700;letter-spacing:-.5px;color:#dde4f0}
+.brand small{font-size:10px;font-weight:400;color:#778195;margin-left:4px;text-transform:uppercase;letter-spacing:1px}
+.badge-exp{font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:#f5a623;color:#0b1018;letter-spacing:1px}
+.btn-back{margin-left:auto;padding:6px 14px;border:1px solid #2b3443;border-radius:6px;color:#a0aec0;background:transparent;font-size:13px;cursor:pointer;text-decoration:none;display:inline-block;transition:border-color .15s,color .15s}
+.btn-back:hover{border-color:#4a7fd4;color:#dde4f0}
+main{display:flex;flex:1;overflow:hidden}
+aside{width:270px;flex-shrink:0;background:#0f1923;border-right:1px solid #1e2d3f;display:flex;flex-direction:column;overflow-y:auto;padding:14px;gap:10px}
+#dropzone{border:2px dashed #2b3443;border-radius:10px;padding:18px 12px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s}
+#dropzone:hover,#dropzone.drag-over{border-color:#4a7fd4;background:#132035}
+#dropzone p{font-size:13px;color:#dde4f0;margin-bottom:3px}
+#dropzone small{font-size:11px;color:#778195}
+#preview{width:100%;border-radius:6px;border:1px solid #2b3443;display:none;max-height:140px;object-fit:contain;background:#0b1018}
+#analyzeBtn{width:100%;padding:9px;background:#4a7fd4;color:#fff;border:none;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;opacity:.4;pointer-events:none;transition:opacity .2s,background .2s}
+#analyzeBtn.ready{opacity:1;pointer-events:auto}
+#analyzeBtn.ready:hover{background:#3a6fc4}
+#analyzeBtn.loading{background:#2b3443;opacity:.8}
+.sec{font-size:10px;font-weight:700;color:#778195;text-transform:uppercase;letter-spacing:1px;padding-top:2px}
+.tool-row{display:flex;gap:6px}
+.tool-btn{flex:1;padding:6px 8px;border:1px solid #2b3443;border-radius:6px;background:transparent;color:#a0aec0;font-size:12px;cursor:pointer;transition:all .15s}
+.tool-btn:hover{border-color:#4a7fd4;color:#dde4f0}
+.tool-btn.active{border-color:#4a7fd4;background:#132035;color:#4a7fd4}
+#roomList,#dropList{display:flex;flex-direction:column;gap:3px}
+.room-item{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12px;transition:background .15s}
+.room-item:hover{background:#1a2535}
+.room-item.active{background:#1a2d45}
+.room-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.room-name{color:#dde4f0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.room-type{color:#778195;font-size:10px}
+.drop-item{font-size:11px;color:#a0aec0;padding:4px 7px;background:#132035;border-radius:4px;display:flex;justify-content:space-between}
+#statusBar{font-size:11px;color:#778195;min-height:16px}
+#viewer{flex:1;position:relative;overflow:hidden}
+#canvas3d{width:100%;height:100%;display:block}
+#viewerHint{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:#778195;pointer-events:none}
+#viewerHint .ico{font-size:40px;margin-bottom:10px}
+#viewerHint p{font-size:14px;line-height:1.6}
+#labels{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;transform:translate(-50%,-50%);background:rgba(11,16,24,.82);color:#dde4f0;font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;border:1px solid #2b3443;pointer-events:none}
+#tip{position:absolute;background:#0f1923;border:1px solid #2b3443;border-radius:7px;padding:9px 13px;font-size:12px;pointer-events:none;display:none;min-width:150px;z-index:10}
+#tip strong{display:block;font-size:13px;margin-bottom:3px}
+#tip .t{color:#778195}
+.empty{font-size:12px;color:#778195}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand"><strong>RackPilot</strong><small>by Valeronix</small></span>
+  <span class="badge-exp">EXPERIMENTAL</span>
+  <a href="/" class="btn-back">← Главная</a>
+</header>
+<main>
+  <aside>
+    <div id="dropzone" title="Нажмите или перетащите файл">
+      <p>📐 Загрузите план этажа</p>
+      <small>PNG, JPG или PDF</small>
+      <input type="file" id="fileInput" accept=".png,.jpg,.jpeg,.pdf,image/*" style="display:none">
+    </div>
+    <img id="preview" alt="Предпросмотр">
+    <button id="analyzeBtn">🤖 Анализировать через AI</button>
+    <div id="statusBar">Загрузите план для анализа</div>
+
+    <div class="sec">Инструменты</div>
+    <div class="tool-row">
+      <button class="tool-btn active" id="toolOrbit">🔄 Осмотр</button>
+      <button class="tool-btn" id="toolDrop">📍 Data Drop</button>
+      <button class="tool-btn" id="toolReset" title="Сбросить вид">⟳</button>
+    </div>
+
+    <div class="sec">Помещения</div>
+    <div id="roomList"><span class="empty">Нет данных</span></div>
+
+    <div class="sec">Data Drops</div>
+    <div id="dropList"><span class="empty">Нет</span></div>
+  </aside>
+
+  <div id="viewer">
+    <canvas id="canvas3d"></canvas>
+    <div id="viewerHint">
+      <div class="ico">🏢</div>
+      <p>Загрузите план этажа<br>и нажмите «Анализировать»</p>
+    </div>
+    <div id="labels"></div>
+    <div id="tip"></div>
+  </div>
+</main>
+
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let imageDataUrl = null;
+let floorData    = null;
+let placingDrops = false;
+let dataDrops    = [];
+let sceneMeshes  = [];
+let roomMeshMap  = new Map();
+let dropMeshes   = [];
+let hoveredMesh  = null;
+let labels3d     = [];
+
+// ── DOM ───────────────────────────────────────────────────────────────────────
+const dropzone   = document.getElementById('dropzone');
+const fileInput  = document.getElementById('fileInput');
+const preview    = document.getElementById('preview');
+const analyzeBtn = document.getElementById('analyzeBtn');
+const statusBar  = document.getElementById('statusBar');
+const roomList   = document.getElementById('roomList');
+const dropList   = document.getElementById('dropList');
+const viewerHint = document.getElementById('viewerHint');
+const tip        = document.getElementById('tip');
+const labelsEl   = document.getElementById('labels');
+const toolOrbit  = document.getElementById('toolOrbit');
+const toolDrop   = document.getElementById('toolDrop');
+const toolReset  = document.getElementById('toolReset');
+const canvas     = document.getElementById('canvas3d');
+
+// ── Three.js ──────────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setClearColor(0x0b1018);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x0b1018, 0.015);
+
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 500);
+camera.position.set(0, 22, 26);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.07;
+controls.maxPolarAngle = Math.PI * 0.47;
+
+// Lights
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+const sun = new THREE.DirectionalLight(0xffe8cc, 1.1);
+sun.position.set(15, 28, 18);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { near:.5, far:100, left:-35, right:35, top:35, bottom:-35 });
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0x9ab8e8, 0.35);
+fill.position.set(-12, 12, -12);
+scene.add(fill);
+
+// Grid
+const grid = new THREE.GridHelper(70, 70, 0x141e2b, 0x0f1820);
+grid.position.y = -0.02;
+scene.add(grid);
+
+// Resize
+function resize() {
+  const v = document.getElementById('viewer');
+  const w = v.clientWidth, h = v.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(document.getElementById('viewer'));
+resize();
+
+// Animate
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+  // Update HTML labels
+  labels3d.forEach(({ el, pos }) => {
+    const v = pos.clone().project(camera);
+    if (v.z > 1) { el.style.display = 'none'; return; }
+    const rect = canvas.getBoundingClientRect();
+    el.style.display = 'block';
+    el.style.left = ((v.x * .5 + .5) * rect.width)  + 'px';
+    el.style.top  = ((1 - (v.y * .5 + .5)) * rect.height) + 'px';
+  });
+}
+animate();
+
+// ── Color map ─────────────────────────────────────────────────────────────────
+const TYPE_COLOR = {
+  apartment:  [0x1e4a8c, 0x183870],
+  corridor:   [0x253040, 0x1c2530],
+  stairwell:  [0x4a2d8c, 0x381f6a],
+  elevator:   [0x5a3aaa, 0x452d88],
+  lobby:      [0x1e5c3f, 0x154a30],
+  bathroom:   [0x0d5c5c, 0x094848],
+  bedroom:    [0x2d5a8c, 0x22456e],
+  office:     [0x1e6a3f, 0x155530],
+  storage:    [0x3d2e1a, 0x2e2214],
+  utility:    [0x3a2e20, 0x2a2018],
+  parking:    [0x1a1f28, 0x12161e],
+  other:      [0x2a3245, 0x1e2535],
+};
+function typeHex(t) {
+  const c = TYPE_COLOR[t] || TYPE_COLOR.other;
+  return '#' + c[0].toString(16).padStart(6,'0');
+}
+
+// ── Build 3D scene ────────────────────────────────────────────────────────────
+const S = 0.21; // scale: 100 plan units → ~21 world units
+
+function clearScene() {
+  [...sceneMeshes, ...dropMeshes].forEach(m => scene.remove(m));
+  sceneMeshes = []; dropMeshes = [];
+  roomMeshMap.clear();
+  labels3d.forEach(l => l.el.remove());
+  labels3d = [];
+}
+
+function buildScene(data) {
+  clearScene();
+  viewerHint.style.display = 'none';
+
+  // Base ground
+  const groundMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(80, 80),
+    new THREE.MeshStandardMaterial({ color: 0x07101a, roughness: 1 })
+  );
+  groundMesh.rotation.x = -Math.PI / 2;
+  groundMesh.position.y = -0.06;
+  groundMesh.receiveShadow = true;
+  scene.add(groundMesh);
+  sceneMeshes.push(groundMesh);
+
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x18253a, roughness: 0.92, metalness: 0.03 });
+
+  data.rooms.forEach(room => {
+    const [floorC] = TYPE_COLOR[room.type] || TYPE_COLOR.other;
+    const wx = room.width  * S;
+    const wz = room.height * S;
+    const cx = (room.x + room.width  / 2 - 50) * S;
+    const cz = (room.y + room.height / 2 - 50) * S;
+    const wh = 3.4, wt = 0.16;
+
+    // Floor slab
+    const floorMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(wx - wt, 0.1, wz - wt),
+      new THREE.MeshStandardMaterial({ color: floorC, roughness: 0.85, metalness: 0.04 })
+    );
+    floorMesh.position.set(cx, 0.05, cz);
+    floorMesh.receiveShadow = true;
+    floorMesh.userData = { room };
+    scene.add(floorMesh);
+    sceneMeshes.push(floorMesh);
+    roomMeshMap.set(room.id, floorMesh);
+
+    // 4 walls
+    const addWall = (gx, gy, gz, gw, gh, gd) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, gd), wallMat);
+      m.position.set(gx, gy, gz);
+      m.castShadow = true; m.receiveShadow = true;
+      m.userData = { room };
+      scene.add(m); sceneMeshes.push(m);
+    };
+    addWall(cx,        wh/2, cz-wz/2, wx, wh, wt); // N
+    addWall(cx,        wh/2, cz+wz/2, wx, wh, wt); // S
+    addWall(cx-wx/2,   wh/2, cz,      wt, wh, wz); // W
+    addWall(cx+wx/2,   wh/2, cz,      wt, wh, wz); // E
+
+    // Label
+    const lbl = document.createElement('div');
+    lbl.className = 'lbl';
+    lbl.textContent = room.name;
+    labelsEl.appendChild(lbl);
+    labels3d.push({ el: lbl, pos: new THREE.Vector3(cx, 0.5, cz) });
+  });
+
+  // Doors — small colored markers
+  (data.doors || []).forEach(door => {
+    const room = data.rooms.find(r => r.id === door.from_room);
+    if (!room) return;
+    const cx = (room.x + room.width  / 2 - 50) * S;
+    const cz = (room.y + room.height / 2 - 50) * S;
+    const wx = room.width * S, wz = room.height * S;
+    const pos = door.pos ?? 0.5;
+    let dx = cx, dz = cz;
+    if      (door.wall_side === 'north') { dx = cx - wx/2 + wx*pos; dz = cz - wz/2; }
+    else if (door.wall_side === 'south') { dx = cx - wx/2 + wx*pos; dz = cz + wz/2; }
+    else if (door.wall_side === 'west')  { dx = cx - wx/2; dz = cz - wz/2 + wz*pos; }
+    else if (door.wall_side === 'east')  { dx = cx + wx/2; dz = cz - wz/2 + wz*pos; }
+    const dm = new THREE.Mesh(
+      new THREE.BoxGeometry(0.45, 2.2, 0.45),
+      new THREE.MeshStandardMaterial({ color: 0x30d7d7, emissive: 0x107070, roughness: 0.4 })
+    );
+    dm.position.set(dx, 1.1, dz);
+    scene.add(dm); sceneMeshes.push(dm);
+  });
+
+  resetCamera();
+}
+
+function resetCamera() {
+  camera.position.set(0, 22, 26);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+// ── Data drops ────────────────────────────────────────────────────────────────
+const dropGeo = new THREE.SphereGeometry(0.28, 14, 14);
+const dropMat = new THREE.MeshStandardMaterial({ color: 0xf5a623, emissive: 0xb07000, roughness: 0.3, metalness: 0.45 });
+
+function placeDataDrop(point, roomName) {
+  const m = new THREE.Mesh(dropGeo, dropMat);
+  m.position.set(point.x, point.y + 0.28, point.z);
+  m.castShadow = true;
+  scene.add(m); dropMeshes.push(m);
+  const idx = dataDrops.length + 1;
+  dataDrops.push({ id: `DD-${String(idx).padStart(3,'0')}`, room: roomName || '—' });
+  renderDropList();
+}
+
+function renderDropList() {
+  if (!dataDrops.length) { dropList.innerHTML = '<span class="empty">Нет</span>'; return; }
+  dropList.innerHTML = dataDrops.map(d =>
+    `<div class="drop-item"><span>${d.id}</span><span style="color:#778195">${d.room}</span></div>`
+  ).join('');
+}
+
+// ── Raycasting ────────────────────────────────────────────────────────────────
+const ray = new THREE.Raycaster();
+const mp  = new THREE.Vector2();
+
+function intersect(e) {
+  const r = canvas.getBoundingClientRect();
+  mp.x = ((e.clientX - r.left) / r.width)  *  2 - 1;
+  mp.y = ((e.clientY - r.top)  / r.height) * -2 + 1;
+  ray.setFromCamera(mp, camera);
+  return ray.intersectObjects(sceneMeshes);
+}
+
+canvas.addEventListener('mousemove', e => {
+  const hits = intersect(e);
+  const hit  = hits.find(h => h.object.userData.room);
+  if (hit) {
+    canvas.style.cursor = placingDrops ? 'crosshair' : 'pointer';
+    const { room } = hit.object.userData;
+    tip.style.display = 'block';
+    tip.style.left = (e.offsetX + 16) + 'px';
+    tip.style.top  = (e.offsetY +  8) + 'px';
+    tip.innerHTML  = `<strong>${room.name}</strong><span class="t">${room.type}</span>`;
+    if (hit.object !== hoveredMesh) {
+      if (hoveredMesh?.material?.emissive) hoveredMesh.material.emissive.setHex(0x000000);
+      hoveredMesh = hit.object;
+      if (hoveredMesh.material?.emissive) hoveredMesh.material.emissive.setHex(0x1a3a5c);
+    }
+  } else {
+    canvas.style.cursor = '';
+    tip.style.display = 'none';
+    if (hoveredMesh?.material?.emissive) hoveredMesh.material.emissive.setHex(0x000000);
+    hoveredMesh = null;
+  }
+});
+
+canvas.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+
+canvas.addEventListener('click', e => {
+  if (!placingDrops || !floorData) return;
+  const hits = intersect(e);
+  const hit  = hits.find(h => h.object.userData.room);
+  if (hit) placeDataDrop(hit.point, hit.object.userData.room?.name);
+});
+
+// ── Tools ─────────────────────────────────────────────────────────────────────
+toolOrbit.addEventListener('click', () => {
+  placingDrops = false; controls.enabled = true;
+  toolOrbit.classList.add('active'); toolDrop.classList.remove('active');
+  statusBar.textContent = 'Режим осмотра';
+});
+toolDrop.addEventListener('click', () => {
+  if (!floorData) return;
+  placingDrops = true; controls.enabled = false;
+  toolDrop.classList.add('active'); toolOrbit.classList.remove('active');
+  statusBar.textContent = 'Кликните на помещение для размещения Data Drop';
+});
+toolReset.addEventListener('click', resetCamera);
+
+// ── File upload ───────────────────────────────────────────────────────────────
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+dropzone.addEventListener('drop', e => { e.preventDefault(); dropzone.classList.remove('drag-over'); handleFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+
+async function handleFile(file) {
+  if (!file) return;
+  statusBar.textContent = 'Загрузка...';
+  if (file.type === 'application/pdf') {
+    statusBar.textContent = 'Конвертация PDF...';
+    try {
+      await loadScript('https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+      const ab  = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
+      const pg  = await pdf.getPage(1);
+      const vp  = pg.getViewport({ scale: 2 });
+      const cv  = Object.assign(document.createElement('canvas'), { width: vp.width, height: vp.height });
+      await pg.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+      imageDataUrl = cv.toDataURL('image/jpeg', 0.9);
+    } catch (err) { statusBar.textContent = 'Ошибка PDF: ' + err.message; return; }
+  } else {
+    imageDataUrl = await new Promise(res => {
+      const rd = new FileReader(); rd.onload = e => res(e.target.result); rd.readAsDataURL(file);
+    });
+  }
+  preview.src = imageDataUrl;
+  preview.style.display = 'block';
+  analyzeBtn.classList.add('ready');
+  statusBar.textContent = 'Готово к анализу';
+}
+
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
+    const s = Object.assign(document.createElement('script'), { src });
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+}
+
+// ── Analyze ───────────────────────────────────────────────────────────────────
+analyzeBtn.addEventListener('click', async () => {
+  if (!imageDataUrl) return;
+  analyzeBtn.classList.remove('ready');
+  analyzeBtn.classList.add('loading');
+  analyzeBtn.textContent = '⏳ Анализируем...';
+  statusBar.textContent = 'Отправка в AI...';
+  try {
+    const base64   = imageDataUrl.split(',')[1];
+    const mimeType = imageDataUrl.split(';')[0].slice(5) || 'image/jpeg';
+    const resp = await fetch('/api/v1/floorplan/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64, mimeType })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error?.message || `HTTP ${resp.status}`);
+    floorData = data;
+    statusBar.textContent = `Найдено: ${data.rooms.length} помещений · ${data.notes || data.building_type || ''}`;
+    buildScene(data);
+    renderRoomList(data);
+  } catch (err) {
+    statusBar.textContent = '❌ ' + err.message;
+  } finally {
+    analyzeBtn.classList.remove('loading');
+    analyzeBtn.classList.add('ready');
+    analyzeBtn.textContent = '🤖 Анализировать снова';
+  }
+});
+
+// ── Room list ─────────────────────────────────────────────────────────────────
+function renderRoomList(data) {
+  roomList.innerHTML = data.rooms.map(r => `
+    <div class="room-item" data-id="${r.id}">
+      <span class="room-dot" style="background:${typeHex(r.type)}"></span>
+      <span class="room-name">${r.name}</span>
+      <span class="room-type">${r.type}</span>
+    </div>
+  `).join('');
+  roomList.querySelectorAll('.room-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const mesh = roomMeshMap.get(el.dataset.id);
+      if (!mesh) return;
+      roomList.querySelectorAll('.room-item').forEach(e => e.classList.remove('active'));
+      el.classList.add('active');
+      camera.position.copy(mesh.position.clone().add(new THREE.Vector3(0, 10, 10)));
+      controls.target.copy(mesh.position);
+      controls.update();
+    });
+  });
+}
+</script>
+</body>
+</html>

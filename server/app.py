@@ -27,6 +27,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import parse_qs, urlparse
+import urllib.request
+import urllib.error
 
 from server.migrations import MigrationRunner
 
@@ -1524,6 +1526,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/openapi.yaml":
             self._serve_file(OPENAPI_PATH, "application/yaml; charset=utf-8")
             return
+        if path == "/floorplan":
+            self._serve_file(WEB_ROOT / "floorplan.html", "text/html; charset=utf-8")
+            return
         self._serve_static(path)
 
     def do_PUT(self) -> None:
@@ -1562,6 +1567,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self._start_request()
         path = urlparse(self.path).path
         parts = path.strip("/").split("/")
+        if path == "/api/v1/floorplan/analyze":
+            self._handle_floorplan_analyze()
+            return
         if path=="/api/v1/admin/work-types":
             if not self._require_permission("adminPanel"): return
             try:
@@ -1853,6 +1861,88 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
+
+    def _handle_floorplan_analyze(self) -> None:
+        """Experimental: receive base64 floor-plan image, call Claude vision, return room JSON."""
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            self._error(HTTPStatus.SERVICE_UNAVAILABLE, "no_api_key", "ANTHROPIC_API_KEY is not configured on this server")
+            return
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length > 25_000_000:
+            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large", "Image payload exceeds 25 MB limit")
+            return
+        try:
+            body = json.loads(self.rfile.read(content_length))
+        except json.JSONDecodeError:
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_json", "Body must be JSON")
+            return
+        image_b64 = body.get("image", "")
+        mime_type = body.get("mimeType", "image/jpeg")
+        if not image_b64:
+            self._error(HTTPStatus.BAD_REQUEST, "missing_image", "Field 'image' (base64) is required")
+            return
+        prompt = (
+            "Analyze this architectural floor plan image and extract the spatial layout.\n\n"
+            "Return ONLY valid JSON — no markdown fences, no explanation — with this exact structure:\n"
+            "{\n"
+            '  "building_type": "residential|commercial|industrial|mixed",\n'
+            '  "notes": "one-line description",\n'
+            '  "rooms": [\n'
+            '    {"id":"r1","name":"display name","type":"apartment|corridor|stairwell|elevator|lobby|bathroom|bedroom|office|storage|utility|parking|other","x":0,"y":0,"width":10,"height":10}\n'
+            "  ],\n"
+            '  "doors": [\n'
+            '    {"from_room":"r1","to_room":"r2","wall_side":"north|south|east|west","pos":0.5}\n'
+            "  ]\n"
+            "}\n\n"
+            "Coordinate system: (0,0) is top-left, x increases right, y increases down. "
+            "All values use a 0–100 scale covering the full floor plan area. "
+            "Estimate positions from visual proportions. Include ALL visible rooms and spaces."
+        )
+        payload = {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 4096,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": image_b64}},
+                    {"type": "text",  "text": prompt},
+                ],
+            }],
+        }
+        try:
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="ignore")[:300]
+            self._error(HTTPStatus.BAD_GATEWAY, "api_error", f"Claude API {exc.code}: {body_text}")
+            return
+        except Exception as exc:
+            self._error(HTTPStatus.BAD_GATEWAY, "api_error", str(exc))
+            return
+        text = (result.get("content") or [{}])[0].get("text", "")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if not match:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "parse_error", "Could not parse AI response as JSON")
+                return
+            try:
+                data = json.loads(match.group())
+            except json.JSONDecodeError:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "parse_error", "Malformed JSON in AI response")
+                return
+        self._json(HTTPStatus.OK, data)
 
     def _error(self, status: HTTPStatus, code: str, message: str, details: dict[str, Any] | None = None) -> None:
         self._json(status, {"error": {"code": code, "message": message, "details": details or {}}, "requestId": self.request_id})
