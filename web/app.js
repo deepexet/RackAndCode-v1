@@ -409,6 +409,7 @@ function renderRoute() {
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
+  if (route === 'overview') hydrateGrowthChart();
   if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault()]); renderAITeam(); }
 }
 
@@ -604,6 +605,135 @@ async function hydrateApiMetrics(){try{const response=await fetch('/api/v1/admin
 function renderAgentStatus(agent){const indicator=$('#agentIndicator');if(!indicator)return;indicator.className=`agent-indicator ${agent.status||'idle'}${agent.needsAction?' needs-action':''}`;const labels={working:'Работает',idle:'Не активен',waiting:'Ожидает',blocked:'Требуется действие',limit:'Достигнут лимит'};$('#agentStatusText').textContent=`${labels[agent.status]||agent.status} · ${agent.message||''}`;$('#requestContinueButton').classList.toggle('requested',Boolean(agent.continuationRequested));$('#requestContinueButton').title=agent.continuationRequested?'Запрос уже зарегистрирован':'Запросить продолжение разработки';}
 
 async function hydrateAgentStatus(){try{const response=await fetch('/api/v1/development-agent/status',{headers:apiHeaders()});if(!response.ok)throw new Error('status unavailable');const payload=await response.json();renderAgentStatus(payload.agent);}catch{renderAgentStatus({status:'blocked',message:'Статус недоступен',needsAction:true});}}
+
+// ── Platform Growth Chart ──────────────────────────────────────────────────
+
+async function hydrateGrowthChart() {
+  const wrap = document.getElementById('growthChart');
+  const meta = document.getElementById('growthChartMeta');
+  if (!wrap) return;
+  wrap.innerHTML = '<p class="empty-copy" style="padding:24px 0">Загрузка…</p>';
+  try {
+    const resp = await apiFetch('/api/v1/admin/platform-growth');
+    const data = await resp.json();
+    renderGrowthChart(data, wrap, meta);
+  } catch (e) {
+    wrap.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`;
+  }
+}
+
+function renderGrowthChart(data, wrap, metaEl) {
+  const { days, totalCommits, totalMigrations } = data;
+  if (!days.length) { wrap.innerHTML = '<p class="empty-copy" style="padding:24px 0">Нет данных</p>'; return; }
+
+  if (metaEl) {
+    metaEl.innerHTML = `<strong style="color:#dde4f0">${totalCommits}</strong> коммитов &nbsp;·&nbsp; <strong style="color:#4a7fd4">${totalMigrations}</strong> фич`;
+  }
+
+  const W = 900, H = 160, PL = 0, PR = 0, PT = 18, PB = 32;
+  const CW = W - PL - PR, CH = H - PT - PB;
+  const n = days.length;
+  const maxC = Math.max(...days.map(d => d.commits), 1);
+  const maxI = Math.max(...days.map(d => (d.insertions || 0) + (d.deletions || 0)), 1);
+
+  // Bar width with gap
+  const gap = n > 14 ? 2 : 4;
+  const bw = Math.max(4, Math.floor(CW / n) - gap);
+  const step = CW / n;
+
+  // Area path for cumulative (normalized 0..1)
+  const maxCum = days[days.length - 1]?.cumulative || 1;
+  const cumPts = days.map((d, i) => {
+    const x = PL + i * step + step / 2;
+    const y = PT + CH - (d.cumulative / maxCum) * CH;
+    return `${x},${y}`;
+  });
+  const areaPath = `M${PL + step/2},${PT + CH} L${cumPts.join(' L')} L${PL + (n-1)*step + step/2},${PT + CH} Z`;
+  const linePath = `M${cumPts.join(' L')}`;
+
+  // Bars
+  const bars = days.map((d, i) => {
+    const x = PL + i * step + (step - bw) / 2;
+    const bh = Math.max(2, (d.commits / maxC) * CH);
+    const y = PT + CH - bh;
+    // Color: more commits = brighter
+    const intensity = d.commits / maxC;
+    const opacity = 0.35 + intensity * 0.65;
+    const hasMigration = d.migrations > 0;
+    const barColor = hasMigration ? '#4a7fd4' : `rgba(74,127,212,${opacity})`;
+
+    // Tooltip data
+    const label = [
+      d.date,
+      `${d.commits} коммит${d.commits===1?'':'ов'}`,
+      d.migrations ? `${d.migrations} фич` : null,
+      d.insertions ? `+${d.insertions} строк` : null,
+      ...(d.subjects || []).slice(0, 3).map(s => `· ${s}`),
+    ].filter(Boolean).join('\n');
+
+    return `<g class="gc-bar" data-tip="${escapeHtml(label)}">
+      <rect x="${x}" y="${PT}" width="${bw}" height="${CH}" fill="transparent"/>
+      <rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="2" fill="${barColor}"/>
+      ${hasMigration ? `<circle cx="${x + bw/2}" cy="${PT + 8}" r="3" fill="#f5c842"/>` : ''}
+    </g>`;
+  }).join('');
+
+  // X axis labels (show every N days to avoid clutter)
+  const labelEvery = n <= 7 ? 1 : n <= 14 ? 2 : 7;
+  const xLabels = days.map((d, i) => {
+    if (i % labelEvery !== 0 && i !== n-1) return '';
+    const x = PL + i * step + step / 2;
+    const parts = d.date.split('-');
+    const label = `${parts[2]}.${parts[1]}`;
+    return `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="#556070" font-size="10">${label}</text>`;
+  }).join('');
+
+  // Y axis hint
+  const yHint = `<text x="${PL + 4}" y="${PT + 4}" fill="#445060" font-size="9" dominant-baseline="hanging">${maxC} коммитов макс.</text>`;
+
+  wrap.innerHTML = `
+    <div class="gc-outer" style="position:relative">
+      <svg id="gcSvg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px;display:block;overflow:visible">
+        <defs>
+          <linearGradient id="gcAreaGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#4a7fd4" stop-opacity="0.18"/>
+            <stop offset="100%" stop-color="#4a7fd4" stop-opacity="0.02"/>
+          </linearGradient>
+        </defs>
+        <path d="${areaPath}" fill="url(#gcAreaGrad)"/>
+        <path d="${linePath}" fill="none" stroke="#4a7fd4" stroke-width="1.5" stroke-opacity="0.5"/>
+        ${bars}
+        ${xLabels}
+        ${yHint}
+      </svg>
+      <div id="gcTooltip" style="display:none;position:absolute;background:#0b1420;border:1px solid #2b3443;border-radius:8px;padding:8px 11px;font-size:11px;color:#dde4f0;white-space:pre;pointer-events:none;z-index:10;line-height:1.6;max-width:260px"></div>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:10px;font-size:11px;color:#556070">
+      <span><span style="display:inline-block;width:10px;height:10px;background:#4a7fd4;border-radius:2px;margin-right:5px;vertical-align:middle"></span>Коммиты</span>
+      <span><span style="display:inline-block;width:10px;height:2px;background:#4a7fd4;opacity:.5;margin-right:5px;vertical-align:middle"></span>Кумулятивно</span>
+      <span><span style="display:inline-block;width:8px;height:8px;background:#f5c842;border-radius:50%;margin-right:5px;vertical-align:middle"></span>День с новой фичей</span>
+    </div>`;
+
+  // Tooltip interactivity
+  const svg = document.getElementById('gcSvg');
+  const tip = document.getElementById('gcTooltip');
+  if (!svg || !tip) return;
+  svg.querySelectorAll('.gc-bar').forEach(g => {
+    g.addEventListener('mouseenter', e => {
+      tip.textContent = g.dataset.tip;
+      tip.style.display = 'block';
+    });
+    g.addEventListener('mousemove', e => {
+      const rect = wrap.getBoundingClientRect();
+      let lx = e.clientX - rect.left + 12;
+      let ly = e.clientY - rect.top - 10;
+      if (lx + 270 > rect.width) lx = e.clientX - rect.left - 270;
+      tip.style.left = lx + 'px';
+      tip.style.top = ly + 'px';
+    });
+    g.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  });
+}
 
 async function requestDevelopmentContinuation(){const button=$('#requestContinueButton');button.disabled=true;try{const response=await fetch('/api/v1/development-agent/continue',{method:'POST',headers:apiHeaders()});if(!response.ok)throw new Error('request failed');const payload=await response.json();renderAgentStatus(payload.agent);toast('Запрос на продолжение зарегистрирован');}catch{toast('Не удалось зарегистрировать запрос');}finally{button.disabled=false;}}
 

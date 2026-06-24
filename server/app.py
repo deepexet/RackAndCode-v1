@@ -29,6 +29,7 @@ from typing import Any, Iterator
 from urllib.parse import parse_qs, urlparse
 import urllib.request
 import urllib.error
+import subprocess
 
 from server.migrations import MigrationRunner
 
@@ -206,6 +207,61 @@ def ensure_agent_token(db_path: Path) -> tuple[str, Path | None]:
     token_path.write_text(secrets.token_urlsafe(32),encoding="utf-8")
     token_path.chmod(0o600)
     return token_path.read_text(encoding="utf-8").strip(),token_path
+
+
+def _build_platform_growth() -> dict[str, Any]:
+    """Return daily commit/migration/files-changed metrics from git log."""
+    repo = Path(__file__).parent.parent
+    try:
+        raw = subprocess.check_output(
+            ["git", "log", "--format=%ad|%H|%s", "--date=short", "--stat"],
+            cwd=repo, text=True, stderr=subprocess.DEVNULL, timeout=5
+        )
+    except Exception:
+        return {"days": [], "totalCommits": 0, "totalMigrations": 0}
+
+    days: dict[str, dict[str, Any]] = {}
+    current_date = current_subject = ""
+    insertions = deletions = 0
+
+    for line in raw.splitlines():
+        if "|" in line and len(line.split("|")) == 3:
+            if current_date:
+                entry = days.setdefault(current_date, {"date": current_date, "commits": 0, "migrations": 0, "insertions": 0, "deletions": 0, "subjects": []})
+                entry["commits"] += 1
+                entry["insertions"] += insertions
+                entry["deletions"] += deletions
+                if current_subject.startswith(("feat", "fix", "perf")):
+                    entry["subjects"].append(current_subject[:70])
+            current_date, _, current_subject = line.split("|", 2)
+            insertions = deletions = 0
+        elif "migration" in line.lower() or (current_date and "server/migrations/" in line):
+            if current_date:
+                days.setdefault(current_date, {"date": current_date, "commits": 0, "migrations": 0, "insertions": 0, "deletions": 0, "subjects": []})
+                days[current_date]["migrations"] += 1
+        elif "insertion" in line or "deletion" in line:
+            m = re.findall(r"(\d+) insertion", line)
+            d = re.findall(r"(\d+) deletion", line)
+            if m: insertions += int(m[0])
+            if d: deletions += int(d[0])
+
+    if current_date:
+        entry = days.setdefault(current_date, {"date": current_date, "commits": 0, "migrations": 0, "insertions": 0, "deletions": 0, "subjects": []})
+        entry["commits"] += 1
+        entry["insertions"] += insertions
+        entry["deletions"] += deletions
+
+    sorted_days = sorted(days.values(), key=lambda x: x["date"])
+    cumulative = 0
+    for d in sorted_days:
+        cumulative += d["commits"]
+        d["cumulative"] = cumulative
+
+    return {
+        "days": sorted_days,
+        "totalCommits": cumulative,
+        "totalMigrations": sum(d["migrations"] for d in sorted_days),
+    }
 
 
 class WorkspaceStore:
@@ -1716,6 +1772,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/admin/secrets":
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK, {"secrets": self.store.list_secrets()})
+            return
+        if path == "/api/v1/admin/platform-growth":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, _build_platform_growth())
             return
         if path.startswith("/api/v1/admin/secrets/") and path.endswith("/reveal"):
             if not self._require_permission("adminPanel"): return
