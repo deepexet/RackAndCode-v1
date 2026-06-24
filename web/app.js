@@ -80,7 +80,6 @@ function applyRolePolicy() {
   const switcher = $('#roleSwitcher');
   if (switcher) {
     switcher.value = currentRole;
-    // Dim role switcher when session controls role
     switcher.style.opacity = session?.token ? '0.5' : '1';
     switcher.title = session?.token ? 'Роль определяется сессией' : 'Dev-mode: выберите роль';
   }
@@ -90,10 +89,41 @@ function applyRolePolicy() {
     link.setAttribute('aria-disabled', allowed ? 'false' : 'true');
   });
   document.querySelectorAll('[data-permission]').forEach(element => {
-    const allowed = roleCan(element.dataset.permission);
+    const perm = element.dataset.permission;
+    const allowed = roleCan(perm);
     element.classList.toggle('role-hidden', !allowed);
     if ('disabled' in element) element.disabled = !allowed;
+    // For sections: also set aria-hidden so screen readers skip
+    if (element.tagName === 'SECTION') element.setAttribute('aria-hidden', allowed ? 'false' : 'true');
   });
+  renderRoleMatrix();
+}
+
+function renderRoleMatrix() {
+  const el = document.getElementById('roleMatrixTable');
+  if (!el) return;
+  const PERM_LABELS = {
+    projectRead: 'Просмотр проектов', fieldProgress: 'Полевой прогресс',
+    projectManage: 'Управление проектами', logsRead: 'Журналы',
+    apiMonitor: 'API-мониторинг', developmentWorkspace: 'Канбан / Dev',
+    adminPanel: 'Панель Администратора', secretsManage: 'Secrets Vault',
+    agentContext: 'Agent Context',
+  };
+  const roles = Object.keys(ROLE_POLICIES);
+  const perms = Object.keys(PERM_LABELS);
+  const headerCells = roles.map(r =>
+    `<th style="font-size:11px;font-weight:600;color:${r===currentRole?'#4a7fd4':'#778195'};padding:6px 12px;white-space:nowrap">${ROLE_POLICIES[r].label}${r===currentRole?' ←':''}</th>`
+  ).join('');
+  const rows = perms.map(p => {
+    const cells = roles.map(r =>
+      `<td style="text-align:center;padding:5px 12px;font-size:13px">${ROLE_POLICIES[r].permissions.includes(p) ? '<span style="color:#31d4a2">✓</span>' : '<span style="color:#2a3540">✗</span>'}</td>`
+    ).join('');
+    return `<tr><td style="padding:5px 12px;font-size:12px;color:#b8c5d6;white-space:nowrap">${PERM_LABELS[p]}</td>${cells}</tr>`;
+  }).join('');
+  el.innerHTML = `<table style="border-collapse:collapse;width:100%;background:#0a1020;border:1px solid #1a2535;border-radius:10px;overflow:hidden">
+    <thead><tr><th style="padding:8px 12px;text-align:left;font-size:10px;color:#445060;text-transform:uppercase">Разрешение</th>${headerCells}</tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
 function setCurrentRole(role) {
@@ -1367,12 +1397,14 @@ function renderProjectDetail() {
   const dailyLog = projectDailyLogEntries(project);
   const updatesToday = dailyLog.filter(value => value.workDate === today);
   const openIssues = project.issues.filter(value => value.status !== 'resolved');
-  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions"><button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button primary" type="button" data-daily-update>＋ Отчет за сегодня</button></div></header>
+  const canManage = roleCan('projectManage');
+  const canProgress = roleCan('fieldProgress');
+  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button>` : ''}<button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis"><article><span>Общий прогресс</span><strong>${project.progress}%</strong></article><article><span>Сегодня обновлено</span><strong>${updatesToday.length}</strong></article><article><span>Открытые проблемы</span><strong>${openIssues.length}</strong></article><article><span>Локации</span><strong>${project.locations.length}</strong></article></section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div></section>
-    <section class="detail-grid"><article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">LOCATIONS</p><h2>Структура объекта</h2></div><button class="text-button" data-add-location>Добавить</button></div><div class="location-cards">${project.locations.length ? project.locations.map(location => {const parent=project.locations.find(value=>value.id===location.parentLocationId);return `<button type="button" data-open-location="${location.id}" style="--location-depth:${location.depth||0}"><span>${escapeHtml(location.code)}</span><strong>${escapeHtml(location.name)}</strong><small>${parent?`${escapeHtml(parent.name)} → `:''}${escapeHtml(location.kind)}${location.suiteTotal !== null ? ` · ${location.suiteTotal} suites` : ''}${location.audioDetails ? ` · ${location.audioDetails.speakerCount || 0} speakers` : ''}</small></button>`;}).join('') : '<p class="empty-copy">Добавьте этажи или зоны, чтобы техник мог фиксировать прогресс.</p>'}</div></article>
+    <section class="detail-grid"><article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">LOCATIONS</p><h2>Структура объекта</h2></div>${canManage ? '<button class="text-button" data-add-location>Добавить</button>' : ''}</div><div class="location-cards">${project.locations.length ? project.locations.map(location => {const parent=project.locations.find(value=>value.id===location.parentLocationId);return `<button type="button" data-open-location="${location.id}" style="--location-depth:${location.depth||0}"><span>${escapeHtml(location.code)}</span><strong>${escapeHtml(location.name)}</strong><small>${parent?`${escapeHtml(parent.name)} → `:''}${escapeHtml(location.kind)}${location.suiteTotal !== null ? ` · ${location.suiteTotal} suites` : ''}${location.audioDetails ? ` · ${location.audioDetails.speakerCount || 0} speakers` : ''}</small></button>`;}).join('') : '<p class="empty-copy">Добавьте этажи или зоны, чтобы техник мог фиксировать прогресс.</p>'}</div></article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
-    <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div><button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button></div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>
+    <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div>${canProgress ? '<button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button>' : ''}</div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>
     <section class="detail-section" id="projectObjectsSection"><div class="detail-section-title"><div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Файлы проекта</h2></div><label class="button ghost" style="cursor:pointer">＋ Загрузить<input type="file" id="objectFileInput" multiple style="display:none"></label></div><div id="objectsDropZone" class="objects-drop-zone">Перетащите файлы сюда или нажмите «Загрузить»</div><div id="objectsGrid" class="objects-grid"><p class="empty-copy">Загрузка…</p></div><p id="objectsStorageInfo" style="font-size:11px;color:#445060;margin-top:8px"></p></section>`;
   container.querySelectorAll('[data-add-location]').forEach(button => button.addEventListener('click', () => openLocationDialog(project)));
   container.querySelectorAll('[data-daily-update]').forEach(button => button.addEventListener('click', () => openDailyDialog(project)));
