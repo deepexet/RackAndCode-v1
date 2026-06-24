@@ -420,7 +420,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -951,6 +951,75 @@ function setupAIGateway() {
       hydrateAIProviders();
     } catch (err) { toast(err.message); }
     finally { btn.disabled = false; }
+  });
+}
+
+// ── MFA Admin Panel ────────────────────────────────────────────────────────
+
+async function hydrateMFA() {
+  const statusEl = document.getElementById('mfaStatus');
+  const actionsEl = document.getElementById('mfaActions');
+  if (!statusEl) return;
+  try {
+    const resp = await apiFetch('/api/v1/auth/me');
+    const { mfa } = await resp.json();
+    if (mfa.enabled) {
+      statusEl.innerHTML = `<span style="color:#31d4a2;font-size:14px">● MFA активна</span> <small style="color:#778195">· ${mfa.backupCodesRemaining} кодов восстановления осталось</small>`;
+      if (actionsEl) actionsEl.innerHTML = '<button class="button ghost" id="mfaDisableBtn" type="button" style="color:#e05353;border-color:#e05353">Отключить MFA</button>';
+      document.getElementById('mfaDisableBtn')?.addEventListener('click', async () => {
+        if (!confirm('Отключить двухфакторную аутентификацию?')) return;
+        await apiFetch('/api/v1/auth/mfa/disable', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+        toast('MFA отключена');
+        hydrateMFA();
+      });
+    } else {
+      statusEl.innerHTML = '<span style="color:#778195">○ MFA не активна</span> — рекомендуется для защиты аккаунта администратора.';
+      if (actionsEl) actionsEl.innerHTML = '<button class="button primary" id="mfaEnrollBtn" type="button">Настроить MFA</button>';
+      document.getElementById('mfaEnrollBtn')?.addEventListener('click', startMFAEnroll);
+    }
+  } catch (e) { statusEl.textContent = e.message; }
+}
+
+async function startMFAEnroll() {
+  const panel = document.getElementById('mfaEnrollPanel');
+  if (!panel) return;
+  try {
+    const resp = await apiFetch('/api/v1/auth/mfa/enroll', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    const { secret, uri } = await resp.json();
+    document.getElementById('mfaSecretKey').textContent = secret;
+    document.getElementById('mfaUri').textContent = uri;
+    panel.style.display = 'flex';
+    panel.style.flexDirection = 'column';
+    document.getElementById('mfaConfirmCode').value = '';
+    document.getElementById('mfaConfirmCode').focus();
+  } catch (e) { toast(e.message); }
+}
+
+function setupMFA() {
+  document.getElementById('mfaConfirmBtn')?.addEventListener('click', async () => {
+    const code = document.getElementById('mfaConfirmCode').value.trim();
+    if (!code) return;
+    const btn = document.getElementById('mfaConfirmBtn');
+    btn.disabled = true;
+    try {
+      const resp = await apiFetch('/api/v1/auth/mfa/confirm', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ code }),
+      });
+      if (!resp.ok) { const e = await resp.json(); throw new Error(e.error?.message || 'Неверный код'); }
+      const { backupCodes } = await resp.json();
+      document.getElementById('mfaEnrollPanel').style.display = 'none';
+      const backupPanel = document.getElementById('mfaBackupCodesPanel');
+      backupPanel.style.display = 'block';
+      document.getElementById('mfaBackupCodesList').innerHTML = backupCodes.map(c => `<span>${c}</span>`).join('');
+      hydrateMFA();
+    } catch (e) { toast(e.message); }
+    finally { btn.disabled = false; }
+  });
+  document.getElementById('mfaCancelEnrollBtn')?.addEventListener('click', () => {
+    document.getElementById('mfaEnrollPanel').style.display = 'none';
+  });
+  document.getElementById('mfaBackupDoneBtn')?.addEventListener('click', () => {
+    document.getElementById('mfaBackupCodesPanel').style.display = 'none';
   });
 }
 
@@ -2245,6 +2314,29 @@ async function setup() {
   window.addEventListener('hashchange', renderRoute);
 
   // Login form
+  let _mfaChallengeToken = null;
+
+  function _showMfaStep() {
+    document.getElementById('loginForm').style.display = 'none';
+    const mfaStep = document.getElementById('mfaStep');
+    mfaStep.style.display = 'flex';
+    document.getElementById('mfaCode').value = '';
+    document.getElementById('mfaError').style.display = 'none';
+    setTimeout(() => document.getElementById('mfaCode').focus(), 50);
+  }
+  function _hideMfaStep() {
+    document.getElementById('loginForm').style.display = 'flex';
+    document.getElementById('mfaStep').style.display = 'none';
+    _mfaChallengeToken = null;
+  }
+
+  async function _finishLogin(data) {
+    setSession(data);
+    if (data.role) setCurrentRole(data.role);
+    hideLoginModal();
+    await Promise.all([hydrateFromServer(), hydrateProjects()]);
+  }
+
   const loginForm = document.getElementById('loginForm');
   if (loginForm) {
     loginForm.addEventListener('submit', async e => {
@@ -2257,16 +2349,17 @@ async function setup() {
       btn.disabled = true; btn.textContent = 'Вход...';
       try {
         const resp = await fetch('/api/v1/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password }),
         });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error?.message || 'Неверный email или пароль');
-        setSession(data);
-        if (data.role) setCurrentRole(data.role);
-        hideLoginModal();
-        await Promise.all([hydrateFromServer(), hydrateProjects()]);
+        if (data.mfaRequired) {
+          _mfaChallengeToken = data.challengeToken;
+          _showMfaStep();
+        } else {
+          await _finishLogin(data);
+        }
       } catch (err) {
         errEl.textContent = err.message;
         errEl.style.display = 'block';
@@ -2275,6 +2368,31 @@ async function setup() {
       }
     });
   }
+
+  document.getElementById('mfaSubmitBtn')?.addEventListener('click', async () => {
+    const code = document.getElementById('mfaCode').value.trim();
+    const errEl = document.getElementById('mfaError');
+    errEl.style.display = 'none';
+    if (!code || !_mfaChallengeToken) return;
+    const btn = document.getElementById('mfaSubmitBtn');
+    btn.disabled = true; btn.textContent = 'Проверка…';
+    try {
+      const resp = await fetch('/api/v1/auth/mfa/verify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challengeToken: _mfaChallengeToken, code }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error?.message || 'Неверный код');
+      await _finishLogin(data);
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Подтвердить';
+    }
+  });
+  document.getElementById('mfaCode')?.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('mfaSubmitBtn')?.click(); });
+  document.getElementById('mfaBackBtn')?.addEventListener('click', _hideMfaStep);
 
   // Logout button
   const logoutBtn = document.getElementById('logoutButton');
@@ -2288,6 +2406,7 @@ async function setup() {
     showLoginModal();
   }
 
+  setupMFA();
   setupAIGateway();
   setupFeatureDocs();
   setupSecretsVault();

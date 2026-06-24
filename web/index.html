@@ -26,6 +26,13 @@
         <p id="loginError" style="color:#e05353;font-size:12px;display:none;margin:0"></p>
         <button type="submit" style="margin-top:4px;padding:11px;background:#4a7fd4;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">Войти</button>
       </form>
+      <div id="mfaStep" style="display:none;flex-direction:column;gap:12px">
+        <p style="font-size:12px;color:#778195;margin:0">Введите 6-значный код из приложения аутентификации.</p>
+        <input id="mfaCode" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000" autocomplete="one-time-code" style="background:#0b1018;border:1px solid #2b3443;border-radius:7px;padding:10px 12px;color:#dde4f0;font-size:24px;text-align:center;letter-spacing:6px;outline:none">
+        <p id="mfaError" style="color:#e05353;font-size:12px;display:none;margin:0"></p>
+        <button id="mfaSubmitBtn" type="button" style="padding:11px;background:#4a7fd4;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">Подтвердить</button>
+        <button id="mfaBackBtn" type="button" style="padding:8px;background:transparent;color:#778195;border:none;font-size:12px;cursor:pointer">← Назад к паролю</button>
+      </div>
       <p style="text-align:center;font-size:11px;color:#556070;margin-top:16px">Email: <code style="color:#778195">admin@local.rackpilot</code> — пароль в логе сервера</p>
     </div>
   </div>
@@ -190,6 +197,33 @@
           <div><p class="eyebrow">ЖУРНАЛ АУДИТА</p><h2>Действия и события безопасности</h2></div>
         </div>
         <div id="auditLogList"></div>
+      </section>
+      <section class="detail-section" id="mfaSection">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">БЕЗОПАСНОСТЬ</p><h2>Двухфакторная аутентификация</h2></div>
+          <div id="mfaActions"></div>
+        </div>
+        <div id="mfaStatus" style="color:#778195;font-size:13px">Загрузка…</div>
+        <div id="mfaEnrollPanel" style="display:none;margin-top:16px">
+          <p style="font-size:13px;color:#778195;margin:0 0 12px">Отсканируйте QR-код в Google Authenticator / Aegis / Authy или введите ключ вручную.</p>
+          <div id="mfaQrBox" style="background:#0a1020;border:1px solid #1a2535;border-radius:10px;padding:16px;margin-bottom:14px">
+            <code id="mfaSecretKey" style="font-size:12px;color:#4a7fd4;word-break:break-all"></code>
+            <p id="mfaUri" style="font-size:10px;color:#334050;margin:6px 0 0;word-break:break-all"></p>
+          </div>
+          <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:#778195;max-width:220px">
+            Введите код для подтверждения
+            <input id="mfaConfirmCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" style="background:#0b1018;border:1px solid #2b3443;border-radius:7px;padding:10px 12px;color:#dde4f0;font-size:20px;text-align:center;letter-spacing:4px;outline:none">
+          </label>
+          <div style="display:flex;gap:10px;margin-top:12px">
+            <button class="button primary" id="mfaConfirmBtn" type="button">Активировать MFA</button>
+            <button class="button ghost" id="mfaCancelEnrollBtn" type="button">Отмена</button>
+          </div>
+        </div>
+        <div id="mfaBackupCodesPanel" style="display:none;margin-top:14px">
+          <p style="font-size:13px;color:#f59e0b;margin:0 0 10px">Сохраните коды восстановления — они показываются один раз:</p>
+          <div id="mfaBackupCodesList" style="font-family:monospace;font-size:14px;color:#dde4f0;background:#0a1020;border:1px solid #1a2535;border-radius:8px;padding:14px;display:grid;grid-template-columns:1fr 1fr;gap:6px 20px"></div>
+          <button class="button ghost" id="mfaBackupDoneBtn" type="button" style="margin-top:12px">Сохранил — закрыть</button>
+        </div>
       </section>
       <section class="detail-section" id="secretsVaultSection">
         <div class="detail-section-title">

@@ -21,7 +21,7 @@ import time
 import uuid
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1635,42 +1635,6 @@ class WorkspaceStore:
             )
             return password
 
-    def login(self, email: str, password: str) -> dict[str, Any] | None:
-        """Validate email+password. On success create a session and return {token, user, role, expiresAt}."""
-        with self._connect() as connection:
-            user = connection.execute(
-                "SELECT u.id, u.display_name, m.organization_id, m.role "
-                "FROM users u JOIN memberships m ON m.user_id = u.id "
-                "WHERE u.email = ? AND m.status = 'active' LIMIT 1",
-                (email,),
-            ).fetchone()
-            if not user:
-                return None
-            cred = connection.execute(
-                "SELECT password_hash FROM password_credentials WHERE user_id = ?",
-                (user["id"],),
-            ).fetchone()
-            if not cred or not _verify_password(password, cred["password_hash"]):
-                return None
-            token = secrets.token_urlsafe(32)
-            token_hash = _hash_token(token)
-            now = utc_now()
-            expires = datetime.fromtimestamp(
-                time.time() + SESSION_TTL_SECONDS, tz=timezone.utc
-            ).isoformat()
-            connection.execute(
-                "INSERT INTO sessions (token_hash, user_id, organization_id, role, created_at, expires_at, last_seen_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (token_hash, user["id"], user["organization_id"], user["role"], now, expires, now),
-            )
-            return {
-                "token": token,
-                "user": {"id": user["id"], "displayName": user["display_name"], "email": email},
-                "organizationId": user["organization_id"],
-                "role": user["role"],
-                "expiresAt": expires,
-            }
-
     def validate_session(self, token: str) -> dict[str, Any] | None:
         """Return session context dict or None if expired/invalid."""
         token_hash = _hash_token(token)
@@ -2038,6 +2002,184 @@ class WorkspaceStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── MFA ──────────────────────────────────────────────────────────────────
+
+    def get_mfa_status(self, user_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM mfa_credentials WHERE user_id=?", (user_id,)).fetchone()
+            if not row:
+                return {"enabled": False, "enrolled": False}
+            backup_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM mfa_backup_codes WHERE user_id=? AND used=0", (user_id,)
+            ).fetchone()["n"]
+        return {"enabled": bool(row["enabled"]), "enrolled": True, "backupCodesRemaining": backup_count}
+
+    def mfa_begin_enrollment(self, user_id: str, email: str) -> dict[str, Any]:
+        """Generate a new TOTP secret, store it (disabled), return URI for QR."""
+        secret = _totp_new_secret()
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO mfa_credentials (user_id,totp_secret,enabled,updated_at) VALUES (?,?,0,?)",
+                (user_id, secret, now),
+            )
+        uri = _totp_uri(secret, email)
+        return {"secret": secret, "uri": uri}
+
+    def mfa_confirm_enrollment(self, user_id: str, code: str) -> list[str] | None:
+        """Verify TOTP code to activate MFA. Returns backup codes on success."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT totp_secret FROM mfa_credentials WHERE user_id=?", (user_id,)).fetchone()
+            if not row or not _totp_verify(row["totp_secret"], code):
+                return None
+            now = utc_now()
+            conn.execute("UPDATE mfa_credentials SET enabled=1,enrolled_at=?,updated_at=? WHERE user_id=?", (now, now, user_id))
+            # Generate 8 one-time backup codes
+            conn.execute("DELETE FROM mfa_backup_codes WHERE user_id=?", (user_id,))
+            plain_codes: list[str] = []
+            for _ in range(8):
+                plain = secrets.token_hex(4).upper()  # e.g. "A3F2B1C4"
+                code_hash = hashlib.sha256(plain.encode()).hexdigest()
+                conn.execute(
+                    "INSERT INTO mfa_backup_codes (id,user_id,code_hash,used,created_at) VALUES (?,?,?,0,?)",
+                    (str(uuid.uuid4()), user_id, code_hash, now),
+                )
+                plain_codes.append(plain)
+        return plain_codes
+
+    def mfa_disable(self, user_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE mfa_credentials SET enabled=0,updated_at=? WHERE user_id=?", (utc_now(), user_id))
+
+    def _mfa_use_backup(self, user_id: str, plain: str) -> bool:
+        code_hash = hashlib.sha256(plain.strip().upper().encode()).hexdigest()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM mfa_backup_codes WHERE user_id=? AND code_hash=? AND used=0", (user_id, code_hash)
+            ).fetchone()
+            if not row:
+                return False
+            conn.execute("UPDATE mfa_backup_codes SET used=1 WHERE id=?", (row["id"],))
+        return True
+
+    def login(self, email: str, password: str) -> dict[str, Any] | None:
+        """Returns None on bad credentials, or session dict.
+        If MFA is required returns {mfaRequired: True, challengeToken: ...} instead."""
+        with self._connect() as conn:
+            user = conn.execute(
+                "SELECT u.id, u.display_name, m.organization_id, m.role "
+                "FROM users u JOIN memberships m ON m.user_id = u.id "
+                "WHERE u.email = ? AND m.status = 'active' LIMIT 1",
+                (email,),
+            ).fetchone()
+            if not user:
+                return None
+            cred = conn.execute("SELECT password_hash FROM password_credentials WHERE user_id=?", (user["id"],)).fetchone()
+            if not cred or not _verify_password(password, cred["password_hash"]):
+                return None
+            mfa_row = conn.execute("SELECT totp_secret,enabled FROM mfa_credentials WHERE user_id=?", (user["id"],)).fetchone()
+
+        if mfa_row and mfa_row["enabled"]:
+            # Issue a short-lived challenge token instead of a full session
+            challenge_token = secrets.token_urlsafe(24)
+            token_hash = _hash_token(challenge_token)
+            expires = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO mfa_challenges (token_hash,user_id,org_id,role,expires_at) VALUES (?,?,?,?,?)",
+                    (token_hash, user["id"], user["organization_id"], user["role"], expires),
+                )
+            return {"mfaRequired": True, "challengeToken": challenge_token,
+                    "user": {"id": user["id"], "displayName": user["display_name"], "email": email}}
+
+        return self._create_session(user, email)
+
+    def verify_mfa_challenge(self, challenge_token: str, code: str) -> dict[str, Any] | None:
+        """Verify TOTP or backup code against challenge. Returns full session on success."""
+        token_hash = _hash_token(challenge_token)
+        with self._connect() as conn:
+            ch = conn.execute(
+                "SELECT * FROM mfa_challenges WHERE token_hash=? AND expires_at>?",
+                (token_hash, utc_now()),
+            ).fetchone()
+            if not ch:
+                return None
+            mfa = conn.execute("SELECT totp_secret FROM mfa_credentials WHERE user_id=?", (ch["user_id"],)).fetchone()
+            if not mfa:
+                return None
+            # Accept TOTP or backup code
+            if not _totp_verify(mfa["totp_secret"], code) and not self._mfa_use_backup(ch["user_id"], code):
+                return None
+            conn.execute("DELETE FROM mfa_challenges WHERE token_hash=?", (token_hash,))
+            user = conn.execute(
+                "SELECT u.id, u.display_name, u.email, m.organization_id, m.role "
+                "FROM users u JOIN memberships m ON m.user_id = u.id "
+                "WHERE u.id = ? AND m.status = 'active' LIMIT 1",
+                (ch["user_id"],),
+            ).fetchone()
+        if not user:
+            return None
+        return self._create_session(user, user["email"])
+
+    def _create_session(self, user: Any, email: str) -> dict[str, Any]:
+        token = secrets.token_urlsafe(32)
+        token_hash = _hash_token(token)
+        now = utc_now()
+        expires = datetime.fromtimestamp(time.time() + SESSION_TTL_SECONDS, tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO sessions (token_hash,user_id,organization_id,role,created_at,expires_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
+                (token_hash, user["id"], user["organization_id"], user["role"], now, expires, now),
+            )
+        return {
+            "token": token,
+            "user": {"id": user["id"], "displayName": user["display_name"], "email": email},
+            "organizationId": user["organization_id"],
+            "role": user["role"],
+            "expiresAt": expires,
+        }
+
+
+# ── TOTP MFA (RFC 6238, stdlib only) ─────────────────────────────────────────
+
+import base64
+import struct
+
+
+def _totp_generate(secret_b32: str, t: int | None = None, digits: int = 6, step: int = 30) -> str:
+    """Compute TOTP code from base32 secret at time t (default=now)."""
+    key = base64.b32decode(secret_b32.upper().replace(" ", "").replace("-", ""))
+    counter = int((t or time.time()) // step)
+    msg = struct.pack(">Q", counter)
+    h = hmac.new(key, msg, "sha1").digest()
+    offset = h[-1] & 0x0F
+    value = struct.unpack(">I", h[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(value % (10 ** digits)).zfill(digits)
+
+
+def _totp_verify(secret_b32: str, code: str, window: int = 1) -> bool:
+    """Verify TOTP code; allow ±window time steps to handle clock skew."""
+    code = code.strip().replace(" ", "")
+    if not code.isdigit() or len(code) != 6:
+        return False
+    now = int(time.time() // 30)
+    for delta in range(-window, window + 1):
+        if hmac.compare_digest(_totp_generate(secret_b32, (now + delta) * 30), code):
+            return True
+    return False
+
+
+def _totp_new_secret() -> str:
+    """Generate a new cryptographically random base32 TOTP secret (20 bytes = 160 bits)."""
+    raw = secrets.token_bytes(20)
+    return base64.b32encode(raw).decode()
+
+
+def _totp_uri(secret_b32: str, email: str, issuer: str = "RackPilot") -> str:
+    from urllib.parse import quote
+    return (f"otpauth://totp/{quote(issuer)}:{quote(email)}"
+            f"?secret={secret_b32}&issuer={quote(issuer)}&algorithm=SHA1&digits=6&period=30")
+
 
 # ── File Security Scanner ─────────────────────────────────────────────────────
 
@@ -2375,7 +2517,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not self.session_context:
                 self._error(HTTPStatus.UNAUTHORIZED, "unauthenticated", "No active session")
                 return
-            self._json(HTTPStatus.OK, {"user": self.session_context})
+            sess = self.session_context
+            mfa_status = self.store.get_mfa_status(sess["userId"])
+            self._json(HTTPStatus.OK, {"user": sess, "mfa": mfa_status})
+            return
+        if path == "/api/v1/auth/mfa/status":
+            if not self.session_context:
+                self._error(HTTPStatus.UNAUTHORIZED, "unauthenticated", "No active session"); return
+            self._json(HTTPStatus.OK, {"mfa": self.store.get_mfa_status(self.session_context["userId"])})
             return
         if path == "/api/v1/organizations":
             self._json(HTTPStatus.OK, {"organizations": self.store.list_organizations()})
@@ -2602,6 +2751,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         parts = path.strip("/").split("/")
         if path == "/api/v1/auth/login":
             self._handle_auth_login()
+            return
+        if path == "/api/v1/auth/mfa/verify":
+            self._handle_mfa_verify()
+            return
+        if path == "/api/v1/auth/mfa/enroll":
+            self._handle_mfa_enroll_begin()
+            return
+        if path == "/api/v1/auth/mfa/confirm":
+            self._handle_mfa_confirm()
+            return
+        if path == "/api/v1/auth/mfa/disable":
+            self._handle_mfa_disable()
             return
         if path == "/api/v1/auth/logout":
             self._handle_auth_logout()
@@ -3065,7 +3226,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.store.audit(self.organization_id, None, None, "login", "session", None, "denied", ip)
             self._error(HTTPStatus.UNAUTHORIZED, "invalid_credentials", "Invalid email or password")
             return
-        self.store.audit(self.organization_id, result["user"]["id"], result["role"], "login", "session", None, "ok", ip)
+        if result.get("mfaRequired"):
+            self.store.audit(self.organization_id, result["user"]["id"], None, "login.mfa_required", "session", None, "ok", ip)
+        else:
+            self.store.audit(self.organization_id, result["user"]["id"], result.get("role"), "login", "session", None, "ok", ip)
         self._json(HTTPStatus.OK, result)
 
     def _handle_auth_logout(self) -> None:
@@ -3077,6 +3241,60 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.store.audit(self.organization_id, sess.get("userId"), sess.get("role"), "logout", "session", None, "ok", ip)
             self.store.logout_session(token)
         self._json(HTTPStatus.OK, {"ok": True})
+
+    def _handle_mfa_verify(self) -> None:
+        """Step 2 of login when MFA is enabled: verify TOTP/backup code."""
+        try:
+            body = self._read_json()
+        except (json.JSONDecodeError, ValueError):
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_json", "JSON required"); return
+        challenge = str(body.get("challengeToken", "")).strip()
+        code = str(body.get("code", "")).strip()
+        if not challenge or not code:
+            self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "challengeToken and code required"); return
+        result = self.store.verify_mfa_challenge(challenge, code)
+        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        if not result:
+            self.store.audit(self.organization_id, None, None, "mfa.verify", "session", None, "denied", ip)
+            self._error(HTTPStatus.UNAUTHORIZED, "invalid_code", "Invalid MFA code or challenge expired"); return
+        self.store.audit(self.organization_id, result["user"]["id"], result["role"], "mfa.verify", "session", None, "ok", ip)
+        self._json(HTTPStatus.OK, result)
+
+    def _handle_mfa_enroll_begin(self) -> None:
+        """Start MFA enrollment: generate secret, return URI."""
+        if not self.session_context:
+            self._error(HTTPStatus.UNAUTHORIZED, "unauthenticated", "Login required"); return
+        sess = self.session_context
+        with self.store._connect() as conn:
+            user = conn.execute("SELECT email FROM users WHERE id=?", (sess["userId"],)).fetchone()
+        if not user:
+            self._error(HTTPStatus.NOT_FOUND, "user_not_found", "User not found"); return
+        result = self.store.mfa_begin_enrollment(sess["userId"], user["email"])
+        self._json(HTTPStatus.OK, result)
+
+    def _handle_mfa_confirm(self) -> None:
+        """Complete MFA enrollment: verify first code, activate, return backup codes."""
+        if not self.session_context:
+            self._error(HTTPStatus.UNAUTHORIZED, "unauthenticated", "Login required"); return
+        try:
+            body = self._read_json()
+        except (json.JSONDecodeError, ValueError):
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_json", "JSON required"); return
+        code = str(body.get("code", "")).strip()
+        backup_codes = self.store.mfa_confirm_enrollment(self.session_context["userId"], code)
+        if backup_codes is None:
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_code", "TOTP code did not match — try again"); return
+        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        self.store.audit(self.organization_id, self.session_context["userId"], self.session_context["role"], "mfa.enroll", "session", None, "ok", ip)
+        self._json(HTTPStatus.OK, {"activated": True, "backupCodes": backup_codes})
+
+    def _handle_mfa_disable(self) -> None:
+        if not self.session_context:
+            self._error(HTTPStatus.UNAUTHORIZED, "unauthenticated", "Login required"); return
+        self.store.mfa_disable(self.session_context["userId"])
+        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        self.store.audit(self.organization_id, self.session_context["userId"], self.session_context["role"], "mfa.disable", "session", None, "ok", ip)
+        self._json(HTTPStatus.OK, {"disabled": True})
 
     def _handle_floorplan_analyze(self) -> None:
         """Experimental: receive base64 floor-plan image, call Claude vision, return room JSON."""
