@@ -1941,6 +1941,99 @@ class WorkspaceStore:
             ).fetchone()
         return {"count": row["count"], "totalBytes": row["total"], "quotaBytes": self._org_quota_bytes()}
 
+    # ── Privacy Controls ─────────────────────────────────────────────────────
+
+    _DEFAULT_PURPOSES: list[tuple[str, int]] = [
+        ("ai_requests", 90),
+        ("audit_log", 365),
+        ("field_telemetry", 30),
+        ("object_storage", 0),
+    ]
+
+    def ensure_privacy_defaults(self, org: str) -> None:
+        """Insert missing per-org privacy rows with safe defaults."""
+        now = utc_now()
+        with self._connect() as conn:
+            existing = {r["purpose"] for r in conn.execute(
+                "SELECT purpose FROM privacy_settings WHERE organization_id=?", (org,)
+            ).fetchall()}
+            for purpose, retention in self._DEFAULT_PURPOSES:
+                if purpose not in existing:
+                    conn.execute(
+                        "INSERT INTO privacy_settings (id,organization_id,purpose,enabled,retention_days,redact_fields,notes,updated_at) VALUES (?,?,?,1,?,'[]','',?)",
+                        (str(uuid.uuid4()), org, purpose, retention, now),
+                    )
+
+    def list_privacy_settings(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM privacy_settings WHERE organization_id=? ORDER BY purpose", (org,)
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["redact_fields"] = json.loads(d["redact_fields"] or "[]")
+            result.append(d)
+        return result
+
+    def save_privacy_setting(self, org: str, purpose: str, enabled: bool,
+                             retention_days: int, redact_fields: list[str], notes: str) -> dict[str, Any]:
+        now = utc_now()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM privacy_settings WHERE organization_id=? AND purpose=?", (org, purpose)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE privacy_settings SET enabled=?,retention_days=?,redact_fields=?,notes=?,updated_at=? "
+                    "WHERE organization_id=? AND purpose=?",
+                    (1 if enabled else 0, retention_days, json.dumps(redact_fields), notes, now, org, purpose),
+                )
+                row_id = existing["id"]
+            else:
+                row_id = str(uuid.uuid4())
+                conn.execute(
+                    "INSERT INTO privacy_settings (id,organization_id,purpose,enabled,retention_days,redact_fields,notes,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (row_id, org, purpose, 1 if enabled else 0, retention_days, json.dumps(redact_fields), notes, now),
+                )
+        return {"id": row_id, "purpose": purpose, "enabled": enabled, "retentionDays": retention_days}
+
+    def run_retention_purge(self, org: str) -> dict[str, int]:
+        """Delete records older than their retention window. Returns counts."""
+        settings = {s["purpose"]: s for s in self.list_privacy_settings(org)}
+        deleted: dict[str, int] = {}
+        with self._connect() as conn:
+            for purpose, cfg in settings.items():
+                days = cfg["retention_days"]
+                if days <= 0 or not cfg["enabled"]:
+                    continue
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+                if purpose == "ai_requests":
+                    cur = conn.execute("DELETE FROM ai_requests WHERE organization_id=? AND created_at<?", (org, cutoff))
+                    deleted["ai_requests"] = cur.rowcount
+                elif purpose == "audit_log":
+                    cur = conn.execute("DELETE FROM audit_log WHERE organization_id=? AND created_at<?", (org, cutoff))
+                    deleted["audit_log"] = cur.rowcount
+        return deleted
+
+    # ── Audit Log ────────────────────────────────────────────────────────────
+
+    def audit(self, org: str, actor_id: str | None, actor_role: str | None,
+              action: str, target_type: str | None = None, target_id: str | None = None,
+              outcome: str = "ok", ip: str | None = None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO audit_log (id,organization_id,actor_id,actor_role,action,target_type,target_id,outcome,ip,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), org, actor_id, actor_role, action, target_type, target_id, outcome, ip, utc_now()),
+            )
+
+    def list_audit_log(self, org: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM audit_log WHERE organization_id=? ORDER BY created_at DESC LIMIT ?", (org, limit)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
 
 class AIGateway:
     """Provider-agnostic AI request router with token logging and budget checks."""
@@ -2233,6 +2326,15 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             days = int(self.query_params.get("days", ["30"])[0])
             self._json(HTTPStatus.OK, self.store.get_ai_usage(self.organization_id, min(days, 365)))
             return
+        if path == "/api/v1/admin/privacy":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, {"settings": self.store.list_privacy_settings(self.organization_id)})
+            return
+        if path == "/api/v1/admin/audit-log":
+            if not self._require_permission("adminPanel"): return
+            limit = min(int(self.query_params.get("limit", ["100"])[0]), 500)
+            self._json(HTTPStatus.OK, {"entries": self.store.list_audit_log(self.organization_id, limit)})
+            return
         if path == "/api/v1/agent/context":
             if not self._require_permission("agentContext"): return
             ctx = _build_agent_context(self.store)
@@ -2458,6 +2560,23 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True})
             else:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", "Provider not found")
+            return
+        if path == "/api/v1/admin/privacy":
+            if not self._require_permission("adminPanel"): return
+            try:
+                body = self._read_json()
+                purpose = str(body.get("purpose", "")).strip()
+                if not purpose: raise ValueError("purpose required")
+                enabled = bool(body.get("enabled", True))
+                retention = int(body.get("retention_days", 90))
+                redact = [str(f) for f in body.get("redact_fields", [])]
+                notes = str(body.get("notes", ""))
+                sess = self.session_context or {}
+                result = self.store.save_privacy_setting(self.organization_id, purpose, enabled, retention, redact, notes)
+                self.store.audit(self.organization_id, sess.get("userId"), sess.get("role"), "privacy.update", "privacy_setting", purpose, "ok")
+                self._json(HTTPStatus.OK, {"setting": result})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         if path == "/api/v1/admin/secrets":
             if not self._require_permission("secretsManage"): return
@@ -2822,15 +2941,22 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "email and password are required")
             return
         result = self.store.login(email, password)
+        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
         if not result:
+            self.store.audit(self.organization_id, None, None, "login", "session", None, "denied", ip)
             self._error(HTTPStatus.UNAUTHORIZED, "invalid_credentials", "Invalid email or password")
             return
+        self.store.audit(self.organization_id, result["user"]["id"], result["role"], "login", "session", None, "ok", ip)
         self._json(HTTPStatus.OK, result)
 
     def _handle_auth_logout(self) -> None:
         auth_header = self.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            self.store.logout_session(auth_header[7:].strip())
+            token = auth_header[7:].strip()
+            sess = self.session_context or {}
+            ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+            self.store.audit(self.organization_id, sess.get("userId"), sess.get("role"), "logout", "session", None, "ok", ip)
+            self.store.logout_session(token)
         self._json(HTTPStatus.OK, {"ok": True})
 
     def _handle_floorplan_analyze(self) -> None:
@@ -2972,6 +3098,15 @@ def main() -> None:
     initial_password = store.ensure_initial_credentials()
     if initial_password:
         LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.fieldos", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))
+    # Ensure privacy defaults for all orgs
+    try:
+        with store._connect() as _conn:
+            _orgs = [r["id"] for r in _conn.execute("SELECT id FROM organizations").fetchall()]
+        for _oid in _orgs:
+            store.ensure_privacy_defaults(_oid)
+            store.run_retention_purge(_oid)
+    except Exception as _e:
+        LOGGER.warning(json.dumps({"event": "privacy_init_failed", "error": str(_e)}))
     # Write agent context snapshot for filesystem-based agents (Codex)
     try:
         _write_agent_context_file(_build_agent_context(store), Path(__file__).parent.parent)

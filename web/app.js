@@ -420,7 +420,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -952,6 +952,78 @@ function setupAIGateway() {
     } catch (err) { toast(err.message); }
     finally { btn.disabled = false; }
   });
+}
+
+// ── Privacy Controls & Audit Log ───────────────────────────────────────────
+
+const PURPOSE_LABELS = {
+  ai_requests: 'AI-запросы',
+  audit_log: 'Журнал аудита',
+  field_telemetry: 'Полевая телеметрия',
+  object_storage: 'Объектное хранилище',
+};
+
+const OUTCOME_STYLE = { ok: 'color:#31d4a2', denied: 'color:#e05353', error: 'color:#f59e0b' };
+
+async function hydratePrivacy() {
+  await Promise.all([hydratePrivacySettings(), hydrateAuditLog()]);
+}
+
+async function hydratePrivacySettings() {
+  const el = document.getElementById('privacySettingsList');
+  if (!el) return;
+  try {
+    const resp = await apiFetch('/api/v1/admin/privacy');
+    const { settings } = await resp.json();
+    if (!settings.length) { el.innerHTML = '<p class="empty-copy">Нет политик — они создаются при первом запуске.</p>'; return; }
+    el.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px">
+      ${settings.map(s => `<div class="privacy-row">
+        <div>
+          <strong>${escapeHtml(PURPOSE_LABELS[s.purpose] || s.purpose)}</strong>
+          <small style="color:#778195;margin-left:8px">${s.purpose}</small>
+        </div>
+        <div style="display:flex;gap:14px;align-items:center">
+          <span style="${s.enabled ? 'color:#31d4a2' : 'color:#556070'}">${s.enabled ? '● Активно' : '○ Отключено'}</span>
+          <small style="color:#778195">${s.retention_days > 0 ? `Хранить ${s.retention_days} дней` : 'Хранить навсегда'}</small>
+          <button class="button ghost privacy-edit-btn" data-purpose="${s.purpose}" data-enabled="${s.enabled}" data-days="${s.retention_days}" type="button" style="padding:4px 10px;font-size:12px">Изменить</button>
+        </div>
+      </div>`).join('')}
+    </div>`;
+    el.querySelectorAll('.privacy-edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const purpose = btn.dataset.purpose;
+        const days = prompt(`Срок хранения (дней) для "${PURPOSE_LABELS[purpose] || purpose}" (0 = навсегда):`, btn.dataset.days);
+        if (days === null) return;
+        const retention = parseInt(days) || 0;
+        apiFetch('/api/v1/admin/privacy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ purpose, enabled: btn.dataset.enabled !== '0', retention_days: retention }),
+        }).then(() => { toast('Политика обновлена'); hydratePrivacySettings(); });
+      });
+    });
+  } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+async function hydrateAuditLog() {
+  const el = document.getElementById('auditLogList');
+  if (!el) return;
+  try {
+    const resp = await apiFetch('/api/v1/admin/audit-log?limit=50');
+    const { entries } = await resp.json();
+    if (!entries.length) { el.innerHTML = '<p class="empty-copy">Нет записей в журнале аудита.</p>'; return; }
+    el.innerHTML = `<div style="display:flex;flex-direction:column;gap:4px">
+      ${entries.map(e => `<div class="audit-row">
+        <code style="font-size:10px;color:#445060;min-width:160px">${(e.created_at||'').slice(0,19).replace('T',' ')}</code>
+        <span style="${OUTCOME_STYLE[e.outcome] || ''}">●</span>
+        <strong style="font-size:12px;min-width:130px">${escapeHtml(e.action)}</strong>
+        <small style="color:#778195">${escapeHtml(e.actor_id || '—')}</small>
+        <small style="color:#556070">${escapeHtml(e.actor_role || '')}</small>
+        ${e.target_type ? `<small style="color:#445060">${escapeHtml(e.target_type)} ${escapeHtml(e.target_id || '')}</small>` : ''}
+        ${e.ip ? `<small style="color:#334050">${escapeHtml(e.ip)}</small>` : ''}
+      </div>`).join('')}
+    </div>`;
+  } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
 }
 
 function setupSecretsVault() {
