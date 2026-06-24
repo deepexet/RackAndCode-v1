@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "054")
+        self.assertEqual(first.current_version, "055")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -672,6 +672,55 @@ class WorkspaceStoreTests(unittest.TestCase):
             row = conn.execute("SELECT * FROM webhook_events WHERE id=?", (event_id,)).fetchone()
         self.assertEqual(row["event_type"], "work_item.done")
         self.assertEqual(row["status"], "pending")
+
+
+    def test_project_template_create_list_delete(self):
+        scaffold = {
+            "workItems": [
+                {"title": "Survey site", "status": "backlog"},
+                {"title": "Install cabling", "status": "backlog"},
+            ]
+        }
+        tpl = self.store.create_template(DEFAULT_ORGANIZATION_ID, {
+            "name": "Basic Install", "category": "commercial", "scaffold": scaffold
+        })
+        self.assertEqual(tpl["name"], "Basic Install")
+        self.assertEqual(tpl["category"], "commercial")
+        self.assertEqual(len(tpl["scaffold"]["workItems"]), 2)
+        templates = self.store.list_templates(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(templates), 1)
+        self.store.delete_template(DEFAULT_ORGANIZATION_ID, tpl["id"])
+        self.assertEqual(self.store.list_templates(DEFAULT_ORGANIZATION_ID), [])
+
+    def test_project_template_name_is_unique_per_org(self):
+        self.store.create_template(DEFAULT_ORGANIZATION_ID, {"name": "My Template"})
+        with self.assertRaises(ValueError):
+            self.store.create_template(DEFAULT_ORGANIZATION_ID, {"name": "My Template"})
+
+    def test_create_project_from_template_seeds_work_items(self):
+        tpl = self.store.create_template(DEFAULT_ORGANIZATION_ID, {
+            "name": "3-Step Scaffold",
+            "scaffold": {"workItems": [
+                {"title": "Step 1"}, {"title": "Step 2"}, {"title": "Step 3"}
+            ]}
+        })
+        project = self.store.create_project_from_template(
+            DEFAULT_ORGANIZATION_ID, tpl["id"],
+            {"code": "TPL1", "name": "From Template"}
+        )
+        self.assertEqual(project["code"], "TPL1")
+        self.assertEqual(len(project["workItems"]), 3)
+        titles = {wi["title"] for wi in project["workItems"]}
+        self.assertIn("Step 1", titles)
+        self.assertIn("Step 3", titles)
+
+    def test_webhook_flush_skips_events_without_url(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "WFL", "name": "Flush Test"})
+        self.store.queue_webhook_event(DEFAULT_ORGANIZATION_ID, None, "work_item.done", {"projectId": proj["id"]})
+        result = self.store.flush_webhook_events()
+        # No connector URL configured, so all events are skipped or failed
+        self.assertGreaterEqual(result["skipped"] + result["failed"], 1)
+        self.assertEqual(result["sent"], 0)
 
 
 if __name__ == "__main__":

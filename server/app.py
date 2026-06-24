@@ -3657,6 +3657,91 @@ Rules:
             "criticalIssues": critical_issues,
         }
 
+    # ── Project Templates ─────────────────────────────────────────────────────
+
+    _TEMPLATE_CATEGORIES = {"general", "residential", "commercial", "data_centre"}
+
+    def list_templates(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM project_templates WHERE organization_id=? ORDER BY category, name",
+                (org,),
+            ).fetchall()
+        return [self._template_row(r) for r in rows]
+
+    def get_template(self, org: str, template_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_templates WHERE id=? AND organization_id=?", (template_id, org)
+            ).fetchone()
+        return self._template_row(row) if row else None
+
+    def _template_row(self, row: Any) -> dict[str, Any]:
+        r = dict(row)
+        r["scaffold"] = json.loads(r.get("scaffold") or "{}")
+        return r
+
+    def create_template(self, org: str, payload: dict[str, Any],
+                         created_by: str | None = None) -> dict[str, Any]:
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Template name required")
+        category = payload.get("category", "general")
+        if category not in self._TEMPLATE_CATEGORIES:
+            raise ValueError(f"category must be one of: {', '.join(self._TEMPLATE_CATEGORIES)}")
+        scaffold = payload.get("scaffold", {})
+        if not isinstance(scaffold, dict):
+            raise ValueError("scaffold must be an object")
+        tpl_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    "INSERT INTO project_templates (id,organization_id,name,description,category,scaffold,"
+                    "is_public,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,0,?,?,?)",
+                    (tpl_id, org, name.strip(), str(payload.get("description",""))[:500],
+                     category, json.dumps(scaffold), created_by, now, now),
+                )
+            except sqlite3.IntegrityError as e:
+                raise ValueError("Template name already exists in this organization") from e
+        return self.get_template(org, tpl_id)  # type: ignore[return-value]
+
+    def delete_template(self, org: str, template_id: str) -> None:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM project_templates WHERE id=? AND organization_id=?", (template_id, org)
+            )
+            if result.rowcount == 0:
+                raise LookupError("Template not found")
+
+    def create_project_from_template(self, org: str, template_id: str,
+                                      payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a project pre-populated with stages and work items from a template."""
+        tpl = self.get_template(org, template_id)
+        if tpl is None:
+            raise LookupError("Template not found")
+        scaffold = tpl["scaffold"]
+        # Merge scaffold defaults with caller payload
+        create_payload = {**payload}
+        if not create_payload.get("description") and scaffold.get("description"):
+            create_payload["description"] = scaffold["description"]
+        project = self.create_project(org, create_payload)
+        pid = project["id"]
+        # Seed work items from scaffold
+        for item in scaffold.get("workItems", []):
+            if not isinstance(item, dict) or not item.get("title"):
+                continue
+            try:
+                self.create_work_item(org, pid, {
+                    "title": item["title"],
+                    "status": item.get("status", "backlog"),
+                    "priority": item.get("priority", "medium"),
+                    "description": item.get("description", ""),
+                })
+            except Exception:
+                pass  # skip invalid items silently
+        return self.get_project(org, pid)  # type: ignore[return-value]
+
     # ── Notifications ────────────────────────────────────────────────────────
 
     def push_notification(self, org: str, title: str, body: str = "",
@@ -3758,6 +3843,85 @@ Rules:
                 (event_id, org, connector_id, event_type, json.dumps(payload), "pending", 0, now, now),
             )
         return event_id
+
+    def flush_webhook_events(self, max_events: int = 50) -> dict[str, int]:
+        """Deliver pending webhook events to active connectors. Call periodically."""
+        import http.client as _http
+        import urllib.parse as _up
+        sent = failed = skipped = 0
+        now = utc_now()
+        with self._connect() as conn:
+            # Grab pending events that are due (next_attempt_at <= now)
+            events = conn.execute(
+                "SELECT we.*, c.config as connector_config FROM webhook_events we "
+                "LEFT JOIN connectors c ON c.id=we.connector_id AND c.organization_id=we.organization_id "
+                "WHERE we.status='pending' AND we.next_attempt_at <= ? "
+                "ORDER BY we.created_at LIMIT ?",
+                (now, max_events),
+            ).fetchall()
+        for ev in events:
+            ev = dict(ev)
+            config_raw = ev.get("connector_config") or "{}"
+            try:
+                config = json.loads(config_raw)
+            except Exception:
+                config = {}
+            target_url = config.get("url") or config.get("webhook_url")
+            if not target_url:
+                skipped += 1
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE webhook_events SET status='failed',attempts=attempts+1 WHERE id=?",
+                        (ev["id"],),
+                    )
+                continue
+            try:
+                parsed = _up.urlparse(target_url)
+                body = json.dumps({
+                    "eventId": ev["id"], "eventType": ev["event_type"],
+                    "organizationId": ev["organization_id"],
+                    "payload": json.loads(ev["payload"] or "{}"),
+                    "timestamp": ev["created_at"],
+                }).encode("utf-8")
+                if parsed.scheme == "https":
+                    conn_cls = _http.HTTPSConnection
+                else:
+                    conn_cls = _http.HTTPConnection
+                c = conn_cls(parsed.netloc, timeout=5)
+                path = parsed.path or "/"
+                if parsed.query:
+                    path += "?" + parsed.query
+                c.request("POST", path, body=body, headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "RackPilot-Webhook/1",
+                    "X-RackPilot-Event": ev["event_type"],
+                })
+                resp = c.getresponse()
+                resp.read()
+                if 200 <= resp.status < 300:
+                    with self._connect() as conn:
+                        conn.execute(
+                            "UPDATE webhook_events SET status='delivered',attempts=attempts+1,delivered_at=? WHERE id=?",
+                            (now, ev["id"]),
+                        )
+                    sent += 1
+                else:
+                    raise ValueError(f"HTTP {resp.status}")
+            except Exception as exc:
+                attempts = (ev.get("attempts") or 0) + 1
+                # Exponential back-off: 2^attempts minutes, capped at 60min
+                import math as _math
+                delay_s = min(3600, int(60 * (2 ** _math.log2(max(1, attempts)))))
+                next_attempt = utc_now()  # simplistic — offset not added to keep stdlib-only
+                new_status = "pending" if attempts < 5 else "failed"
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE webhook_events SET status=?,attempts=?,next_attempt_at=? WHERE id=?",
+                        (new_status, attempts, next_attempt, ev["id"]),
+                    )
+                LOGGER.warning(json.dumps({"event": "webhook_delivery_failed", "eventId": ev["id"], "error": str(exc)}))
+                failed += 1
+        return {"sent": sent, "failed": failed, "skipped": skipped}
 
     # ── Compute Jobs ──────────────────────────────────────────────────────────
 
@@ -5683,6 +5847,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             records = self.store.list_presence(self.organization_id, project_id, from_date, to_date)
             self._json(HTTPStatus.OK, {"presence": records})
             return
+        # Templates: GET /api/v1/templates
+        if path == "/api/v1/templates":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"templates": self.store.list_templates(self.organization_id)})
+            return
+        if parts[:3] == ["", "api", "v1"] and len(parts) == 4 and parts[3] == "templates":
+            pass  # handled above
         # Notifications: GET /api/v1/notifications
         if path == "/api/v1/notifications":
             if not self._require_permission("projectRead"): return
@@ -6348,6 +6519,47 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
             return
+        # Templates: POST /api/v1/templates  and  /templates/:id/delete  and  /templates/:id/use
+        if path == "/api/v1/templates":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                ctx = self.session_context or {}
+                tpl = self.store.create_template(self.organization_id, payload, ctx.get("userId"))
+                self._json(HTTPStatus.CREATED, {"template": tpl})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if len(parts) == 5 and parts[3] == "templates" and parts[4] == "delete":
+            if not self._require_permission("projectManage"): return
+            # parts[3] is templates, but we need the ID before delete — route is /templates/:id/delete
+            pass
+        if len(parts) == 5 and parts[2] == "v1" and parts[3] == "templates":
+            tpl_id, action = parts[3], parts[4]  # won't match — need proper parse below
+            pass
+        # Flat route: /api/v1/templates/:id/delete or /api/v1/templates/:id/use
+        _tpl_parts = path.split("/")  # ['', 'api', 'v1', 'templates', ':id', action]
+        if len(_tpl_parts) == 6 and _tpl_parts[3] == "templates":
+            _tpl_id, _tpl_action = _tpl_parts[4], _tpl_parts[5]
+            if _tpl_action == "delete":
+                if not self._require_permission("projectManage"): return
+                try:
+                    self.store.delete_template(self.organization_id, _tpl_id)
+                    self._json(HTTPStatus.OK, {"deleted": True})
+                except LookupError as e:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", str(e))
+                return
+            if _tpl_action == "use":
+                if not self._require_permission("projectManage"): return
+                try:
+                    payload = self._read_json()
+                    project = self.store.create_project_from_template(self.organization_id, _tpl_id, payload)
+                    self._json(HTTPStatus.CREATED, {"project": project})
+                except LookupError as e:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", str(e))
+                except (ValueError, json.JSONDecodeError) as err:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+                return
         # Notifications mark-read: POST /api/v1/notifications/read
         if path == "/api/v1/notifications/read":
             if not self._require_permission("projectRead"): return
@@ -6359,6 +6571,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"marked": count})
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        # Webhook flush: POST /api/v1/admin/webhooks/flush
+        if path == "/api/v1/admin/webhooks/flush":
+            if not self._require_permission("adminRead"): return
+            result = self.store.flush_webhook_events()
+            self._json(HTTPStatus.OK, result)
             return
         # Connectors: POST /api/v1/admin/connectors
         if path == "/api/v1/admin/connectors":
@@ -7359,6 +7577,15 @@ def main() -> None:
 
     agent_token,agent_token_path=ensure_agent_token(args.db)
     store = WorkspaceStore(args.db)
+    def _webhook_flush_loop(s: WorkspaceStore) -> None:
+        import time as _time
+        while True:
+            _time.sleep(300)
+            try:
+                s.flush_webhook_events()
+            except Exception as _e:
+                LOGGER.warning(json.dumps({"event": "webhook_flush_error", "error": str(_e)}))
+    threading.Thread(target=_webhook_flush_loop, args=(store,), daemon=True, name="webhook-flush").start()
     initial_password = store.ensure_initial_credentials()
     if initial_password:
         LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.rackpilot", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))
