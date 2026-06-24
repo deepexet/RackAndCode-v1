@@ -2439,6 +2439,131 @@ class WorkspaceStore:
             result.append(d)
         return result
 
+    # ── Digital Twin ─────────────────────────────────────────────────────────
+
+    def _asset_row(self, r: sqlite3.Row) -> dict[str, Any]:
+        d = dict(r)
+        for k in ("attributes",):
+            try: d[k] = json.loads(d.get(k) or '{}')
+            except (json.JSONDecodeError, TypeError): d[k] = {}
+        return d
+
+    def create_asset(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        asset_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO dt_assets (id,organization_id,project_id,location_id,parent_asset_id,"
+                "asset_type,name,make,model,serial_number,install_date,status,attributes,notes,created_at,updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (asset_id, org, project_id,
+                 payload.get("locationId"), payload.get("parentAssetId"),
+                 payload.get("assetType","device"), payload.get("name",""),
+                 payload.get("make",""), payload.get("model",""),
+                 payload.get("serialNumber",""), payload.get("installDate"),
+                 payload.get("status","planned"),
+                 json.dumps(payload.get("attributes",{})), payload.get("notes",""),
+                 now, now),
+            )
+            row = conn.execute("SELECT * FROM dt_assets WHERE id=?", (asset_id,)).fetchone()
+        return self._asset_row(row)
+
+    def update_asset(self, org: str, asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM dt_assets WHERE id=? AND organization_id=?", (asset_id, org)).fetchone()
+            if not row: raise LookupError("Asset not found")
+            conn.execute(
+                "UPDATE dt_assets SET location_id=?,asset_type=?,name=?,make=?,model=?,"
+                "serial_number=?,install_date=?,status=?,attributes=?,notes=?,updated_at=? WHERE id=?",
+                (payload.get("locationId", row["location_id"]),
+                 payload.get("assetType", row["asset_type"]),
+                 payload.get("name", row["name"]),
+                 payload.get("make", row["make"]),
+                 payload.get("model", row["model"]),
+                 payload.get("serialNumber", row["serial_number"]),
+                 payload.get("installDate", row["install_date"]),
+                 payload.get("status", row["status"]),
+                 json.dumps(payload.get("attributes", json.loads(row["attributes"] or "{}"))),
+                 payload.get("notes", row["notes"]),
+                 now, asset_id),
+            )
+            updated = conn.execute("SELECT * FROM dt_assets WHERE id=?", (asset_id,)).fetchone()
+        return self._asset_row(updated)
+
+    def delete_asset(self, org: str, asset_id: str) -> None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT id FROM dt_assets WHERE id=? AND organization_id=?", (asset_id, org)).fetchone()
+            if not row: raise LookupError("Asset not found")
+            conn.execute("DELETE FROM dt_assets WHERE id=?", (asset_id,))
+
+    def list_assets(self, org: str, project_id: str | None = None,
+                    location_id: str | None = None, asset_type: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            where = ["organization_id=?"]
+            params: list[Any] = [org]
+            if project_id: where.append("project_id=?"); params.append(project_id)
+            if location_id: where.append("location_id=?"); params.append(location_id)
+            if asset_type: where.append("asset_type=?"); params.append(asset_type)
+            rows = conn.execute(
+                f"SELECT * FROM dt_assets WHERE {' AND '.join(where)} ORDER BY name ASC", params
+            ).fetchall()
+        return [self._asset_row(r) for r in rows]
+
+    def create_relationship(self, org: str, from_id: str, to_id: str,
+                            relation_type: str = "connects_to", label: str = "",
+                            attributes: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self._connect() as conn:
+            for aid in (from_id, to_id):
+                if not conn.execute("SELECT 1 FROM dt_assets WHERE id=? AND organization_id=?", (aid, org)).fetchone():
+                    raise LookupError(f"Asset not found: {aid}")
+            rel_id = str(uuid.uuid4())
+            now = utc_now()
+            conn.execute(
+                "INSERT OR REPLACE INTO dt_relationships (id,organization_id,from_asset_id,to_asset_id,"
+                "relation_type,label,attributes,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (rel_id, org, from_id, to_id, relation_type, label,
+                 json.dumps(attributes or {}), now),
+            )
+            row = conn.execute("SELECT * FROM dt_relationships WHERE id=?", (rel_id,)).fetchone()
+        return dict(row)
+
+    def delete_relationship(self, org: str, rel_id: str) -> None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT id FROM dt_relationships WHERE id=? AND organization_id=?", (rel_id, org)).fetchone()
+            if not row: raise LookupError("Relationship not found")
+            conn.execute("DELETE FROM dt_relationships WHERE id=?", (rel_id,))
+
+    def list_relationships(self, org: str, asset_id: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if asset_id:
+                rows = conn.execute(
+                    "SELECT r.*, a1.name as from_name, a2.name as to_name "
+                    "FROM dt_relationships r "
+                    "JOIN dt_assets a1 ON a1.id=r.from_asset_id "
+                    "JOIN dt_assets a2 ON a2.id=r.to_asset_id "
+                    "WHERE r.organization_id=? AND (r.from_asset_id=? OR r.to_asset_id=?)",
+                    (org, asset_id, asset_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT r.*, a1.name as from_name, a2.name as to_name "
+                    "FROM dt_relationships r "
+                    "JOIN dt_assets a1 ON a1.id=r.from_asset_id "
+                    "JOIN dt_assets a2 ON a2.id=r.to_asset_id "
+                    "WHERE r.organization_id=? ORDER BY r.created_at DESC",
+                    (org,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_digital_twin(self, org: str, project_id: str) -> dict[str, Any]:
+        """Full graph snapshot for a project: assets + typed relationships."""
+        assets = self.list_assets(org, project_id=project_id)
+        asset_ids = {a["id"] for a in assets}
+        all_rels = self.list_relationships(org)
+        rels = [r for r in all_rels if r["from_asset_id"] in asset_ids or r["to_asset_id"] in asset_ids]
+        return {"assets": assets, "relationships": rels}
+
     # ── Time Tracking ────────────────────────────────────────────────────────
 
     def start_session(self, org: str, member_id: str, project_id: str,
@@ -3251,6 +3376,23 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             approvals = self.store.list_ai_approvals(self.organization_id, status_filter)
             self._json(HTTPStatus.OK, {"approvals": approvals})
             return
+        # Digital Twin: GET /api/v1/projects/:id/twin, GET /api/v1/assets, GET /api/v1/assets/:id/relationships
+        if len(parts) == 5 and parts[3] == "projects" and parts[5] == "twin":
+            if not self._require_permission("projectRead"): return
+            project_id = parts[4]
+            self._json(HTTPStatus.OK, self.store.get_digital_twin(self.organization_id, project_id))
+            return
+        if path == "/api/v1/assets":
+            if not self._require_permission("projectRead"): return
+            project_id = self.query_params.get("projectId", [None])[0]
+            location_id = self.query_params.get("locationId", [None])[0]
+            asset_type = self.query_params.get("assetType", [None])[0]
+            self._json(HTTPStatus.OK, {"assets": self.store.list_assets(self.organization_id, project_id, location_id, asset_type)})
+            return
+        if path.startswith("/api/v1/assets/") and parts[-1] == "relationships":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"relationships": self.store.list_relationships(self.organization_id, parts[-2])})
+            return
         # Time tracking: GET /api/v1/time, GET /api/v1/time/utilization
         if path == "/api/v1/time":
             if not self._require_permission("projectRead"): return
@@ -3638,6 +3780,31 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError,json.JSONDecodeError) as error:
                 self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
             return
+        # Digital Twin mutations
+        if path == "/api/v1/assets":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict) or not payload.get("name"): raise ValueError("name required")
+                asset = self.store.create_asset(self.organization_id, payload.get("projectId",""), payload)
+                self._json(HTTPStatus.CREATED, {"asset": asset})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path == "/api/v1/relationships":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                rel = self.store.create_relationship(self.organization_id,
+                    payload.get("fromAssetId",""), payload.get("toAssetId",""),
+                    payload.get("relationType","connects_to"),
+                    payload.get("label",""), payload.get("attributes"))
+                self._json(HTTPStatus.CREATED, {"relationship": rel})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
         # Time tracking
         if path == "/api/v1/time/log":
             if not self._require_permission("fieldProgress"): return
@@ -3822,6 +3989,22 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.store.delete_comment(self.organization_id, parts[5], ctx.get("userId"))
             self._json(HTTPStatus.OK, {"ok": True})
             return
+        # Asset delete: POST /api/v1/assets/:id/delete
+        if path.startswith("/api/v1/assets/") and parts[-1] == "delete":
+            if not self._require_permission("projectManage"): return
+            try:
+                self.store.delete_asset(self.organization_id, parts[-2])
+                self._json(HTTPStatus.OK, {"ok": True})
+            except LookupError as err: self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        # Relationship delete: POST /api/v1/relationships/:id/delete
+        if path.startswith("/api/v1/relationships/") and parts[-1] == "delete":
+            if not self._require_permission("projectManage"): return
+            try:
+                self.store.delete_relationship(self.organization_id, parts[-2])
+                self._json(HTTPStatus.OK, {"ok": True})
+            except LookupError as err: self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
         # Object delete: POST /api/v1/objects/:id/delete
         if path.startswith("/api/v1/objects/") and parts[-1] == "delete":
             if not self._require_permission("projectManage"): return
@@ -3917,7 +4100,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         unit_detail_route = len(parts)==8 and parts[:3]==["api","v1","projects"] and parts[4]=="locations" and parts[6]=="units"
         unit_route = len(parts) == 9 and parts[:3] == ["api", "v1", "projects"] and parts[4] == "locations" and parts[6] == "units" and parts[8] == "progress"
         team_route = len(parts) == 3 and parts[:2] == ["api", "v1"] and parts[2].startswith("team/") or (len(parts)==3 and parts[1]=="v1" and parts[0]=="api")
+        asset_route = len(parts) == 4 and parts[:2] == ["api","v1"] and parts[2] == "assets"
         team_member_route = len(parts) == 4 and parts[:2] == ["api","v1"] and parts[2] == "team"
+        if asset_route:
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                asset = self.store.update_asset(self.organization_id, parts[3], payload)
+                self._json(HTTPStatus.OK, {"asset": asset})
+            except LookupError as err: self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            except (ValueError, json.JSONDecodeError) as err: self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
         if team_member_route:
             if not self._require_permission("projectManage"): return
             try:

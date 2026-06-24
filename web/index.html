@@ -259,6 +259,55 @@
       </section>
 
       <!-- Log Time Dialog -->
+      <!-- Asset (Digital Twin) Dialog -->
+      <dialog id="assetDialog" style="max-width:540px;width:100%">
+        <div class="dialog-head">
+          <div><p class="eyebrow">ОБОРУДОВАНИЕ</p><h2 id="assetDialogTitle">Новый актив</h2></div>
+          <button class="icon-button" id="closeAssetDialog" type="button">×</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;padding:0 20px 20px">
+          <input type="hidden" id="assetDialogId">
+          <label style="font-size:13px;font-weight:600">Название *
+            <input id="assetName" type="text" maxlength="200" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box">
+          </label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <label style="font-size:13px;font-weight:600">Тип
+              <select id="assetType" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+                <option value="device">Device</option><option value="panel">Panel</option>
+                <option value="port">Port</option><option value="cable">Cable</option>
+                <option value="circuit">Circuit</option><option value="sensor">Sensor</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label style="font-size:13px;font-weight:600">Статус
+              <select id="assetStatus" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+                <option value="planned">Planned</option><option value="installed">Installed</option>
+                <option value="active">Active</option><option value="faulty">Faulty</option>
+                <option value="decommissioned">Decommissioned</option>
+              </select>
+            </label>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <label style="font-size:13px;font-weight:600">Производитель
+              <input id="assetMake" type="text" maxlength="100" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box">
+            </label>
+            <label style="font-size:13px;font-weight:600">Модель
+              <input id="assetModel" type="text" maxlength="100" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box">
+            </label>
+          </div>
+          <label style="font-size:13px;font-weight:600">Серийный номер
+            <input id="assetSerial" type="text" maxlength="100" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box">
+          </label>
+          <label style="font-size:13px;font-weight:600">Заметки
+            <textarea id="assetNotes" rows="2" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);resize:vertical;box-sizing:border-box"></textarea>
+          </label>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;padding:0 20px 20px">
+          <button class="button ghost" id="cancelAssetBtn" type="button">Отмена</button>
+          <button class="button primary" id="submitAssetBtn" type="button">Сохранить</button>
+        </div>
+      </dialog>
+
       <dialog id="logTimeDialog">
         <form method="dialog">
           <h2 style="margin:0 0 16px">Записать время</h2>

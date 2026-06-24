@@ -1614,6 +1614,123 @@ function setupTimeTracking() {
   });
 }
 
+// ── Digital Twin ───────────────────────────────────────────────────────────
+const ASSET_STATUS_COLOR = { planned:'var(--text-secondary)', installed:'var(--accent)', active:'var(--accent-green,#2bb46a)', faulty:'#e05353', decommissioned:'var(--text-secondary)' };
+const ASSET_TYPE_ICON = { device:'🖥', panel:'📟', port:'🔌', cable:'🔗', circuit:'⚡', sensor:'📡', other:'📦' };
+
+async function hydrateDigitalTwin(projectId) {
+  const listEl = document.getElementById('assetsList');
+  if (!listEl) return;
+  try {
+    const resp = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/twin`, { headers: apiHeaders({ Accept: 'application/json' }) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const { assets = [], relationships = [] } = await resp.json();
+    if (!assets.length) {
+      listEl.innerHTML = '<p class="empty-copy">Оборудование не добавлено. Нажмите «＋ Оборудование».</p>';
+      return;
+    }
+    // Build adjacency for relationship count display
+    const relCount = {};
+    for (const r of relationships) {
+      relCount[r.from_asset_id] = (relCount[r.from_asset_id] || 0) + 1;
+      relCount[r.to_asset_id] = (relCount[r.to_asset_id] || 0) + 1;
+    }
+    listEl.innerHTML = assets.map(a => {
+      const icon = ASSET_TYPE_ICON[a.asset_type] || '📦';
+      const color = ASSET_STATUS_COLOR[a.status] || 'var(--text-secondary)';
+      const rels = relCount[a.id] || 0;
+      const attrs = typeof a.attributes === 'object' ? Object.entries(a.attributes).map(([k,v]) => `${k}: ${v}`).join(' · ') : '';
+      return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:13px 16px;display:flex;align-items:center;gap:12px" data-asset-id="${a.id}">
+        <span style="font-size:22px;width:32px;text-align:center">${icon}</span>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-weight:600;font-size:14px">${escapeHtml(a.name)}</span>
+            <span style="font-size:11px;font-weight:700;color:${color};background:${color}1a;padding:1px 6px;border-radius:4px;text-transform:uppercase">${a.status}</span>
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${escapeHtml([a.make, a.model].filter(Boolean).join(' '))}${attrs ? ' · ' + escapeHtml(attrs) : ''}</div>
+          ${rels ? `<div style="font-size:11px;color:var(--accent);margin-top:2px">⇌ ${rels} связей</div>` : ''}
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="button ghost" style="font-size:11px;padding:4px 8px" data-edit-asset="${a.id}">Ред.</button>
+          <button class="button ghost" style="font-size:11px;padding:4px 8px;color:#e05353" data-delete-asset="${a.id}">✕</button>
+        </div>
+      </div>`;
+    }).join('');
+    // Wire delete/edit buttons
+    listEl.querySelectorAll('[data-delete-asset]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить оборудование?')) return;
+        try {
+          await apiFetch(`/api/v1/assets/${btn.dataset.deleteAsset}/delete`, { method: 'POST', headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key': createIdempotencyKey()}), body: '{}' });
+          hydrateDigitalTwin(projectId);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+    listEl.querySelectorAll('[data-edit-asset]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const asset = assets.find(a => a.id === btn.dataset.editAsset);
+        if (asset) openAssetDialog(projectId, asset);
+      });
+    });
+  } catch(e) { listEl.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+function openAssetDialog(projectId, asset = null) {
+  const dialog = document.getElementById('assetDialog');
+  if (!dialog) return;
+  document.getElementById('assetDialogTitle').textContent = asset ? 'Редактировать актив' : 'Новый актив';
+  document.getElementById('assetDialogId').value = asset?.id || '';
+  document.getElementById('assetName').value = asset?.name || '';
+  document.getElementById('assetType').value = asset?.asset_type || 'device';
+  document.getElementById('assetStatus').value = asset?.status || 'planned';
+  document.getElementById('assetMake').value = asset?.make || '';
+  document.getElementById('assetModel').value = asset?.model || '';
+  document.getElementById('assetSerial').value = asset?.serial_number || '';
+  document.getElementById('assetNotes').value = asset?.notes || '';
+  dialog._projectId = projectId;
+  dialog.showModal();
+}
+
+function setupDigitalTwin(projectId) {
+  const addBtn = document.getElementById('addAssetBtn');
+  if (addBtn) addBtn.addEventListener('click', () => openAssetDialog(projectId));
+
+  const dialog = document.getElementById('assetDialog');
+  const closeBtn = document.getElementById('closeAssetDialog');
+  const cancelBtn = document.getElementById('cancelAssetBtn');
+  const submitBtn = document.getElementById('submitAssetBtn');
+  if (!dialog) return;
+
+  closeBtn?.addEventListener('click', () => dialog.close());
+  cancelBtn?.addEventListener('click', () => dialog.close());
+
+  submitBtn?.addEventListener('click', async () => {
+    const id = document.getElementById('assetDialogId').value;
+    const pid = dialog._projectId || projectId;
+    const payload = {
+      name: document.getElementById('assetName').value.trim(),
+      assetType: document.getElementById('assetType').value,
+      status: document.getElementById('assetStatus').value,
+      make: document.getElementById('assetMake').value.trim(),
+      model: document.getElementById('assetModel').value.trim(),
+      serialNumber: document.getElementById('assetSerial').value.trim(),
+      notes: document.getElementById('assetNotes').value.trim(),
+      projectId: pid,
+    };
+    if (!payload.name) { toast('Укажите название'); return; }
+    try {
+      if (id) {
+        await apiFetch(`/api/v1/assets/${id}`, { method: 'PATCH', headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key': createIdempotencyKey()}), body: JSON.stringify(payload) });
+      } else {
+        await apiFetch('/api/v1/assets', { method: 'POST', headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key': createIdempotencyKey()}), body: JSON.stringify(payload) });
+      }
+      dialog.close();
+      toast(id ? 'Обновлено' : 'Актив добавлен');
+      hydrateDigitalTwin(pid);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+}
+
 // ── Conflict Queue UI ──────────────────────────────────────────────────────
 function hydrateConflictQueue() {
   const listEl = document.getElementById('conflictList');
@@ -2227,6 +2344,13 @@ function renderProjectDetail() {
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div>${canProgress ? '<button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button>' : ''}</div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>
     <section class="detail-section" id="projectObjectsSection"><div class="detail-section-title"><div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Файлы проекта</h2></div><label class="button ghost" style="cursor:pointer">＋ Загрузить<input type="file" id="objectFileInput" multiple style="display:none"></label></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input id="objectsSearchInput" type="search" placeholder="Поиск по файлам…" style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px" autocomplete="off"></div><div id="objectsDropZone" class="objects-drop-zone">Перетащите файлы сюда или нажмите «Загрузить»</div><div id="objectsGrid" class="objects-grid"><p class="empty-copy">Загрузка…</p></div><p id="objectsStorageInfo" style="font-size:11px;color:#445060;margin-top:8px"></p></section>
     <dialog id="objectVersionsDialog" style="max-width:520px;width:100%"><div class="dialog-head"><div><p class="eyebrow">ВЕРСИИ</p><h2 id="objectVersionsName"></h2></div><button class="icon-button" id="closeObjectVersionsDialog" type="button">×</button></div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Версия</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Размер</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Дата</th><th></th></tr></thead><tbody id="objectVersionsList"></tbody></table></div></dialog>
+    <section class="detail-section" id="projectDigitalTwinSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">DIGITAL TWIN</p><h2>Реестр оборудования</h2></div>
+        <button class="button ghost" id="addAssetBtn" type="button">＋ Оборудование</button>
+      </div>
+      <div id="assetsList" style="display:flex;flex-direction:column;gap:10px;margin-top:8px"><p class="empty-copy">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="projectActivitySection">
       <div class="detail-section-title"><div><p class="eyebrow">ACTIVITY</p><h2>Активность и комментарии</h2></div></div>
       <div id="projectActivityFeed" class="activity-feed"><p class="empty-copy">Загрузка…</p></div>
@@ -2241,6 +2365,8 @@ function renderProjectDetail() {
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
   setupProjectObjects(project.id);
   hydrateProjectObjects(project.id);
+  setupDigitalTwin(project.id);
+  hydrateDigitalTwin(project.id);
   setupProjectComments(project.id);
   hydrateProjectActivity(project.id);
   setupProjectTeam(project.id);
