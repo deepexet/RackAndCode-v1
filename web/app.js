@@ -1498,6 +1498,51 @@ function setupAIApprovals() {
   if (filter) filter.addEventListener('change', () => hydrateAIApprovals(filter.value));
 }
 
+// ── Knowledge Search ──────────────────────────────────────────────────────
+function setupKnowledgeSearch() {
+  const inp = document.getElementById('knowledgeSearchInput');
+  const btn = document.getElementById('knowledgeSearchBtn');
+  const rebuildBtn = document.getElementById('rebuildKnowledgeBtn');
+  if (!inp || !btn) return;
+
+  const doSearch = async () => {
+    const q = inp.value.trim();
+    const el = document.getElementById('knowledgeSearchResults');
+    if (!el) return;
+    if (!q) { el.innerHTML = ''; return; }
+    el.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">Поиск…</p>';
+    try {
+      const resp = await apiFetch(`/api/v1/knowledge/search?q=${encodeURIComponent(q)}&limit=10`);
+      const { results = [] } = resp;
+      if (!results.length) { el.innerHTML = '<p class="empty-copy">Ничего не найдено.</p>'; return; }
+      el.innerHTML = results.map(r => {
+        const snippet = r.snippet || r.chunk_text?.slice(0, 200) || '';
+        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+            <span style="font-weight:600;font-size:14px">${escapeHtml(r.object_name||'Документ')}</span>
+            <span style="font-size:11px;color:var(--text-secondary)">${escapeHtml(r.mime_type||'')}</span>
+          </div>
+          <div style="font-size:13px;line-height:1.6;color:var(--text-secondary)">${snippet.replace(/<b>/g,'<strong>').replace(/<\/b>/g,'</strong>')}</div>
+        </div>`;
+      }).join('');
+    } catch(e) { el.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
+  };
+
+  btn.addEventListener('click', doSearch);
+  inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') doSearch(); });
+
+  rebuildBtn?.addEventListener('click', async () => {
+    rebuildBtn.disabled = true; rebuildBtn.textContent = 'Пересборка…';
+    try {
+      const r = await apiFetch('/api/v1/knowledge/rebuild', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}), body: '{}',
+      });
+      toast(`Индекс пересобран: ${r.rebuilt} документов, ${r.skipped} пропущено`);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+    finally { rebuildBtn.disabled = false; rebuildBtn.textContent = '↺ Пересобрать индекс'; }
+  });
+}
+
 // ── Time Tracking ──────────────────────────────────────────────────────────
 const HOURS_COLOR = (h) => h >= 8 ? 'var(--accent-red,#e05353)' : h >= 6 ? 'var(--accent-yellow,#e09800)' : 'var(--accent,#4f8ef7)';
 
@@ -4218,6 +4263,7 @@ async function setup() {
   setupTeam();
   setupTimeTracking();
   setupConflictQueue();
+  setupKnowledgeSearch();
   applyRolePolicy();
   renderRoute();
   render();

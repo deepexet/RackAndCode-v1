@@ -457,6 +457,21 @@
         <p style="color:#778195;font-size:13px;margin:0 0 12px">AI-агент предлагает изменение → вы видите доказательства → одобряете или отклоняете. Изменения применяются только после одобрения.</p>
         <div id="aiApprovalsList" style="display:flex;flex-direction:column;gap:10px"></div>
       </section>
+      <!-- Knowledge Search -->
+      <section class="detail-section" id="knowledgeSearchSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">KNOWLEDGE BASE</p><h2>Поиск по базе знаний</h2></div>
+          <button class="button ghost" id="rebuildKnowledgeBtn" type="button">↺ Пересобрать индекс</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          <input id="knowledgeSearchInput" type="search" placeholder="Поиск по документам…"
+            style="flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px"
+            autocomplete="off">
+          <button class="button primary" id="knowledgeSearchBtn" type="button">Найти</button>
+        </div>
+        <div id="knowledgeSearchResults" style="display:flex;flex-direction:column;gap:10px"></div>
+      </section>
+
       <section class="detail-section" id="retrievalEvalSection" data-permission="adminPanel">
         <div class="detail-section-title">
           <div><p class="eyebrow">INTELLIGENCE · EVAL</p><h2>Оценка качества поиска</h2></div>

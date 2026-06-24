@@ -1839,17 +1839,99 @@ class WorkspaceStore:
     _TEXT_MIMES: frozenset[str] = frozenset({
         "text/plain", "text/csv", "text/markdown", "text/html",
         "application/json", "application/xml", "text/xml",
+        "application/pdf",
     })
+    _CHUNK_SIZE = 400    # target words per chunk
+    _CHUNK_OVERLAP = 40  # overlap words between adjacent chunks
+
+    @staticmethod
+    def _pdf_extract_text(data: bytes) -> str:
+        """
+        Minimal PDF text extraction without external libraries.
+        Parses BT...ET text blocks from the raw PDF byte stream.
+        Handles Tj, TJ, ' operators. Falls back to empty on failure.
+        """
+        import re as _re
+        try:
+            raw = data.decode("latin-1", errors="replace")
+            # Decode compressed streams is not attempted — only uncompressed text blocks
+            blocks: list[str] = []
+            for bt_block in _re.findall(r'BT(.*?)ET', raw, _re.DOTALL):
+                words: list[str] = []
+                # TJ: [(string) spacing (string) ...]
+                for tj in _re.findall(r'\[(.*?)\]TJ', bt_block, _re.DOTALL):
+                    for s in _re.findall(r'\((.*?)\)', tj):
+                        words.append(s)
+                    words.append(' ')
+                # Tj / ' : (string) Tj
+                for tj in _re.findall(r'\(([^)]*)\)\s*(?:Tj|\')', bt_block):
+                    words.append(tj + ' ')
+                text = ''.join(words)
+                # Unescape PDF escape sequences
+                text = text.replace('\\n', '\n').replace('\\r', '\r') \
+                           .replace('\\t', '\t').replace('\\(', '(').replace('\\)', ')')
+                if text.strip():
+                    blocks.append(text)
+            return '\n'.join(blocks)[:65536]
+        except Exception:
+            return ''
 
     def _extract_text(self, mime_type: str, data: bytes) -> str | None:
         """Extract indexable plain text from file content."""
-        if mime_type.split(";")[0].strip() not in self._TEXT_MIMES:
+        mime = mime_type.split(";")[0].strip()
+        if mime not in self._TEXT_MIMES:
             return None
+        if mime == "application/pdf":
+            text = self._pdf_extract_text(data)
+            return text or None
         try:
             text = data.decode("utf-8", errors="replace")
-            return text[:65536]  # cap at 64 KB for FTS index
+            # Strip HTML tags for html mime
+            if mime in ("text/html", "application/xml", "text/xml"):
+                import re as _re
+                text = _re.sub(r'<[^>]+>', ' ', text)
+                text = _re.sub(r'\s+', ' ', text).strip()
+            return text[:65536]
         except Exception:
             return None
+
+    @staticmethod
+    def _chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
+        """Split text into overlapping word-count chunks."""
+        if not text:
+            return []
+        words = text.split()
+        if not words:
+            return []
+        chunks: list[str] = []
+        step = max(1, chunk_size - overlap)
+        i = 0
+        while i < len(words):
+            chunk_words = words[i : i + chunk_size]
+            chunks.append(' '.join(chunk_words))
+            i += step
+        return chunks
+
+    def _ingest_chunks(self, conn: Any, obj_id: str, org: str,
+                       project_id: str | None, text: str) -> None:
+        """Chunk text and insert into knowledge_chunks + knowledge_fts."""
+        conn.execute("DELETE FROM knowledge_fts WHERE object_id=?", (obj_id,))
+        conn.execute("DELETE FROM knowledge_chunks WHERE object_id=?", (obj_id,))
+        chunks = self._chunk_text(text, self._CHUNK_SIZE, self._CHUNK_OVERLAP)
+        now = utc_now()
+        for idx, chunk in enumerate(chunks):
+            chunk_id = str(uuid.uuid4())
+            token_count = len(chunk.split())
+            conn.execute(
+                "INSERT INTO knowledge_chunks (id,organization_id,object_id,project_id,"
+                "chunk_index,chunk_text,token_count,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (chunk_id, org, obj_id, project_id, idx, chunk, token_count, now),
+            )
+            conn.execute(
+                "INSERT INTO knowledge_fts (chunk_id,object_id,project_id,chunk_text)"
+                " VALUES (?,?,?,?)",
+                (chunk_id, obj_id, project_id or '', chunk),
+            )
 
     def _fts_index(self, conn: Any, obj_id: str, name: str, description: str,
                    extracted_text: str | None, tags: list[str]) -> None:
@@ -1983,11 +2065,14 @@ class WorkspaceStore:
                  description, json.dumps(tags_list), created_by, now, now),
             )
             self._fts_index(conn, obj_id, name, description, extracted_text, tags_list)
+            if extracted_text:
+                self._ingest_chunks(conn, obj_id, org, project_id, extracted_text)
         return {
             "id": obj_id, "name": name, "mimeType": mime_type, "sizeBytes": len(data),
             "scanResult": scan_result, "safePreview": safe_preview,
             "versionNumber": version_number, "parentId": parent_id,
-            "hasText": extracted_text is not None, "createdAt": now,
+            "hasText": extracted_text is not None, "chunkCount": len(self._chunk_text(extracted_text or '', self._CHUNK_SIZE, self._CHUNK_OVERLAP)),
+            "createdAt": now,
         }
 
     def get_object(self, org: str, obj_id: str) -> tuple[dict[str, Any], bytes] | None:
@@ -2011,11 +2096,64 @@ class WorkspaceStore:
                 return False
             conn.execute("DELETE FROM objects WHERE id=? AND organization_id=?", (obj_id, org))
             conn.execute("DELETE FROM objects_fts WHERE obj_id=?", (obj_id,))
+            conn.execute("DELETE FROM knowledge_fts WHERE object_id=?", (obj_id,))
+            conn.execute("DELETE FROM knowledge_chunks WHERE object_id=?", (obj_id,))
         try:
             (self._objects_dir / row["storage_path"]).unlink(missing_ok=True)
         except OSError:
             pass
         return True
+
+    def search_knowledge(self, org: str, query: str,
+                         project_id: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        """BM25-ranked chunk search across knowledge_fts."""
+        if not query.strip():
+            return []
+        fts_query = ' OR '.join(
+            f'"{word}"' for word in query.split()[:8] if len(word) > 1
+        ) or f'"{query}"'
+        with self._connect() as conn:
+            where = "kf.object_id IN (SELECT id FROM objects WHERE organization_id=?)"
+            params: list[Any] = [org]
+            if project_id:
+                where += " AND kf.project_id=?"
+                params.append(project_id)
+            params.append(fts_query)
+            params.append(limit)
+            rows = conn.execute(
+                f"SELECT kf.chunk_id, kf.object_id, kf.project_id, kf.chunk_text, "
+                f"o.name AS object_name, o.mime_type, o.project_id AS obj_project_id, "
+                f"snippet(knowledge_fts,3,'<b>','</b>','…',30) AS snippet, "
+                f"rank "
+                f"FROM knowledge_fts kf "
+                f"JOIN objects o ON o.id=kf.object_id "
+                f"WHERE {where} AND knowledge_fts MATCH ? "
+                f"ORDER BY rank LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def rebuild_knowledge_index(self, org: str) -> dict[str, int]:
+        """Reprocess all text-extractable objects and rebuild chunk index."""
+        rebuilt = 0
+        skipped = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, project_id, name, mime_type, storage_path, extracted_text "
+                "FROM objects WHERE organization_id=? AND extracted_text IS NOT NULL",
+                (org,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    text = row["extracted_text"]
+                    if text:
+                        self._ingest_chunks(conn, row["id"], org, row["project_id"], text)
+                        rebuilt += 1
+                    else:
+                        skipped += 1
+                except Exception:
+                    skipped += 1
+        return {"rebuilt": rebuilt, "skipped": skipped}
 
     def get_storage_stats(self, org: str) -> dict[str, Any]:
         with self._connect() as conn:
@@ -3488,6 +3626,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             approvals = self.store.list_ai_approvals(self.organization_id, status_filter)
             self._json(HTTPStatus.OK, {"approvals": approvals})
             return
+        # Knowledge search: GET /api/v1/knowledge/search?q=&projectId=&limit=
+        if path == "/api/v1/knowledge/search":
+            if not self._require_permission("projectRead"): return
+            q = self.query_params.get("q", [""])[0].strip()
+            project_id = self.query_params.get("projectId", [None])[0]
+            limit = min(int(self.query_params.get("limit", ["10"])[0]), 50)
+            self._json(HTTPStatus.OK, {"results": self.store.search_knowledge(self.organization_id, q, project_id, limit)})
+            return
         # Service history: GET /api/v1/assets/:id/service, GET /api/v1/assets/:id/configs
         if path.startswith("/api/v1/assets/") and parts[-1] == "service":
             if not self._require_permission("projectRead"): return
@@ -4168,6 +4314,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             ctx = self.session_context or {}
             self.store.delete_comment(self.organization_id, parts[5], ctx.get("userId"))
             self._json(HTTPStatus.OK, {"ok": True})
+            return
+        # Knowledge index rebuild: POST /api/v1/knowledge/rebuild
+        if path == "/api/v1/knowledge/rebuild":
+            if not self._require_permission("adminPanel"): return
+            result = self.store.rebuild_knowledge_index(self.organization_id)
+            self._json(HTTPStatus.OK, result)
             return
         # Asset delete: POST /api/v1/assets/:id/delete
         if path.startswith("/api/v1/assets/") and parts[-1] == "delete":
