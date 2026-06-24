@@ -227,6 +227,65 @@
         </dialog>
       </section>
 
+      <!-- Conflict Queue -->
+      <section class="detail-section" id="conflictQueueSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">СИНХРОНИЗАЦИЯ</p><h2>Очередь конфликтов <span id="conflictBadge" class="status-badge status-badge-danger" style="display:none;margin-left:6px"></span></h2></div>
+          <button class="button ghost" id="refreshConflictsBtn" type="button">Обновить</button>
+        </div>
+        <div id="conflictList" style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+          <p style="color:var(--text-secondary);font-size:14px">Конфликтов нет — все данные синхронизированы.</p>
+        </div>
+      </section>
+
+      <!-- Time Tracking / Utilization -->
+      <section class="detail-section" id="timeTrackingSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">УЧЁТ ВРЕМЕНИ</p><h2>Загрузка сотрудников</h2></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="utilizationDays" style="padding:5px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+              <option value="7">Неделя</option>
+              <option value="30" selected>Месяц</option>
+              <option value="90">Квартал</option>
+            </select>
+            <button class="button ghost" id="logTimeBtn" type="button">＋ Записать время</button>
+          </div>
+        </div>
+        <div id="utilizationList" style="display:flex;flex-direction:column;gap:12px;margin-top:8px"></div>
+        <div id="recentSessionsList" style="margin-top:20px">
+          <h3 style="font-size:14px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">Последние сессии</h3>
+          <div id="sessionsTable"></div>
+        </div>
+      </section>
+
+      <!-- Log Time Dialog -->
+      <dialog id="logTimeDialog">
+        <form method="dialog">
+          <h2 style="margin:0 0 16px">Записать время</h2>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <label style="font-size:13px;font-weight:600">Сотрудник
+              <select id="logMemberId" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)"></select>
+            </label>
+            <label style="font-size:13px;font-weight:600">Проект
+              <select id="logProjectId" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)"></select>
+            </label>
+            <label style="font-size:13px;font-weight:600">Дата и время начала
+              <input id="logStartedAt" type="datetime-local" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box">
+            </label>
+            <label style="font-size:13px;font-weight:600">Продолжительность (мин)
+              <input id="logDurationMin" type="number" min="1" max="1440" value="60" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box">
+            </label>
+            <label style="font-size:13px;font-weight:600">Заметки
+              <textarea id="logNotes" rows="3" style="display:block;width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);resize:vertical;box-sizing:border-box"></textarea>
+            </label>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+            <button class="button ghost" type="button" id="cancelLogTimeBtn">Отмена</button>
+            <button class="button primary" type="button" id="submitLogTimeBtn">Сохранить</button>
+          </div>
+        </form>
+      </dialog>
+
       <section class="detail-section" id="teamSection" data-permission="adminPanel">
         <div class="detail-section-title">
           <div><p class="eyebrow">КОМАНДА</p><h2>Сотрудники и ресурсы</h2></div>

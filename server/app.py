@@ -2439,6 +2439,115 @@ class WorkspaceStore:
             result.append(d)
         return result
 
+    # ── Time Tracking ────────────────────────────────────────────────────────
+
+    def start_session(self, org: str, member_id: str, project_id: str,
+                      work_type_id: str | None = None, notes: str = "") -> dict[str, Any]:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM team_members WHERE id=? AND organization_id=?", (member_id, org)).fetchone():
+                raise LookupError("Team member not found")
+            # Close any open session for this member first
+            open_sess = conn.execute(
+                "SELECT id FROM time_sessions WHERE member_id=? AND ended_at IS NULL", (member_id,)
+            ).fetchone()
+            if open_sess:
+                now_end = utc_now()
+                conn.execute("UPDATE time_sessions SET ended_at=?,updated_at=? WHERE id=?",
+                             (now_end, now_end, open_sess["id"]))
+            sess_id = str(uuid.uuid4())
+            now = utc_now()
+            conn.execute(
+                "INSERT INTO time_sessions (id,organization_id,member_id,project_id,work_type_id,"
+                "started_at,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (sess_id, org, member_id, project_id, work_type_id, now, notes[:500], now, now),
+            )
+        return {"id": sess_id, "memberId": member_id, "projectId": project_id, "startedAt": now, "status": "open"}
+
+    def end_session(self, org: str, session_id: str, notes: str = "") -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM time_sessions WHERE id=? AND organization_id=?", (session_id, org)
+            ).fetchone()
+            if not row: raise LookupError("Session not found")
+            if row["ended_at"]: raise ValueError("Session already ended")
+            now = utc_now()
+            started = datetime.fromisoformat(row["started_at"])
+            duration = max(1, int((datetime.fromisoformat(now) - started).total_seconds() / 60))
+            conn.execute(
+                "UPDATE time_sessions SET ended_at=?,duration_min=?,notes=?,updated_at=? WHERE id=?",
+                (now, duration, notes[:500] or row["notes"], now, session_id),
+            )
+            updated = conn.execute("SELECT * FROM time_sessions WHERE id=?", (session_id,)).fetchone()
+        return dict(updated)
+
+    def log_time(self, org: str, member_id: str, project_id: str,
+                 duration_min: int, started_at: str, notes: str = "",
+                 work_type_id: str | None = None) -> dict[str, Any]:
+        """Manually log a completed time block."""
+        if duration_min < 1 or duration_min > 1440:
+            raise ValueError("duration_min must be between 1 and 1440")
+        sess_id = str(uuid.uuid4())
+        now = utc_now()
+        ended_at = started_at  # same minute — manual entry
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM team_members WHERE id=? AND organization_id=?", (member_id, org)).fetchone():
+                raise LookupError("Team member not found")
+            conn.execute(
+                "INSERT INTO time_sessions (id,organization_id,member_id,project_id,work_type_id,"
+                "started_at,ended_at,duration_min,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (sess_id, org, member_id, project_id, work_type_id,
+                 started_at, ended_at, duration_min, notes[:500], now, now),
+            )
+        return {"id": sess_id, "memberId": member_id, "projectId": project_id,
+                "durationMin": duration_min, "startedAt": started_at, "loggedAt": now}
+
+    def list_time_sessions(self, org: str, member_id: str | None = None,
+                           project_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            where = ["t.organization_id=?"]
+            params: list[Any] = [org]
+            if member_id: where.append("t.member_id=?"); params.append(member_id)
+            if project_id: where.append("t.project_id=?"); params.append(project_id)
+            params.append(limit)
+            rows = conn.execute(
+                f"SELECT t.*, m.name as member_name FROM time_sessions t "
+                f"JOIN team_members m ON m.id=t.member_id "
+                f"WHERE {' AND '.join(where)} ORDER BY t.started_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_member_utilization(self, org: str, days: int = 30) -> list[dict[str, Any]]:
+        """Per-member total hours and project breakdown for the last N days."""
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT m.id, m.name, m.trade, m.availability, "
+                "COUNT(t.id) as session_count, "
+                "COALESCE(SUM(t.duration_min),0) as total_min "
+                "FROM team_members m "
+                "LEFT JOIN time_sessions t ON t.member_id=m.id AND t.started_at>=? AND t.organization_id=? "
+                "WHERE m.organization_id=? "
+                "GROUP BY m.id ORDER BY total_min DESC",
+                (since, org, org),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["totalHours"] = round(d["total_min"] / 60, 1)
+            result.append(d)
+        return result
+
+    def approve_session(self, org: str, session_id: str, approver_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM time_sessions WHERE id=? AND organization_id=?", (session_id, org)).fetchone()
+            if not row: raise LookupError("Session not found")
+            now = utc_now()
+            conn.execute("UPDATE time_sessions SET approved=1,approved_by=?,updated_at=? WHERE id=?",
+                         (approver_id, now, session_id))
+            updated = conn.execute("SELECT * FROM time_sessions WHERE id=?", (session_id,)).fetchone()
+        return dict(updated)
+
     # ── Privacy Controls ─────────────────────────────────────────────────────
 
     _DEFAULT_PURPOSES: list[tuple[str, int]] = [
@@ -3142,6 +3251,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             approvals = self.store.list_ai_approvals(self.organization_id, status_filter)
             self._json(HTTPStatus.OK, {"approvals": approvals})
             return
+        # Time tracking: GET /api/v1/time, GET /api/v1/time/utilization
+        if path == "/api/v1/time":
+            if not self._require_permission("projectRead"): return
+            member_id = self.query_params.get("memberId", [None])[0]
+            project_id = self.query_params.get("projectId", [None])[0]
+            limit = min(int(self.query_params.get("limit", ["100"])[0]), 500)
+            self._json(HTTPStatus.OK, {"sessions": self.store.list_time_sessions(self.organization_id, member_id, project_id, limit)})
+            return
+        if path == "/api/v1/time/utilization":
+            if not self._require_permission("projectRead"): return
+            days = min(int(self.query_params.get("days", ["30"])[0]), 365)
+            self._json(HTTPStatus.OK, {"utilization": self.store.get_member_utilization(self.organization_id, days)})
+            return
         # Team members: GET /api/v1/team, GET /api/v1/team/:id
         if path == "/api/v1/team":
             if not self._require_permission("projectRead"): return
@@ -3515,6 +3637,63 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED,self.store.record_compute_node(self.organization_id,parts[4],payload))
             except (ValueError,json.JSONDecodeError) as error:
                 self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        # Time tracking
+        if path == "/api/v1/time/log":
+            if not self._require_permission("fieldProgress"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                uid = (self.session_context or {}).get("userId", "")
+                result = self.store.log_time(self.organization_id,
+                    payload.get("memberId", uid or ""),
+                    payload.get("projectId",""),
+                    int(payload.get("durationMin", 0)),
+                    payload.get("startedAt", utc_now()),
+                    payload.get("notes",""),
+                    payload.get("workTypeId"),
+                )
+                self._json(HTTPStatus.CREATED, {"session": result})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        if path == "/api/v1/time/start":
+            if not self._require_permission("fieldProgress"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                result = self.store.start_session(self.organization_id,
+                    payload.get("memberId",""), payload.get("projectId",""),
+                    payload.get("workTypeId"), payload.get("notes",""))
+                self._json(HTTPStatus.CREATED, {"session": result})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/time/") and parts[-1] == "end":
+            if not self._require_permission("fieldProgress"): return
+            session_id = parts[-2]
+            try:
+                payload = self._read_json()
+                result = self.store.end_session(self.organization_id, session_id,
+                    payload.get("notes","") if isinstance(payload, dict) else "")
+                self._json(HTTPStatus.OK, {"session": result})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/time/") and parts[-1] == "approve":
+            if not self._require_permission("projectManage"): return
+            session_id = parts[-2]
+            try:
+                uid = (self.session_context or {}).get("userId","")
+                if not uid: self._error(HTTPStatus.UNAUTHORIZED, "auth_required", "Must be authenticated"); return
+                result = self.store.approve_session(self.organization_id, session_id, uid)
+                self._json(HTTPStatus.OK, {"session": result})
+            except (LookupError, ValueError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
             return
         # Team members CRUD
         if path == "/api/v1/team":

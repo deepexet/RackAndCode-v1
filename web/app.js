@@ -7,6 +7,7 @@ const LEGACY_UNIT_OUTBOX_KEYS = ['fieldos.unit-outbox.v1'];
 const WRITE_OUTBOX_KEY = 'rackpilot.write-outbox.v1';
 const PROJECTS_CACHE_KEY = 'rackpilot.projects-cache.v1';
 const SYNC_CURSOR_KEY = 'rackpilot.sync-cursor.v1';
+const CONFLICT_QUEUE_KEY = 'rackpilot.conflicts.v1';
 const ROLE_KEY = 'rackpilot.role-preview.v1';
 const ORGANIZATION_ID = 'local-dev';
 const state = loadState();
@@ -53,10 +54,14 @@ async function _flushWriteOutbox() {
         headers: { ...entry.headers, ...apiHeaders() },
         body: entry.body ?? undefined,
       });
-      if (resp.ok || resp.status === 409) {
+      if (resp.ok) {
         _writeOutbox.shift();
         flushed++;
-        if (resp.status === 409) toast(`Конфликт при синхронизации: ${entry.label} — сервер принял свои данные`);
+      } else if (resp.status === 409) {
+        let serverPayload = null;
+        try { serverPayload = await resp.json(); } catch { /* ignore */ }
+        _addConflict(_writeOutbox.shift(), serverPayload);
+        flushed++;
       } else {
         entry.retries = (entry.retries || 0) + 1;
         if (entry.retries >= 5) { _writeOutbox.shift(); flushed++; toast(`Не удалось синхронизировать: ${entry.label}`); }
@@ -103,6 +108,47 @@ function _updateOfflineBanner() {
   const metric = document.getElementById('metricPending');
   if (card) card.style.display = total > 0 || isOffline ? '' : 'none';
   if (metric) metric.textContent = total;
+}
+
+// ── Conflict queue ────────────────────────────────────────────────────────
+let _conflictQueue = _loadConflictQueue();
+
+function _loadConflictQueue() {
+  try { return JSON.parse(localStorage.getItem(CONFLICT_QUEUE_KEY) || '[]'); } catch { return []; }
+}
+function _saveConflictQueue() {
+  localStorage.setItem(CONFLICT_QUEUE_KEY, JSON.stringify(_conflictQueue));
+}
+function _addConflict(entry, serverPayload) {
+  _conflictQueue.push({
+    id: crypto.randomUUID(),
+    entry,          // original queued write
+    serverPayload,  // server response body
+    detectedAt: new Date().toISOString(),
+    resolution: null,  // 'retry'|'discard'|'server'
+  });
+  _saveConflictQueue();
+  _updateConflictBadge();
+}
+function _resolveConflict(conflictId, resolution) {
+  const idx = _conflictQueue.findIndex(c => c.id === conflictId);
+  if (idx < 0) return;
+  const conflict = _conflictQueue[idx];
+  if (resolution === 'retry') {
+    // Re-enqueue the original write with an updated version
+    const entry = { ...conflict.entry, retries: 0, id: crypto.randomUUID() };
+    _writeOutbox.push(entry);
+    _saveWriteOutbox();
+  }
+  _conflictQueue.splice(idx, 1);
+  _saveConflictQueue();
+  _updateConflictBadge();
+  if (resolution === 'retry') _flushWriteOutbox();
+}
+function _updateConflictBadge() {
+  const badge = document.getElementById('conflictBadge');
+  const count = _conflictQueue.length;
+  if (badge) { badge.textContent = count > 0 ? String(count) : ''; badge.style.display = count > 0 ? '' : 'none'; }
 }
 
 // ── Sync cursor & projects cache ─────────────────────────────────────────
@@ -591,7 +637,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -1447,6 +1493,163 @@ async function hydrateAIApprovals(statusFilter) {
 function setupAIApprovals() {
   const filter = document.getElementById('approvalStatusFilter');
   if (filter) filter.addEventListener('change', () => hydrateAIApprovals(filter.value));
+}
+
+// ── Time Tracking ──────────────────────────────────────────────────────────
+const HOURS_COLOR = (h) => h >= 8 ? 'var(--accent-red,#e05353)' : h >= 6 ? 'var(--accent-yellow,#e09800)' : 'var(--accent,#4f8ef7)';
+
+async function hydrateTimeTracking() {
+  const days = document.getElementById('utilizationDays')?.value || 30;
+  const listEl = document.getElementById('utilizationList');
+  const sessEl = document.getElementById('sessionsTable');
+  if (!listEl) return;
+  try {
+    const [utilRes, sessRes] = await Promise.all([
+      fetch(`/api/v1/time/utilization?days=${days}`, { headers: apiHeaders({ Accept: 'application/json' }) }),
+      fetch('/api/v1/time?limit=20', { headers: apiHeaders({ Accept: 'application/json' }) }),
+    ]);
+    const { utilization = [] } = utilRes.ok ? await utilRes.json() : {};
+    const { sessions = [] } = sessRes.ok ? await sessRes.json() : {};
+    // Utilization cards
+    if (!utilization.length) {
+      listEl.innerHTML = '<p class="empty-copy">Нет данных за выбранный период.</p>';
+    } else {
+      const maxH = Math.max(...utilization.map(u => u.totalHours), 1);
+      listEl.innerHTML = utilization.map(u => {
+        const pct = Math.round((u.totalHours / maxH) * 100);
+        const color = HOURS_COLOR(u.totalHours);
+        const avBadge = u.availability === 'available' ? 'var(--accent-green,#2bb46a)' : u.availability === 'off' ? 'var(--text-secondary)' : 'var(--accent-yellow,#e09800)';
+        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div>
+              <span style="font-weight:600;font-size:14px">${u.name}</span>
+              <span style="font-size:12px;color:var(--text-secondary);margin-left:8px">${u.trade||''}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-size:12px;font-weight:600;color:${color}">${u.totalHours}ч / ${u.session_count} сессий</span>
+              <span style="width:8px;height:8px;border-radius:50%;background:${avBadge};display:inline-block"></span>
+            </div>
+          </div>
+          <div style="background:var(--bg);border-radius:4px;height:6px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:${color};border-radius:4px;transition:width .3s"></div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+    // Recent sessions table
+    if (!sessEl) return;
+    if (!sessions.length) {
+      sessEl.innerHTML = '<p class="empty-copy">Нет сессий.</p>';
+    } else {
+      sessEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="color:var(--text-secondary);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:6px 10px">Сотрудник</th><th style="padding:6px 10px">Проект</th>
+          <th style="padding:6px 10px">Начало</th><th style="padding:6px 10px">Мин.</th>
+          <th style="padding:6px 10px">Заметки</th><th style="padding:6px 10px">Статус</th>
+        </tr></thead>
+        <tbody>${sessions.map(s => {
+          const dt = s.started_at ? new Date(s.started_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+          const proj = projects.find(p => p.id === s.project_id);
+          const status = !s.ended_at ? '<span style="color:var(--accent)">● Активна</span>' : s.approved ? '<span style="color:var(--accent-green,#2bb46a)">✓ Одобрена</span>' : '<span style="color:var(--text-secondary)">Завершена</span>';
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:8px 10px">${s.member_name||'—'}</td>
+            <td style="padding:8px 10px">${proj?.name||s.project_id||'—'}</td>
+            <td style="padding:8px 10px">${dt}</td>
+            <td style="padding:8px 10px">${s.duration_min||'—'}</td>
+            <td style="padding:8px 10px">${s.notes||''}</td>
+            <td style="padding:8px 10px">${status}</td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+    }
+  } catch(e) { if (listEl) listEl.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+function setupTimeTracking() {
+  const daysEl = document.getElementById('utilizationDays');
+  if (daysEl) daysEl.addEventListener('change', hydrateTimeTracking);
+
+  const logBtn = document.getElementById('logTimeBtn');
+  const dialog = document.getElementById('logTimeDialog');
+  const cancelBtn = document.getElementById('cancelLogTimeBtn');
+  const submitBtn = document.getElementById('submitLogTimeBtn');
+  if (!logBtn || !dialog) return;
+
+  logBtn.addEventListener('click', () => {
+    // Populate member select
+    const memberSel = document.getElementById('logMemberId');
+    const projSel = document.getElementById('logProjectId');
+    if (memberSel) {
+      fetch('/api/v1/team', { headers: apiHeaders({ Accept: 'application/json' }) })
+        .then(r => r.json())
+        .then(({ members = [] }) => {
+          memberSel.innerHTML = members.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+        }).catch(() => {});
+    }
+    if (projSel) {
+      projSel.innerHTML = projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    }
+    const dtEl = document.getElementById('logStartedAt');
+    if (dtEl) dtEl.value = new Date().toISOString().slice(0,16);
+    dialog.showModal();
+  });
+
+  cancelBtn?.addEventListener('click', () => dialog.close());
+
+  submitBtn?.addEventListener('click', async () => {
+    const memberId = document.getElementById('logMemberId')?.value || '';
+    const projectId = document.getElementById('logProjectId')?.value || '';
+    const startedAt = document.getElementById('logStartedAt')?.value || new Date().toISOString();
+    const durationMin = parseInt(document.getElementById('logDurationMin')?.value || '60', 10);
+    const notes = document.getElementById('logNotes')?.value || '';
+    try {
+      await apiFetchOrQueue('/api/v1/time/log', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key': createIdempotencyKey()}),
+        body: JSON.stringify({ memberId, projectId, startedAt: new Date(startedAt).toISOString(), durationMin, notes }),
+      }, { label: 'Запись времени', method: 'POST', path: '/api/v1/time/log', body: {memberId, projectId, durationMin, notes} });
+      dialog.close();
+      toast('Время записано');
+      hydrateTimeTracking();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+}
+
+// ── Conflict Queue UI ──────────────────────────────────────────────────────
+function hydrateConflictQueue() {
+  const listEl = document.getElementById('conflictList');
+  _updateConflictBadge();
+  if (!listEl) return;
+  if (!_conflictQueue.length) {
+    listEl.innerHTML = '<p style="color:var(--text-secondary);font-size:14px">Конфликтов нет — все данные синхронизированы.</p>';
+    return;
+  }
+  listEl.innerHTML = _conflictQueue.map(c => {
+    const dt = new Date(c.detectedAt).toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const label = c.entry?.label || c.entry?.path || 'Запись';
+    const method = c.entry?.method || 'WRITE';
+    const serverMsg = c.serverPayload?.error?.message || JSON.stringify(c.serverPayload||{}).slice(0,120);
+    return `<div style="background:var(--surface);border:1px solid #e05353;border-radius:10px;padding:14px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <span style="font-weight:600;font-size:14px">${label}</span>
+          <span style="font-size:11px;color:var(--text-secondary);margin-left:8px">${method} · ${dt}</span>
+        </div>
+        <span style="font-size:11px;font-weight:700;color:#e05353;background:rgba(224,83,83,.12);padding:2px 8px;border-radius:4px">КОНФЛИКТ</span>
+      </div>
+      <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px">Сервер вернул 409: ${escapeHtml(serverMsg)}</p>
+      <div style="display:flex;gap:8px">
+        <button class="button ghost" style="font-size:12px" onclick="_resolveConflict('${c.id}','retry'); hydrateConflictQueue()">Повторить</button>
+        <button class="button ghost" style="font-size:12px" onclick="_resolveConflict('${c.id}','server'); hydrateConflictQueue()">Принять сервер</button>
+        <button class="button ghost" style="font-size:12px;color:#e05353" onclick="_resolveConflict('${c.id}','discard'); hydrateConflictQueue()">Отклонить</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function setupConflictQueue() {
+  const refreshBtn = document.getElementById('refreshConflictsBtn');
+  if (refreshBtn) refreshBtn.addEventListener('click', hydrateConflictQueue);
+  hydrateConflictQueue();  // initial paint with localStorage data
 }
 
 // ── Retrieval Eval ───────────────────────────────────────────────────────
@@ -3313,6 +3516,8 @@ async function setup() {
   setupAIApprovals();
   setupCodexDialog();
   setupTeam();
+  setupTimeTracking();
+  setupConflictQueue();
   applyRolePolicy();
   renderRoute();
   render();
