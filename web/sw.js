@@ -1,57 +1,47 @@
-// RackPilot Service Worker — cache-first for shell, network-first for API
-const CACHE = 'rackpilot-shell-v1';
-const SHELL = ['/', '/app.js', '/styles.css', '/data.js', '/manifest.json'];
-const API_PREFIX = '/api/';
+// RackPilot PWA Service Worker — offline shell + API passthrough
+const CACHE_NAME = 'rackpilot-shell-v1';
+const SHELL_ASSETS = ['/', '/app.js', '/styles.css', '/manifest.json'];
 
-self.addEventListener('install', ev => {
-  ev.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())
+self.addEventListener('install', event => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(cache => cache.addAll(SHELL_ASSETS))
   );
+  self.skipWaiting();
 });
 
-self.addEventListener('activate', ev => {
-  ev.waitUntil(
+self.addEventListener('activate', event => {
+  event.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
+      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+    )
   );
+  self.clients.claim();
 });
 
-self.addEventListener('fetch', ev => {
-  const { request } = ev;
+self.addEventListener('fetch', event => {
+  const { request } = event;
   const url = new URL(request.url);
 
-  // API: network-first, no cache
-  if (url.pathname.startsWith(API_PREFIX)) {
-    ev.respondWith(
-      fetch(request).catch(() =>
-        new Response(JSON.stringify({ error: { message: 'Offline' } }), {
-          status: 503, headers: { 'Content-Type': 'application/json' }
-        })
-      )
-    );
+  // API requests: network-first, no cache
+  if (url.pathname.startsWith('/api/')) {
+    event.respondWith(fetch(request).catch(() =>
+      new Response(JSON.stringify({ error: { code: 'offline', message: 'Offline — request queued' } }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } })
+    ));
     return;
   }
 
-  // Shell: cache-first, fall back to '/'
-  ev.respondWith(
+  // Shell assets: cache-first
+  event.respondWith(
     caches.match(request).then(cached => {
       if (cached) return cached;
-      return fetch(request).then(resp => {
-        if (resp.ok && request.method === 'GET') {
-          caches.open(CACHE).then(c => c.put(request, resp.clone()));
+      return fetch(request).then(response => {
+        if (response.ok && request.method === 'GET') {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
         }
-        return resp;
+        return response;
       }).catch(() => caches.match('/'));
     })
   );
-});
-
-// Background sync for write outbox (triggered by app when online)
-self.addEventListener('sync', ev => {
-  if (ev.tag === 'rackpilot-outbox') {
-    ev.waitUntil(self.clients.matchAll().then(clients =>
-      clients.forEach(c => c.postMessage({ type: 'FLUSH_OUTBOX' }))
-    ));
-  }
 });

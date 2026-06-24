@@ -50,7 +50,7 @@ _RUNBOOKS = [
         "severity": "warning",
         "steps": [
             "Check /api/v1/admin/api-metrics for top slow routes",
-            "Run EXPLAIN QUERY PLAN on the top route's SQL (sqlite3 data/fieldos.db)",
+            "Run EXPLAIN QUERY PLAN on the top route's SQL (sqlite3 data/rackpilot.db)",
             "Verify no full table scans: add index if needed and run migration",
             "Restart server process if latency persists after index fix",
         ],
@@ -62,7 +62,7 @@ _RUNBOOKS = [
         "severity": "warning",
         "steps": [
             "Identify which status codes are elevated in /api/v1/admin/api-metrics",
-            "For 5xx: check server log for tracebacks (grep ERROR fieldos.log)",
+            "For 5xx: check server log for tracebacks (grep ERROR rackpilot.log)",
             "For 4xx spike: check if a client is sending malformed requests",
             "Roll back last migration if errors started after schema change",
         ],
@@ -74,7 +74,7 @@ _RUNBOOKS = [
         "severity": "critical",
         "steps": [
             "STOP all write traffic: bring server offline",
-            "Run: sqlite3 data/fieldos.db 'PRAGMA integrity_check'",
+            "Run: sqlite3 data/rackpilot.db 'PRAGMA integrity_check'",
             "If corrupt: restore latest backup from data/backups/",
             "Verify backup: python3 -c \"import sqlite3; sqlite3.connect('data/fieldos.db').execute('SELECT 1')\"",
             "Restart server, verify migration runner completes cleanly",
@@ -267,7 +267,7 @@ def discover_lan_ip() -> str | None:
 
 
 def ensure_agent_token(db_path: Path) -> tuple[str, Path | None]:
-    configured=os.getenv("RACKPILOT_AGENT_TOKEN") or os.getenv("FIELDOS_AGENT_TOKEN")
+    configured=os.getenv("RACKPILOT_AGENT_TOKEN") or os.getenv("RACKPILOT_AGENT_TOKEN")
     if configured: return configured,None
     token_path=db_path.parent / "agent.token"
     if token_path.exists(): return token_path.read_text(encoding="utf-8").strip(),token_path
@@ -1680,6 +1680,79 @@ class WorkspaceStore:
                               f"{'Создан' if action_name == 'created' else 'Обновлён'} отчёт — {loc_name} · {wt_name} · {percent}%")
         return result
 
+    def get_progress_history(self, organization_id: str, project_id: str, from_date: str, to_date: str) -> dict[str, Any]:
+        """Daily progress snapshots from daily_progress_entries + unit completions per day."""
+        project = self.get_project(organization_id, project_id)
+        if project is None:
+            raise LookupError("Project not found")
+
+        with self._connect() as conn:
+            # Daily progress entries grouped by work_date
+            dp_rows = conn.execute(
+                """SELECT work_date, work_type_id, location_id, action_id, percent_complete
+                   FROM daily_progress_entries
+                   WHERE organization_id=? AND project_id=? AND work_date BETWEEN ? AND ?
+                   ORDER BY work_date, work_type_id""",
+                (organization_id, project_id, from_date, to_date),
+            ).fetchall()
+
+            # Unit completions grouped by work_date + work_type
+            uc_rows = conn.execute(
+                """SELECT u.completed_on AS work_date, u.work_type_id,
+                          COUNT(*) AS completed_count
+                   FROM unit_progress u
+                   JOIN project_units pu ON pu.id = u.unit_id
+                   WHERE u.organization_id=? AND u.project_id=?
+                     AND u.status='complete' AND u.completed_on BETWEEN ? AND ?
+                   GROUP BY u.completed_on, u.work_type_id
+                   ORDER BY u.completed_on""",
+                (organization_id, project_id, from_date, to_date),
+            ).fetchall()
+
+        # Build work type name map
+        wt_names = {wt["id"]: wt["name"] for wt in project.get("workTypes", [])}
+        wt_colors = {wt["id"]: wt["color"] for wt in project.get("workTypes", [])}
+
+        # Aggregate by date
+        by_date: dict[str, dict[str, Any]] = {}
+        for row in dp_rows:
+            d = row["work_date"]
+            if d not in by_date:
+                by_date[d] = {"date": d, "progressByType": {}, "unitsByType": {}}
+            wt = row["work_type_id"]
+            entry = by_date[d]["progressByType"].setdefault(wt, {"sum": 0, "count": 0})
+            entry["sum"] += row["percent_complete"]
+            entry["count"] += 1
+
+        for row in uc_rows:
+            d = row["work_date"]
+            if d not in by_date:
+                by_date[d] = {"date": d, "progressByType": {}, "unitsByType": {}}
+            by_date[d]["unitsByType"][row["work_type_id"]] = row["completed_count"]
+
+        # Compute average per type per day
+        days = []
+        for d in sorted(by_date.keys()):
+            entry = by_date[d]
+            type_summaries = []
+            for wt_id, agg in entry["progressByType"].items():
+                avg = round(agg["sum"] / agg["count"]) if agg["count"] else 0
+                type_summaries.append({
+                    "id": wt_id, "name": wt_names.get(wt_id, wt_id),
+                    "color": wt_colors.get(wt_id, "#7c8cff"),
+                    "avgPercent": avg, "entryCount": agg["count"],
+                    "unitsDone": entry["unitsByType"].get(wt_id, 0),
+                })
+            days.append({"date": d, "byType": type_summaries})
+
+        return {
+            "projectId": project_id,
+            "projectName": project["name"],
+            "from": from_date,
+            "to": to_date,
+            "days": days,
+        }
+
     def calculate_critical_path(self, organization_id: str, project_id: str) -> dict[str, Any]:
         """Longest dependency chain and per-item slack using topological DP."""
         with self._connect() as conn:
@@ -2342,6 +2415,36 @@ class WorkspaceStore:
             "createdAt": now,
         }
 
+    _ALLOWED_ENTITY_TYPES = {"asset", "location", "project", "door", "room"}
+
+    def link_object_to_entity(self, org: str, obj_id: str, entity_type: str | None, entity_id: str | None) -> dict[str, Any]:
+        """Attach or detach a document to/from an entity (asset/location/project/door/room)."""
+        if entity_type is not None and entity_type not in self._ALLOWED_ENTITY_TYPES:
+            raise ValueError(f"Invalid entity type; allowed: {', '.join(self._ALLOWED_ENTITY_TYPES)}")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, name FROM objects WHERE id=? AND organization_id=?", (obj_id, org)
+            ).fetchone()
+            if row is None:
+                raise LookupError("Document not found")
+            conn.execute(
+                "UPDATE objects SET linked_entity_type=?, linked_entity_id=?, updated_at=? WHERE id=?",
+                (entity_type, entity_id, utc_now(), obj_id),
+            )
+        return {"id": obj_id, "linkedEntityType": entity_type, "linkedEntityId": entity_id}
+
+    def list_objects_for_entity(self, org: str, entity_type: str, entity_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, name, mime_type, size_bytes, version_number, linked_entity_type, linked_entity_id, created_at "
+                "FROM objects WHERE organization_id=? AND linked_entity_type=? AND linked_entity_id=? "
+                "AND parent_id IS NULL ORDER BY created_at DESC",
+                (org, entity_type, entity_id),
+            ).fetchall()
+        return [{"id": r["id"], "name": r["name"], "mimeType": r["mime_type"],
+                 "sizeBytes": r["size_bytes"], "versionNumber": r["version_number"],
+                 "createdAt": r["created_at"]} for r in rows]
+
     def get_object(self, org: str, obj_id: str) -> tuple[dict[str, Any], bytes] | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -2529,7 +2632,7 @@ class WorkspaceStore:
                     skipped += 1
         return {"rebuilt": rebuilt, "skipped": skipped}
 
-    _EXPORT_SCHEMA = "rackpilot-project-export/1"
+    _EXPORT_SCHEMA = "rackpilot-project-export/2"
 
     def export_project(self, org: str, project_id: str) -> dict[str, Any]:
         with self._connect() as conn:
@@ -2557,6 +2660,22 @@ class WorkspaceStore:
                 "quantity,status FROM daily_updates "
                 "WHERE organization_id=? AND project_id=?", (org, project_id)
             ).fetchall()
+            assets = conn.execute(
+                "SELECT id,name,asset_type,make,model,serial,status,location_id,building_id,attributes "
+                "FROM assets WHERE organization_id=? AND project_id=?", (org, project_id)
+            ).fetchall()
+            issues = conn.execute(
+                "SELECT id,title,description,severity,status,location_id,created_at "
+                "FROM project_issues WHERE organization_id=? AND project_id=?", (org, project_id)
+            ).fetchall()
+            comments = conn.execute(
+                "SELECT id,parent_id,author_id,author_name,body,created_at "
+                "FROM project_comments WHERE organization_id=? AND project_id=?", (org, project_id)
+            ).fetchall()
+            assignments = conn.execute(
+                "SELECT member_id,role_on_project,assigned_at "
+                "FROM project_assignments WHERE organization_id=? AND project_id=?", (org, project_id)
+            ).fetchall()
 
         def _rows(rows: list) -> list[dict]:
             return [dict(r) for r in rows]
@@ -2569,10 +2688,15 @@ class WorkspaceStore:
             "locations": _rows(locations),
             "work_items": _rows(work_items),
             "daily_updates": _rows(daily),
+            "assets": _rows(assets),
+            "issues": _rows(issues),
+            "comments": _rows(comments),
+            "assignments": _rows(assignments),
         }
 
     def import_project(self, org: str, payload: dict[str, Any], actor_id: str) -> dict[str, Any]:
-        if payload.get("schema") != self._EXPORT_SCHEMA:
+        _COMPAT_SCHEMAS = {"rackpilot-project-export/1", "rackpilot-project-export/2"}
+        if payload.get("schema") not in _COMPAT_SCHEMAS:
             raise ValueError("unsupported export schema")
         proj = payload.get("project", {})
         if not isinstance(proj, dict) or not proj.get("id"):
@@ -3376,6 +3500,279 @@ Rules:
                 ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_project_analytics(self, org: str, project_id: str) -> dict[str, Any]:
+        """Velocity, risk, burndown, and milestone analytics for a project."""
+        with self._connect() as conn:
+            proj = conn.execute(
+                "SELECT id, name, status, start_date, target_end_date FROM projects "
+                "WHERE organization_id=? AND id=?", (org, project_id)
+            ).fetchone()
+            if proj is None:
+                raise LookupError(f"project {project_id} not found")
+
+            # Work item totals
+            totals = conn.execute(
+                "SELECT status, COUNT(*) as cnt, SUM(COALESCE(estimated_minutes,0)) as est_mins "
+                "FROM work_items WHERE organization_id=? AND project_id=? GROUP BY status",
+                (org, project_id),
+            ).fetchall()
+            by_status: dict[str, int] = {}
+            est_by_status: dict[str, float] = {}
+            for row in totals:
+                by_status[row["status"]] = row["cnt"]
+                est_by_status[row["status"]] = row["est_mins"] or 0
+
+            total_items = sum(by_status.values())
+            done_items = by_status.get("done", 0)
+            blocked_items = by_status.get("blocked", 0)
+            overdue_items = 0
+
+            today = utc_now()[:10]
+            # Items past due date
+            if today:
+                overdue_items = conn.execute(
+                    "SELECT COUNT(*) FROM work_items "
+                    "WHERE organization_id=? AND project_id=? AND status!='done' "
+                    "AND due_date IS NOT NULL AND due_date < ?",
+                    (org, project_id, today),
+                ).fetchone()[0]
+
+            # Velocity: daily updates in last 14 days
+            vel_rows = conn.execute(
+                "SELECT work_date, COUNT(*) as events, "
+                "AVG(CASE WHEN completion_percent IS NOT NULL THEN completion_percent END) as avg_pct "
+                "FROM daily_updates WHERE organization_id=? AND project_id=? "
+                "AND work_date >= date('now','-14 days') GROUP BY work_date ORDER BY work_date",
+                (org, project_id),
+            ).fetchall()
+            velocity_days = [{"date": r["work_date"], "events": r["events"],
+                              "avgPct": round(r["avg_pct"] or 0, 1)} for r in vel_rows]
+
+            avg_events_per_day = (
+                sum(d["events"] for d in velocity_days) / len(velocity_days)
+                if velocity_days else 0
+            )
+
+            # Open issues by severity
+            issue_rows = conn.execute(
+                "SELECT severity, COUNT(*) as cnt FROM project_issues "
+                "WHERE organization_id=? AND project_id=? AND status='open' GROUP BY severity",
+                (org, project_id),
+            ).fetchall()
+            issues_by_severity = {r["severity"]: r["cnt"] for r in issue_rows}
+            critical_issues = issues_by_severity.get("critical", 0) + issues_by_severity.get("high", 0)
+
+            # Risk score: 0-100
+            risk = 0
+            if total_items:
+                risk += round(blocked_items / total_items * 30)  # blocked ratio
+                risk += round(overdue_items / total_items * 30)  # overdue ratio
+            risk += min(20, critical_issues * 5)  # critical issues
+            if avg_events_per_day < 1 and total_items and done_items < total_items:
+                risk += 20  # low velocity
+            risk = min(100, risk)
+
+            # Progress percentage
+            pct_done = round(done_items / total_items * 100) if total_items else 0
+
+            # Estimated completion days
+            remaining = total_items - done_items
+            est_days = round(remaining / avg_events_per_day) if avg_events_per_day > 0 else None
+
+        return {
+            "projectId": project_id,
+            "projectName": dict(proj)["name"],
+            "totalItems": total_items,
+            "doneItems": done_items,
+            "blockedItems": blocked_items,
+            "overdueItems": overdue_items,
+            "pctDone": pct_done,
+            "byStatus": by_status,
+            "riskScore": risk,
+            "riskLevel": "critical" if risk >= 70 else "high" if risk >= 40 else "medium" if risk >= 20 else "low",
+            "avgEventsPerDay": round(avg_events_per_day, 2),
+            "estimatedDaysRemaining": est_days,
+            "velocityDays": velocity_days,
+            "issuesBySeverity": issues_by_severity,
+            "criticalIssues": critical_issues,
+        }
+
+    # ── Connectors ──────────────────────────────────────────────────────────
+
+    _CONNECTOR_TYPES = {"jobber", "ms365", "google_workspace", "webhook", "custom"}
+
+    def list_connectors(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id,connector_type,name,enabled,status,last_sync_at,last_error,created_at "
+                "FROM connectors WHERE organization_id=? ORDER BY name",
+                (org,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_connector(self, org: str, connector_type: str, name: str,
+                          config: dict[str, Any], enabled: bool = True) -> dict[str, Any]:
+        if connector_type not in self._CONNECTOR_TYPES:
+            raise ValueError(f"Unknown connector type; allowed: {', '.join(self._CONNECTOR_TYPES)}")
+        now = utc_now()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM connectors WHERE organization_id=? AND connector_type=?",
+                (org, connector_type),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE connectors SET name=?,enabled=?,config=?,status='active',updated_at=? WHERE id=?",
+                    (name, 1 if enabled else 0, json.dumps(config), now, existing["id"]),
+                )
+                rec_id = existing["id"]
+            else:
+                rec_id = str(uuid.uuid4())
+                conn.execute(
+                    "INSERT INTO connectors (id,organization_id,connector_type,name,enabled,config,status,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (rec_id, org, connector_type, name, 1 if enabled else 0, json.dumps(config), "active", now, now),
+                )
+            row = conn.execute("SELECT * FROM connectors WHERE id=?", (rec_id,)).fetchone()
+        return dict(row)
+
+    def queue_webhook_event(self, org: str, connector_id: str | None,
+                             event_type: str, payload: dict[str, Any]) -> str:
+        event_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO webhook_events (id,organization_id,connector_id,event_type,payload,status,attempts,next_attempt_at,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (event_id, org, connector_id, event_type, json.dumps(payload), "pending", 0, now, now),
+            )
+        return event_id
+
+    # ── Compute Jobs ──────────────────────────────────────────────────────────
+
+    _JOB_TYPES = {"ai_inference", "report_gen", "index_rebuild", "custom"}
+
+    def submit_compute_job(self, org: str, job_type: str, payload: dict[str, Any],
+                           priority: int = 5, created_by: str | None = None) -> dict[str, Any]:
+        if job_type not in self._JOB_TYPES:
+            raise ValueError(f"Unknown job_type; allowed: {', '.join(self._JOB_TYPES)}")
+        job_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO compute_jobs (id,organization_id,job_type,payload,status,priority,created_by,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (job_id, org, job_type, json.dumps(payload), "pending", max(1, min(10, priority)),
+                 created_by, now, now),
+            )
+        return {"id": job_id, "status": "pending", "jobType": job_type, "priority": priority}
+
+    def dispatch_compute_job(self, org: str, job_id: str, node_id: str) -> dict[str, Any]:
+        now = utc_now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM compute_jobs WHERE id=? AND organization_id=? AND status='pending'",
+                (job_id, org)
+            ).fetchone()
+            if row is None:
+                raise LookupError("Job not found or already dispatched")
+            conn.execute(
+                "UPDATE compute_jobs SET status='dispatched',node_id=?,dispatched_at=?,updated_at=? WHERE id=?",
+                (node_id, now, now, job_id),
+            )
+            return dict(conn.execute("SELECT * FROM compute_jobs WHERE id=?", (job_id,)).fetchone())
+
+    def complete_compute_job(self, org: str, job_id: str, result: dict[str, Any] | None = None,
+                              error: str | None = None) -> None:
+        now = utc_now()
+        status = "failed" if error else "done"
+        result_json = json.dumps({"error": error} if error else (result or {}))
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE compute_jobs SET status=?,completed_at=?,result=?,updated_at=? WHERE id=? AND organization_id=?",
+                (status, now, result_json, now, job_id, org),
+            )
+
+    def list_compute_jobs(self, org: str, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM compute_jobs WHERE organization_id=? AND status=? "
+                    "ORDER BY priority, created_at DESC LIMIT ?",
+                    (org, status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM compute_jobs WHERE organization_id=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (org, limit),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Service Monitors ──────────────────────────────────────────────────────
+
+    def create_monitor(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        mon_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO service_monitors (id,organization_id,asset_id,name,check_type,target,"
+                "port,path,interval_seconds,enabled,last_status,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,1,'unknown',?,?)",
+                (mon_id, org, payload.get("assetId"),
+                 payload.get("name",""), payload.get("checkType","ping"),
+                 payload.get("target",""), payload.get("port"), payload.get("path"),
+                 int(payload.get("intervalSeconds",60)), now, now),
+            )
+            row = conn.execute("SELECT * FROM service_monitors WHERE id=?", (mon_id,)).fetchone()
+        return dict(row)
+
+    def list_monitors(self, org: str, asset_id: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if asset_id:
+                rows = conn.execute(
+                    "SELECT * FROM service_monitors WHERE organization_id=? AND asset_id=? ORDER BY name",
+                    (org, asset_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM service_monitors WHERE organization_id=? ORDER BY name",
+                    (org,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def record_monitor_event(self, org: str, monitor_id: str, status: str,
+                              latency_ms: float | None = None, error: str | None = None) -> None:
+        now = utc_now()
+        event_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO monitor_events (id,monitor_id,organization_id,status,latency_ms,error_message,checked_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (event_id, monitor_id, org, status, latency_ms, error, now),
+            )
+            conn.execute(
+                "UPDATE service_monitors SET last_check_at=?,last_status=?,last_latency_ms=?,updated_at=? WHERE id=?",
+                (now, status, latency_ms, now, monitor_id),
+            )
+
+    def list_monitor_events(self, org: str, monitor_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM monitor_events WHERE monitor_id=? AND organization_id=? "
+                "ORDER BY checked_at DESC LIMIT ?",
+                (monitor_id, org, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_monitor(self, org: str, monitor_id: str) -> None:
+        with self._connect() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM service_monitors WHERE id=? AND organization_id=?", (monitor_id, org)
+            ).fetchone():
+                raise LookupError("Monitor not found")
+            conn.execute("DELETE FROM service_monitors WHERE id=?", (monitor_id,))
+
     def get_storage_stats(self, org: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
@@ -3797,6 +4194,47 @@ Rules:
             except Exception: d["skills"] = []
             result.append(d)
         return result
+
+    # ── Team Presence ─────────────────────────────────────────────────────────
+
+    def upsert_presence(self, org: str, project_id: str, member_id: str, presence_date: str,
+                        check_in: str | None = None, check_out: str | None = None,
+                        notes: str = "", recorded_by: str | None = None) -> dict[str, Any]:
+        now = utc_now()
+        rec_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM team_presence WHERE organization_id=? AND project_id=? AND member_id=? AND presence_date=?",
+                (org, project_id, member_id, presence_date),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE team_presence SET check_in=?,check_out=?,notes=?,updated_at=? WHERE id=?",
+                    (check_in, check_out, notes, now, existing["id"]),
+                )
+                rec_id = existing["id"]
+            else:
+                conn.execute(
+                    "INSERT INTO team_presence (id,organization_id,project_id,member_id,presence_date,check_in,check_out,notes,recorded_by,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (rec_id, org, project_id, member_id, presence_date, check_in, check_out, notes, recorded_by, now, now),
+                )
+        return {"id": rec_id, "projectId": project_id, "memberId": member_id, "presenceDate": presence_date,
+                "checkIn": check_in, "checkOut": check_out}
+
+    def list_presence(self, org: str, project_id: str, from_date: str, to_date: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT p.*, m.name as member_name, m.trade "
+                "FROM team_presence p JOIN team_members m ON m.id=p.member_id "
+                "WHERE p.organization_id=? AND p.project_id=? AND p.presence_date BETWEEN ? AND ? "
+                "ORDER BY p.presence_date DESC, m.name",
+                (org, project_id, from_date, to_date),
+            ).fetchall()
+        return [{"id": r["id"], "memberId": r["member_id"], "memberName": r["member_name"],
+                 "trade": r["trade"], "presenceDate": r["presence_date"],
+                 "checkIn": r["check_in"], "checkOut": r["check_out"], "notes": r["notes"]}
+                for r in rows]
 
     # ── Digital Twin ─────────────────────────────────────────────────────────
 
@@ -5043,6 +5481,123 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except LookupError as err:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
             return
+        # Project progress history: GET /api/v1/projects/:id/progress-history?from=YYYY-MM-DD&to=YYYY-MM-DD
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "progress-history":
+            if not self._require_permission("projectRead"): return
+            qs = self._params()
+            to_date = qs.get("to", utc_now()[:10])
+            from_date = qs.get("from", "")
+            if not from_date:
+                # default: 30 days back
+                from_dt = datetime.fromisoformat(to_date) - timedelta(days=30)
+                from_date = from_dt.strftime("%Y-%m-%d")
+            project_id = parts[3]
+            try:
+                result = self.store.get_progress_history(self.organization_id, project_id, from_date, to_date)
+                self._json(HTTPStatus.OK, result)
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        # Project CSV report: GET /api/v1/projects/:id/report.csv
+        if path_depth == 5 and parts[4] == "report.csv" and parts[2] == "projects":
+            if not self._require_permission("projectRead"): return
+            try:
+                project_id = parts[3]
+                with self.store._connect() as conn:
+                    proj = conn.execute(
+                        "SELECT name, code FROM projects WHERE organization_id=? AND id=?",
+                        (self.organization_id, project_id)
+                    ).fetchone()
+                    if not proj:
+                        self._error(HTTPStatus.NOT_FOUND, "not_found", "Project not found"); return
+                    items = conn.execute(
+                        "SELECT wi.code, wi.title, wi.status, wi.priority, wi.due_date, "
+                        "wi.estimated_minutes, wi.actual_minutes, wt.name as work_type, "
+                        "pl.name as location "
+                        "FROM work_items wi "
+                        "LEFT JOIN work_types wt ON wt.id=wi.work_type_id "
+                        "LEFT JOIN project_locations pl ON pl.organization_id=wi.organization_id AND pl.id=wi.location_id "
+                        "WHERE wi.organization_id=? AND wi.project_id=? ORDER BY wi.code",
+                        (self.organization_id, project_id)
+                    ).fetchall()
+                import csv, io
+                out = io.StringIO()
+                writer = csv.writer(out)
+                writer.writerow(["Code","Title","Status","Priority","WorkType","Location","DueDate","EstMins","ActMins"])
+                for row in items:
+                    writer.writerow([row["code"],row["title"],row["status"],row["priority"],
+                                     row["work_type"] or "",row["location"] or "",
+                                     row["due_date"] or "",row["estimated_minutes"] or "",
+                                     row["actual_minutes"] or ""])
+                filename = f"rp-{proj['code'] or project_id}-{utc_now()[:10]}.csv"
+                csv_bytes = out.getvalue().encode("utf-8-sig")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(csv_bytes)))
+                self.end_headers()
+                self.wfile.write(csv_bytes)
+            except Exception as err:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "export_failed", str(err))
+            return
+        # Project analytics: GET /api/v1/projects/:id/analytics
+        if path_depth == 5 and parts[4] == "analytics" and parts[2] == "projects":
+            if not self._require_permission("projectRead"): return
+            try:
+                data = self.store.get_project_analytics(self.organization_id, parts[3])
+                self._json(HTTPStatus.OK, data)
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        # Team presence: GET /api/v1/projects/:id/presence?from=&to=
+        if path_depth == 5 and parts[4] == "presence" and parts[2] == "projects":
+            if not self._require_permission("projectRead"): return
+            qs = self._params()
+            project_id = parts[3]
+            today = utc_now()[:10]
+            from_date = qs.get("from", today)
+            to_date = qs.get("to", today)
+            records = self.store.list_presence(self.organization_id, project_id, from_date, to_date)
+            self._json(HTTPStatus.OK, {"presence": records})
+            return
+        # Connectors: GET /api/v1/admin/connectors
+        if path == "/api/v1/admin/connectors":
+            if not self._require_permission("adminPanel"): return
+            connectors = self.store.list_connectors(self.organization_id)
+            self._json(HTTPStatus.OK, {"connectors": connectors})
+            return
+        # Compute jobs: GET /api/v1/admin/compute-jobs
+        if path == "/api/v1/admin/compute-jobs":
+            if not self._require_permission("adminPanel"): return
+            qs = self._params()
+            jobs = self.store.list_compute_jobs(self.organization_id, qs.get("status"), int(qs.get("limit","50")))
+            self._json(HTTPStatus.OK, {"jobs": jobs})
+            return
+        # Service monitors: GET /api/v1/admin/monitors
+        if path == "/api/v1/admin/monitors":
+            if not self._require_permission("adminPanel"): return
+            qs = self._params()
+            monitors = self.store.list_monitors(self.organization_id, qs.get("assetId"))
+            self._json(HTTPStatus.OK, {"monitors": monitors})
+            return
+        # Monitor events: GET /api/v1/admin/monitors/:id/events
+        if path.startswith("/api/v1/admin/monitors/") and parts[-1] == "events":
+            if not self._require_permission("adminPanel"): return
+            events = self.store.list_monitor_events(self.organization_id, parts[-2])
+            self._json(HTTPStatus.OK, {"events": events})
+            return
+        # Documents for entity: GET /api/v1/objects/by-entity?type=asset&id=xxx
+        if path == "/api/v1/objects/by-entity":
+            if not self._require_permission("projectRead"): return
+            qs = self._params()
+            entity_type = qs.get("type", "")
+            entity_id = qs.get("id", "")
+            if not entity_type or not entity_id:
+                self._error(HTTPStatus.BAD_REQUEST, "missing_params", "type and id are required")
+                return
+            docs = self.store.list_objects_for_entity(self.organization_id, entity_type, entity_id)
+            self._json(HTTPStatus.OK, {"documents": docs})
+            return
         # Daily log note: GET /api/v1/projects/:id/daily-log-note?date=YYYY-MM-DD
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "daily-log-note":
             if not self._require_permission("projectRead"): return
@@ -5595,6 +6150,110 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.store.remove_assignment(self.organization_id, parts[3], parts[5])
             self._json(HTTPStatus.OK, {"ok": True})
             return
+        # Team presence: POST /api/v1/projects/:id/presence
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "presence":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                result = self.store.upsert_presence(
+                    self.organization_id, parts[3],
+                    payload.get("memberId",""),
+                    payload.get("presenceDate", utc_now()[:10]),
+                    payload.get("checkIn"), payload.get("checkOut"),
+                    payload.get("notes",""),
+                    payload.get("recordedBy"),
+                )
+                self._json(HTTPStatus.CREATED, {"presence": result})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        # Connectors: POST /api/v1/admin/connectors
+        if path == "/api/v1/admin/connectors":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                result = self.store.upsert_connector(
+                    self.organization_id,
+                    payload.get("connectorType", "custom"),
+                    payload.get("name", ""),
+                    payload.get("config", {}),
+                    payload.get("enabled", True),
+                )
+                self._json(HTTPStatus.OK, {"connector": result})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        # Submit compute job: POST /api/v1/admin/compute-jobs
+        if path == "/api/v1/admin/compute-jobs":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                user_id = self.session_context.get("user_id", "unknown")
+                result = self.store.submit_compute_job(
+                    self.organization_id, payload.get("jobType","custom"),
+                    payload.get("payload",{}), int(payload.get("priority",5)), user_id,
+                )
+                self._json(HTTPStatus.CREATED, result)
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        # Compute job dispatch/complete: POST /api/v1/admin/compute-jobs/:id/dispatch|complete
+        if path.startswith("/api/v1/admin/compute-jobs/") and parts[-1] in ("dispatch","complete"):
+            if not self._require_permission("adminPanel"): return
+            job_id = parts[-2]
+            action = parts[-1]
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                if action == "dispatch":
+                    result = self.store.dispatch_compute_job(self.organization_id, job_id, payload.get("nodeId",""))
+                    self._json(HTTPStatus.OK, result)
+                else:
+                    self.store.complete_compute_job(self.organization_id, job_id, payload.get("result"), payload.get("error"))
+                    self._json(HTTPStatus.OK, {"ok": True})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        # Service monitors: POST /api/v1/admin/monitors
+        if path == "/api/v1/admin/monitors":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                result = self.store.create_monitor(self.organization_id, payload)
+                self._json(HTTPStatus.CREATED, {"monitor": result})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        # Monitor delete: POST /api/v1/admin/monitors/:id/delete
+        if path.startswith("/api/v1/admin/monitors/") and parts[-1] == "delete":
+            if not self._require_permission("adminPanel"): return
+            try:
+                self.store.delete_monitor(self.organization_id, parts[-2])
+                self._json(HTTPStatus.OK, {"ok": True})
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        # Monitor event record: POST /api/v1/admin/monitors/:id/event
+        if path.startswith("/api/v1/admin/monitors/") and parts[-1] == "event":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                self.store.record_monitor_event(
+                    self.organization_id, parts[-2],
+                    payload.get("status","unknown"),
+                    payload.get("latencyMs"), payload.get("error"),
+                )
+                self._json(HTTPStatus.CREATED, {"ok": True})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
         # AI approval queue
         if path == "/api/v1/admin/ai-approvals":
             if not self._require_permission("adminPanel"): return
@@ -5685,6 +6344,20 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.store.delete_comment(self.organization_id, parts[5], ctx.get("userId"))
             self._json(HTTPStatus.OK, {"ok": True})
             return
+        # Object entity link: POST /api/v1/objects/:id/link
+        if path.startswith("/api/v1/objects/") and parts[-1] == "link":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                entity_type = payload.get("entityType") or None
+                entity_id = payload.get("entityId") or None
+                result = self.store.link_object_to_entity(self.organization_id, parts[-2], entity_type, entity_id)
+                self._json(HTTPStatus.OK, result)
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
         # Object access policy: POST /api/v1/objects/:id/policy
         if path.startswith("/api/v1/objects/") and parts[-1] == "policy":
             if not self._require_permission("adminPanel"): return
@@ -5731,6 +6404,33 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, result)
             except RuntimeError as err:
                 self._error(HTTPStatus.BAD_GATEWAY, "agent_error", str(err))
+            return
+        # Analytics agent: POST /api/v1/ai/agents/analytics
+        if path == "/api/v1/ai/agents/analytics":
+            if not self._require_permission("projectRead"): return
+            try:
+                body = json.loads(self.body)
+                project_id = str(body.get("project_id", "")).strip()
+                if not project_id:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_project_id", "project_id required"); return
+                analytics = self.store.get_project_analytics(self.organization_id, project_id)
+                ai = self.store.ai_gateway(self.organization_id)
+                prompt = (
+                    f"You are a project analytics assistant. Analyze this project data and give a 3-5 sentence "
+                    f"summary of health, risks, and recommendations:\n{json.dumps(analytics, default=str)}"
+                )
+                narrative = ai.complete(prompt, max_tokens=256) if ai else (
+                    f"Project is {analytics['pctDone']}% complete. Risk level: {analytics['riskLevel']}. "
+                    f"Avg velocity: {analytics['avgEventsPerDay']} events/day."
+                )
+                self._json(HTTPStatus.OK, {
+                    "projectId": project_id,
+                    "analytics": analytics,
+                    "narrative": narrative,
+                })
+            except (LookupError, RuntimeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_GATEWAY
+                self._error(status, "agent_error", str(err))
             return
         # Field note parse: POST /api/v1/ai/parse-note
         if path == "/api/v1/ai/parse-note":
@@ -6449,7 +7149,7 @@ def main() -> None:
     store = WorkspaceStore(args.db)
     initial_password = store.ensure_initial_credentials()
     if initial_password:
-        LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.fieldos", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))
+        LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.rackpilot", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))
     # Ensure privacy defaults for all orgs
     try:
         with store._connect() as _conn:

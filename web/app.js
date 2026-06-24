@@ -640,7 +640,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -2680,7 +2680,10 @@ function renderAssetGraph(container, assets, relationships) {
 
 // ── Digital Twin ───────────────────────────────────────────────────────────
 const ASSET_STATUS_COLOR = { planned:'var(--text-secondary)', installed:'var(--accent)', active:'var(--accent-green,#2bb46a)', faulty:'#e05353', decommissioned:'var(--text-secondary)' };
-const ASSET_TYPE_ICON = { device:'🖥', panel:'📟', port:'🔌', cable:'🔗', circuit:'⚡', sensor:'📡', other:'📦' };
+const ASSET_TYPE_ICON = {
+  device:'🖥', panel:'📟', port:'🔌', cable:'🔗', circuit:'⚡', sensor:'📡', other:'📦',
+  door:'🚪', camera:'📷', reader:'🪪', controller:'🎛', network:'🌐', rack:'🗄'
+};
 
 async function hydrateDigitalTwin(projectId) {
   const section = document.getElementById('projectDigitalTwinSection');
@@ -2746,11 +2749,41 @@ async function hydrateDigitalTwin(projectId) {
           ${rels ? `<div style="font-size:11px;color:var(--accent);margin-top:2px">⇌ ${rels} связей</div>` : ''}
         </div>
         <div style="display:flex;gap:6px">
+          <button class="button ghost" style="font-size:11px;padding:4px 8px" data-asset-docs="${a.id}" title="Связанные документы">📎</button>
           <button class="button ghost" style="font-size:11px;padding:4px 8px" data-edit-asset="${a.id}">Ред.</button>
           <button class="button ghost" style="font-size:11px;padding:4px 8px;color:#e05353" data-delete-asset="${a.id}">✕</button>
         </div>
+      </div>
+      <div id="asset-docs-${a.id}" style="display:none;padding:8px 12px 4px 48px;border-top:1px solid var(--border)">
+        <p style="font-size:11px;color:var(--text-muted);margin:0 0 4px">Загрузка документов…</p>
       </div>`;
     }).join('');
+    // Wire asset document panels
+    listEl.querySelectorAll('[data-asset-docs]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const assetId = btn.dataset.assetDocs;
+        const panel = document.getElementById(`asset-docs-${assetId}`);
+        if (!panel) return;
+        const wasOpen = panel.style.display !== 'none';
+        panel.style.display = wasOpen ? 'none' : '';
+        if (!wasOpen) {
+          try {
+            const r = await apiFetch(`/api/v1/objects/by-entity?type=asset&id=${encodeURIComponent(assetId)}`, { headers: apiHeaders({ Accept: 'application/json' }) });
+            const { documents = [] } = await r.json();
+            if (!documents.length) {
+              panel.innerHTML = '<p style="font-size:11px;color:var(--text-muted);margin:0">Нет привязанных документов.</p>';
+            } else {
+              panel.innerHTML = documents.map(d =>
+                `<div style="font-size:12px;display:flex;align-items:center;gap:8px;padding:3px 0">
+                  <span>📄</span><span>${escapeHtml(d.name)}</span>
+                  <small style="color:var(--text-muted)">${(d.sizeBytes/1024).toFixed(1)} KB</small>
+                </div>`
+              ).join('');
+            }
+          } catch(e) { panel.innerHTML = `<p style="color:#e05353;font-size:11px;margin:0">${e.message}</p>`; }
+        }
+      });
+    });
     // Wire delete/edit buttons
     listEl.querySelectorAll('[data-delete-asset]').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -2897,6 +2930,101 @@ function setupDigitalTwin(projectId) {
 }
 
 // ── Conflict Queue UI ──────────────────────────────────────────────────────
+async function hydrateConnectors() {
+  const list = document.getElementById('connectorsList');
+  const addBtn = document.getElementById('addConnectorBtn');
+  if (!list) return;
+  const CONNECTOR_ICON = { jobber:'🔧', ms365:'🏢', google_workspace:'📊', webhook:'🔗', custom:'⚙' };
+  const STATUS_COLOR = { active:'#3bb969', error:'#e05353', unconfigured:'#778195', paused:'#f5a623' };
+  try {
+    const r = await apiFetch('/api/v1/admin/connectors');
+    const { connectors = [] } = await r.json();
+    if (!connectors.length) {
+      list.innerHTML = '<p class="empty-copy">Нет коннекторов. Добавьте первый с помощью кнопки выше.</p>';
+    } else {
+      list.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">${connectors.map(c => `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:13px 16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:20px">${CONNECTOR_ICON[c.connector_type]||'⚙'}</span>
+            <strong style="font-size:13px">${escapeHtml(c.name)}</strong>
+          </div>
+          <p style="font-size:11px;color:var(--text-muted);margin:0 0 6px;text-transform:uppercase">${escapeHtml(c.connector_type)}</p>
+          <span style="font-size:10px;font-weight:700;color:${STATUS_COLOR[c.status]||'#778'};text-transform:uppercase">${c.status}</span>
+          ${c.last_sync_at ? `<small style="display:block;font-size:10px;color:var(--text-muted);margin-top:3px">Синхр: ${c.last_sync_at.slice(0,16).replace('T',' ')}</small>` : ''}
+        </div>`).join('')}</div>`;
+    }
+  } catch(e) { if (list) list.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+
+  addBtn?.addEventListener('click', async () => {
+    const TYPES = ['jobber','ms365','google_workspace','webhook','custom'];
+    const connectorType = prompt(`Тип коннектора:\n${TYPES.join(', ')}`, 'webhook');
+    if (!connectorType || !TYPES.includes(connectorType)) return;
+    const name = prompt(`Название коннектора (${connectorType}):`);
+    if (!name) return;
+    try {
+      await apiFetch('/api/v1/admin/connectors', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ connectorType, name, config: {}, enabled: true }),
+      });
+      hydrateConnectors();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  }, { once: true });
+}
+
+async function hydrateServiceMonitors() {
+  const list = document.getElementById('monitorList');
+  const addBtn = document.getElementById('addMonitorBtn');
+  if (!list) return;
+  try {
+    const r = await apiFetch('/api/v1/admin/monitors');
+    const { monitors = [] } = await r.json();
+    const STATUS_COLOR = { up:'#3bb969', down:'#e05353', unknown:'#778195' };
+    if (!monitors.length) {
+      list.innerHTML = '<p class="empty-copy">Нет мониторов. Нажмите «＋ Монитор» чтобы добавить.</p>';
+    } else {
+      list.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px">${monitors.map(m => `
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:9px">
+          <span style="width:10px;height:10px;border-radius:50%;background:${STATUS_COLOR[m.last_status]||'#778'};flex-shrink:0"></span>
+          <div style="flex:1;min-width:0">
+            <strong style="font-size:13px">${escapeHtml(m.name)}</strong>
+            <small style="display:block;font-size:11px;color:var(--text-muted)">${escapeHtml(m.check_type.toUpperCase())} · ${escapeHtml(m.target)}${m.port ? ':' + m.port : ''}</small>
+          </div>
+          ${m.last_latency_ms != null ? `<span style="font-size:12px;color:var(--text-secondary)">${Math.round(m.last_latency_ms)}ms</span>` : ''}
+          <span style="font-size:11px;font-weight:700;color:${STATUS_COLOR[m.last_status]||'#778'};text-transform:uppercase">${m.last_status||'unknown'}</span>
+          <button class="button ghost" style="font-size:11px;padding:3px 8px;color:#e05353" data-delete-monitor="${m.id}">✕</button>
+        </div>`).join('')}</div>`;
+      list.querySelectorAll('[data-delete-monitor]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Удалить монитор?')) return;
+          try {
+            await apiFetch(`/api/v1/admin/monitors/${btn.dataset.deleteMonitor}/delete`, {
+              method:'POST', headers:apiHeaders({'Content-Type':'application/json'}), body:'{}'
+            });
+            hydrateServiceMonitors();
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      });
+    }
+  } catch(e) { if (list) list.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+
+  addBtn?.addEventListener('click', async () => {
+    const name = prompt('Название монитора:');
+    if (!name) return;
+    const target = prompt('Target (IP или hostname):');
+    if (!target) return;
+    const checkType = prompt('Тип (ping / tcp / http):', 'ping') || 'ping';
+    try {
+      await apiFetch('/api/v1/admin/monitors', {
+        method:'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ name, target, checkType }),
+      });
+      hydrateServiceMonitors();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  }, { once: true });
+}
+
 function hydrateConflictQueue() {
   const listEl = document.getElementById('conflictList');
   _updateConflictBadge();
@@ -3625,14 +3753,22 @@ function renderProjectDetail() {
   const openIssues = project.issues.filter(value => value.status !== 'resolved');
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
-  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ Экспорт</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis"><article><span>Общий прогресс</span><strong>${project.progress}%</strong></article><article><span>Сегодня обновлено</span><strong>${updatesToday.length}</strong></article><article><span>Открытые проблемы</span><strong>${openIssues.length}</strong></article><article><span>Локации</span><strong>${project.locations.length}</strong></article></section>
-    <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div><button class="button ghost" id="criticalPathBtn" type="button" style="font-size:12px">⛓ Critical path</button></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div><div id="criticalPathPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div></section>
+    <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div><div style="display:flex;gap:8px"><button class="button ghost" id="progressHistoryBtn" type="button" style="font-size:12px">📈 История</button><button class="button ghost" id="criticalPathBtn" type="button" style="font-size:12px">⛓ Critical path</button><button class="button ghost" id="analyticsBtn" type="button" style="font-size:12px">📊 Analytics</button></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div><div id="progressHistoryPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div><div id="criticalPathPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div><div id="analyticsPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div></section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
     <section class="detail-section" id="projectTeamSection">
-      <div class="detail-section-title"><div><p class="eyebrow">КОМАНДА</p><h2>Назначенные сотрудники</h2></div>${canManage ? '<button class="button ghost" id="assignMemberBtn" type="button">＋ Назначить</button>' : ''}</div>
+      <div class="detail-section-title"><div><p class="eyebrow">КОМАНДА</p><h2>Назначенные сотрудники</h2></div><div style="display:flex;gap:6px">${canManage ? '<button class="button ghost" id="assignMemberBtn" type="button">＋ Назначить</button>' : ''}<button class="button ghost" id="presenceToggleBtn" type="button" style="font-size:11px">📍 Присутствие</button></div></div>
       <div id="projectTeamList" style="display:flex;flex-wrap:wrap;gap:8px"><p class="empty-copy" style="font-size:13px">Загрузка…</p></div>
+      <div id="presencePanel" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <input type="date" id="presenceDatePicker" style="padding:5px 9px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          <button class="button ghost" id="presenceRefreshBtn" style="font-size:11px">↺</button>
+          ${canManage ? '<button class="button ghost" id="addPresenceBtn" type="button" style="font-size:11px">＋ Отметить</button>' : ''}
+        </div>
+        <div id="presenceList"><p class="empty-copy" style="font-size:12px">Выберите дату.</p></div>
+      </div>
       ${canManage ? `<dialog id="assignMemberDialog" style="max-width:400px;width:100%">
         <div class="dialog-head"><div><p class="eyebrow">НАЗНАЧЕНИЕ</p><h2>Выбрать сотрудника</h2></div><button class="icon-button" id="closeAssignDialog" type="button">×</button></div>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px">
@@ -3641,6 +3777,16 @@ function renderProjectDetail() {
           <div class="dialog-actions"><span></span><button class="button ghost" id="cancelAssignDialog" type="button">Отмена</button><button class="button primary" id="confirmAssignBtn" type="button">Назначить</button></div>
         </div>
       </dialog>` : ''}
+    </section>
+    <section class="detail-section" id="weeklyPlanSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">WEEKLY PLANNING</p><h2>Недельный план</h2></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="week" id="weekPlanPicker" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          <button class="button ghost" id="weekPlanRefreshBtn" type="button" style="font-size:12px">↺</button>
+        </div>
+      </div>
+      <div id="weekPlanGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:8px"></div>
     </section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div>${canProgress ? '<button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button>' : ''}</div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>
     <section class="detail-section" id="projectObjectsSection"><div class="detail-section-title"><div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Файлы проекта</h2></div><label class="button ghost" style="cursor:pointer">＋ Загрузить<input type="file" id="objectFileInput" multiple style="display:none"></label></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input id="objectsSearchInput" type="search" placeholder="Поиск по файлам…" style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px" autocomplete="off"></div><div id="objectsDropZone" class="objects-drop-zone">Перетащите файлы сюда или нажмите «Загрузить»</div><div id="objectsGrid" class="objects-grid"><p class="empty-copy">Загрузка…</p></div><p id="objectsStorageInfo" style="font-size:11px;color:#445060;margin-top:8px"></p></section>
@@ -3719,6 +3865,115 @@ function renderProjectDetail() {
     } catch(e) { panel.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
   });
 
+  // Weekly planning view
+  const weekPicker = container.querySelector('#weekPlanPicker');
+  const weekGrid = container.querySelector('#weekPlanGrid');
+  if (weekPicker && weekGrid) {
+    // Default to current week
+    const now = new Date();
+    const wYear = now.getFullYear();
+    const wNum = (() => {
+      const d = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+      d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+      return Math.ceil(((d - Date.UTC(d.getUTCFullYear(),0,1)) / 86400000 + 1) / 7);
+    })();
+    weekPicker.value = `${wYear}-W${String(wNum).padStart(2,'0')}`;
+
+    function renderWeekPlan() {
+      const val = weekPicker.value; // "YYYY-Www"
+      if (!val) return;
+      const [yStr, wStr] = val.split('-W');
+      const year = parseInt(yStr), week = parseInt(wStr);
+      // Monday of that week
+      const jan4 = new Date(year, 0, 4);
+      const monday = new Date(jan4.getTime() + (week - 1 - Math.floor((jan4.getDay() + 6) / 7)) * 7 * 86400000);
+      monday.setDate(monday.getDate() - monday.getDay() + 1);
+
+      const days = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'].map((label, i) => {
+        const d = new Date(monday.getTime() + i * 86400000);
+        return { label, date: d.toISOString().slice(0,10) };
+      });
+
+      const workItems = project.workItems || [];
+      weekGrid.innerHTML = days.map(day => {
+        const dayItems = workItems.filter(wi => wi.dueDate === day.date);
+        const isToday = day.date === new Date().toISOString().slice(0,10);
+        return `<div style="background:${isToday?'rgba(79,142,247,.08)':'#0a101a'};border:1px solid ${isToday?'rgba(79,142,247,.3)':'#1e2535'};border-radius:9px;padding:10px;min-height:90px">
+          <p style="margin:0 0 8px;font-size:10px;font-weight:700;color:${isToday?'var(--accent)':'#778398'};letter-spacing:.06em">${day.label} <span style="font-weight:400;opacity:.7">${day.date.slice(5)}</span></p>
+          ${dayItems.length ? dayItems.map(wi => `
+            <div style="padding:5px 7px;margin-bottom:5px;background:rgba(255,255,255,.03);border-left:2px solid ${wi.effectiveStatus==='blocked'?'#e05353':wi.status==='done'?'#3bb969':'#6879ff'};border-radius:3px;font-size:11px;color:var(--text-secondary)">
+              <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(wi.title)}</span>
+              <small style="font-size:9px;color:#556">${wi.effectiveStatus||wi.status}</small>
+            </div>`).join('') : '<p style="color:#334;font-size:11px;margin:0">—</p>'}
+        </div>`;
+      }).join('');
+    }
+
+    renderWeekPlan();
+    weekPicker.addEventListener('change', renderWeekPlan);
+    container.querySelector('#weekPlanRefreshBtn')?.addEventListener('click', renderWeekPlan);
+  }
+
+  container.querySelector('#progressHistoryBtn')?.addEventListener('click', async () => {
+    const panel = container.querySelector('#progressHistoryPanel');
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    panel.innerHTML = '<p style="font-size:12px;color:var(--text-secondary)">Загрузка истории…</p>';
+    try {
+      const to = new Date().toISOString().slice(0,10);
+      const from = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+      const { days = [], projectName = '' } =
+        await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/progress-history?from=${from}&to=${to}`);
+      if (!days.length) {
+        panel.innerHTML = '<p class="empty-copy">Нет данных о прогрессе за последние 30 дней.</p>';
+        return;
+      }
+      // Collect all work types present
+      const typeMap = new Map();
+      days.forEach(d => d.byType.forEach(t => {
+        if (!typeMap.has(t.id)) typeMap.set(t.id, { name: t.name, color: t.color });
+      }));
+      const types = [...typeMap.entries()];
+
+      const W = 560, H = 160, PAD = { l:32, r:12, t:10, b:30 };
+      const dw = (W - PAD.l - PAD.r) / Math.max(days.length - 1, 1);
+
+      const lines = types.map(([tid, tmeta]) => {
+        const pts = days.map((d, i) => {
+          const t = d.byType.find(x => x.id === tid);
+          const y = t ? t.avgPercent : null;
+          return { x: PAD.l + i * dw, y, date: d.date };
+        }).filter(p => p.y !== null);
+        if (pts.length < 2) return '';
+        const d = pts.map((p,i) => `${i===0?'M':'L'}${p.x},${PAD.t + (H - PAD.t - PAD.b) * (1 - p.y/100)}`).join(' ');
+        return `<path d="${d}" fill="none" stroke="${escapeHtml(tmeta.color)}" stroke-width="2" opacity=".8"/>`;
+      }).join('');
+
+      const xLabels = days.filter((_,i) => i === 0 || i === days.length-1 || i % Math.ceil(days.length/5) === 0)
+        .map(d => `<text x="${PAD.l + days.indexOf(d)*dw}" y="${H - 4}" fill="#778398" font-size="9" text-anchor="middle">${d.date.slice(5)}</text>`).join('');
+
+      const legend = types.map(([,t]) =>
+        `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-secondary)"><i style="display:inline-block;width:12px;height:3px;background:${escapeHtml(t.color)};border-radius:2px"></i>${escapeHtml(t.name)}</span>`
+      ).join('');
+
+      panel.innerHTML = `
+        <p style="font-size:10px;font-weight:700;color:var(--accent);margin:0 0 10px;letter-spacing:.08em">ПРОГРЕСС ЗА 30 ДНЕЙ · ${from} → ${to}</p>
+        <svg viewBox="0 0 ${W} ${H}" style="width:100%;overflow:visible">
+          <line x1="${PAD.l}" y1="${PAD.t}" x2="${PAD.l}" y2="${H-PAD.b}" stroke="#2a3447" stroke-width="1"/>
+          <line x1="${PAD.l}" y1="${H-PAD.b}" x2="${W-PAD.r}" y2="${H-PAD.b}" stroke="#2a3447" stroke-width="1"/>
+          ${[0,25,50,75,100].map(v => {
+            const y = PAD.t + (H - PAD.t - PAD.b) * (1 - v/100);
+            return `<line x1="${PAD.l}" y1="${y}" x2="${W-PAD.r}" y2="${y}" stroke="#1e2535" stroke-width="1"/>
+                    <text x="${PAD.l-4}" y="${y+3}" fill="#556" font-size="8" text-anchor="end">${v}</text>`;
+          }).join('')}
+          ${lines}
+          ${xLabels}
+        </svg>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">${legend}</div>`;
+    } catch(e) { panel.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
+  });
+
   container.querySelector('#criticalPathBtn')?.addEventListener('click', async () => {
     const panel = container.querySelector('#criticalPathPanel');
     if (!panel) return;
@@ -3749,6 +4004,56 @@ function renderProjectDetail() {
         ${blocked.length ? `<p style="font-size:12px;margin:12px 0 0;color:#e05353">⛔ ${blocked.length} items blocked by dependencies</p>` : ''}`;
     } catch(e) { panel.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
   });
+  container.querySelector('#analyticsBtn')?.addEventListener('click', async () => {
+    const panel = container.querySelector('#analyticsPanel');
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    panel.innerHTML = '<p style="font-size:12px;color:var(--text-secondary)">Loading analytics…</p>';
+    try {
+      const a = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/analytics`);
+      const riskColor = { low:'#3bb969', medium:'#f5a623', high:'#e05353', critical:'#c0392b' }[a.riskLevel] || '#778';
+      const velMax = Math.max(1, ...a.velocityDays.map(d => d.events));
+      panel.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:14px">
+          <div style="background:#0a101a;border:1px solid #1e2535;border-radius:8px;padding:10px">
+            <p style="font-size:10px;color:#556;margin:0">Выполнено</p>
+            <strong style="font-size:24px;color:var(--accent)">${a.pctDone}%</strong>
+            <small style="font-size:10px;color:#556;display:block">${a.doneItems} / ${a.totalItems} задач</small>
+          </div>
+          <div style="background:#0a101a;border:1px solid #1e2535;border-radius:8px;padding:10px">
+            <p style="font-size:10px;color:#556;margin:0">Risk score</p>
+            <strong style="font-size:24px;color:${riskColor}">${a.riskScore}</strong>
+            <small style="font-size:10px;color:${riskColor};display:block;text-transform:uppercase">${a.riskLevel}</small>
+          </div>
+          <div style="background:#0a101a;border:1px solid #1e2535;border-radius:8px;padding:10px">
+            <p style="font-size:10px;color:#556;margin:0">Velocity</p>
+            <strong style="font-size:24px;color:var(--text)">${a.avgEventsPerDay.toFixed(1)}</strong>
+            <small style="font-size:10px;color:#556;display:block">событий / день</small>
+          </div>
+          <div style="background:#0a101a;border:1px solid #1e2535;border-radius:8px;padding:10px">
+            <p style="font-size:10px;color:#556;margin:0">Осталось дней</p>
+            <strong style="font-size:24px;color:var(--text)">${a.estimatedDaysRemaining ?? '—'}</strong>
+            <small style="font-size:10px;color:#556;display:block">${a.overdueItems ? `${a.overdueItems} просрочено` : ''}${a.blockedItems ? ` · ${a.blockedItems} blocked` : ''}</small>
+          </div>
+        </div>
+        ${a.velocityDays.length ? `
+        <p style="font-size:10px;font-weight:700;color:#556;margin:0 0 6px;letter-spacing:.06em">VELOCITY · 14 DAYS</p>
+        <div style="display:flex;align-items:flex-end;gap:2px;height:50px;margin-bottom:10px">
+          ${a.velocityDays.map(d => `
+            <div title="${d.date}: ${d.events} события" style="flex:1;background:rgba(79,142,247,.55);border-radius:2px 2px 0 0;min-height:3px;height:${Math.round(d.events/velMax*100)}%"></div>
+          `).join('')}
+        </div>` : ''}
+        ${a.criticalIssues > 0 ? `<p style="font-size:12px;color:#e05353;margin:0">⚠ ${a.criticalIssues} критических проблем требует внимания</p>` : ''}`;
+    } catch(e) { panel.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
+  });
+
+  container.querySelector('#exportCsvBtn')?.addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = `/api/v1/projects/${encodeURIComponent(project.id)}/report.csv`;
+    a.download = '';
+    a.click();
+  });
   container.querySelector('#exportProjectBtn')?.addEventListener('click', () => exportProjectData(project.id, project.name));
   container.querySelector('#importProjectInput')?.addEventListener('change', e => {
     if (e.target.files[0]) openProjectImportPreview(e.target.files[0]);
@@ -3769,6 +4074,7 @@ function renderProjectDetail() {
   hydrateProjectActivity(project.id);
   setupProjectTeam(project.id);
   hydrateProjectTeam(project.id);
+  setupPresencePanel(project.id);
 }
 
 // ── Comments & Activity ──────────────────────────────────────────────────────
@@ -3938,6 +4244,73 @@ async function setupProjectTeam(projectId) {
       hydrateProjectTeam(projectId);
     } catch (err) { toast(err.message); }
     finally { confirmBtn.disabled = false; }
+  });
+}
+
+// ── Team Presence ──────────────────────────────────────────────────────────
+
+async function setupPresencePanel(projectId) {
+  const toggleBtn = document.getElementById('presenceToggleBtn');
+  const panel = document.getElementById('presencePanel');
+  const datePicker = document.getElementById('presenceDatePicker');
+  const list = document.getElementById('presenceList');
+  const refreshBtn = document.getElementById('presenceRefreshBtn');
+  const addBtn = document.getElementById('addPresenceBtn');
+  if (!toggleBtn || !panel) return;
+
+  datePicker.value = new Date().toISOString().slice(0,10);
+
+  async function loadPresence() {
+    const date = datePicker.value || new Date().toISOString().slice(0,10);
+    try {
+      const r = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/presence?from=${date}&to=${date}`);
+      const { presence = [] } = await r.json();
+      if (!presence.length) {
+        list.innerHTML = '<p class="empty-copy" style="font-size:12px">Никто не отмечен за этот день.</p>';
+      } else {
+        list.innerHTML = presence.map(p => `
+          <div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--border)">
+            <span style="width:28px;height:28px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">${(p.memberName||'?')[0].toUpperCase()}</span>
+            <div style="flex:1">
+              <strong style="font-size:12px">${escapeHtml(p.memberName)}</strong>
+              <small style="display:block;font-size:10px;color:var(--text-muted)">${escapeHtml(p.trade||'')}${p.checkIn ? ' · ' + p.checkIn.slice(11,16) : ''}${p.checkOut ? ' – ' + p.checkOut.slice(11,16) : ''}</small>
+            </div>
+            ${p.notes ? `<small style="color:var(--text-muted);font-size:11px">${escapeHtml(p.notes)}</small>` : ''}
+          </div>`).join('');
+      }
+    } catch(e) { list.innerHTML = `<p style="color:#e05353;font-size:12px">${e.message}</p>`; }
+  }
+
+  toggleBtn.addEventListener('click', () => {
+    const isOpen = panel.style.display !== 'none';
+    panel.style.display = isOpen ? 'none' : '';
+    if (!isOpen) loadPresence();
+  });
+  datePicker?.addEventListener('change', loadPresence);
+  refreshBtn?.addEventListener('click', loadPresence);
+
+  addBtn?.addEventListener('click', async () => {
+    const members = document.querySelectorAll('#projectTeamList .team-chip');
+    if (!members.length) { toast('Сначала назначьте сотрудников на проект'); return; }
+    const date = datePicker.value || new Date().toISOString().slice(0,10);
+    const name = prompt('Имя сотрудника (из назначенных):');
+    if (!name) return;
+    // find member by name from chips
+    let memberId = null;
+    document.querySelectorAll('#projectTeamList .team-chip').forEach(chip => {
+      if (chip.querySelector('strong')?.textContent.trim().toLowerCase() === name.trim().toLowerCase()) {
+        memberId = chip.dataset.mid;
+      }
+    });
+    if (!memberId) { toast(`Сотрудник "${name}" не найден в команде проекта`); return; }
+    try {
+      await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/presence`, {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key': createIdempotencyKey()}),
+        body: JSON.stringify({ memberId, presenceDate: date }),
+      });
+      loadPresence();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
 }
 
@@ -4905,8 +5278,9 @@ let _pendingProjectImport = null;
 async function openProjectImportPreview(file) {
   try {
     const raw = JSON.parse(await file.text());
-    if (raw.schema !== 'rackpilot-project-export/1') {
-      toast('Неверный формат файла (ожидается rackpilot-project-export/1)');
+    const SUPPORTED_SCHEMAS = ['rackpilot-project-export/1','rackpilot-project-export/2'];
+    if (!SUPPORTED_SCHEMAS.includes(raw.schema)) {
+      toast(`Неверный формат файла (ожидается ${SUPPORTED_SCHEMAS.join(' или ')})`);
       return;
     }
     _pendingProjectImport = raw;
@@ -4921,6 +5295,10 @@ async function openProjectImportPreview(file) {
           <tr><td style="padding:5px 8px;color:var(--text-secondary)">Локации</td><td style="padding:5px 8px">${(raw.locations||[]).length}</td></tr>
           <tr><td style="padding:5px 8px;color:var(--text-secondary)">Work items</td><td style="padding:5px 8px">${(raw.work_items||[]).length}</td></tr>
           <tr><td style="padding:5px 8px;color:var(--text-secondary)">Daily updates</td><td style="padding:5px 8px">${(raw.daily_updates||[]).length}</td></tr>
+          ${(raw.assets||[]).length ? `<tr><td style="padding:5px 8px;color:var(--text-secondary)">Оборудование</td><td style="padding:5px 8px">${raw.assets.length}</td></tr>` : ''}
+          ${(raw.issues||[]).length ? `<tr><td style="padding:5px 8px;color:var(--text-secondary)">Проблемы</td><td style="padding:5px 8px">${raw.issues.length}</td></tr>` : ''}
+          ${(raw.comments||[]).length ? `<tr><td style="padding:5px 8px;color:var(--text-secondary)">Комментарии</td><td style="padding:5px 8px">${raw.comments.length}</td></tr>` : ''}
+          <tr><td style="padding:5px 8px;color:var(--text-secondary)">Схема</td><td style="padding:5px 8px;font-size:11px;color:var(--text-muted)">${escapeHtml(raw.schema)}</td></tr>
           <tr><td style="padding:5px 8px;color:var(--text-secondary)">Экспортирован</td><td style="padding:5px 8px">${(raw.exported_at||'').slice(0,16).replace('T',' ')}</td></tr>
         </table>
         <p style="font-size:12px;color:var(--text-secondary);margin:0">Существующие записи с совпадающими ID будут пропущены (INSERT OR IGNORE).</p>`;

@@ -37,8 +37,10 @@ class FrontendContractTests(unittest.TestCase):
 
     def test_desktop_typography_and_tabs_are_stable(self):
         self.assertIn("@media (min-width:681px)",self.css)
-        self.assertIn(".primary-nav { flex:0 0 auto; margin:0 auto; }",self.css)
-        self.assertIn(".header-right { flex:0 0 auto; }",self.css)
+        # FS-085: topbar uses CSS grid so nav stays truly centered
+        self.assertIn("grid-template-columns:1fr auto 1fr",self.css)
+        self.assertIn("justify-self:center",self.css)
+        self.assertIn(".header-right { justify-self:end;",self.css)
         self.assertIn(".project-card>p { font-size:15px; line-height:1.6; }",self.css)
         self.assertIn(".task-card p { font-size:13px; line-height:1.55; }",self.css)
         self.assertIn(".workflow-admin-list strong { font-size:15px; }",self.css)

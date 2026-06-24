@@ -219,6 +219,13 @@
       <div class="admin-summary" id="computeSummary"></div>
       <div class="compute-grid" id="computeNodes"><article class="compute-card project-loading">Ожидание первого Compute Agent…</article></div>
       <section class="detail-section compute-help"><p class="eyebrow">ENROLLMENT</p><h2>Подключение Mac</h2><p>Agent работает только после ручного запуска. Возможность выполнять вычисления дополнительно требует флага <code>--compute-enabled</code> и разрешения переключателем администратора.</p><pre>python3 scripts/mac_agent.py --server http://192.168.8.138:4173 --name "M1 Pro" --compute-enabled</pre></section>
+      <section class="detail-section" id="serviceMonitorSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">SERVICE MONITORS</p><h2>Мониторинг сервисов</h2></div>
+          <button class="button ghost" id="addMonitorBtn" type="button">＋ Монитор</button>
+        </div>
+        <div id="monitorList"><p class="empty-copy">Загрузка мониторов…</p></div>
+      </section>
       <section class="detail-section" id="aiGatewaySection" data-permission="adminPanel">
         <div class="detail-section-title">
           <div><p class="eyebrow" data-i18n="AI_EYEBROW">AI ROUTER</p><h2 data-i18n="AI_TITLE">Provider &amp; usage</h2></div>
@@ -325,6 +332,9 @@
                 <option value="device">Device</option><option value="panel">Panel</option>
                 <option value="port">Port</option><option value="cable">Cable</option>
                 <option value="circuit">Circuit</option><option value="sensor">Sensor</option>
+                <option value="door">Door</option><option value="camera">Camera</option>
+                <option value="reader">Card Reader</option><option value="controller">Controller</option>
+                <option value="network">Network</option><option value="rack">Rack</option>
                 <option value="other">Other</option>
               </select>
             </label>
@@ -644,6 +654,15 @@
         </div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Просмотр и редактирование кода, названия и заметок всех units в разрезе проектов. Прогресс недоступен здесь — используйте карточку проекта.</p>
         <div id="unitRegistryList"><p class="empty-copy">Выберите проект для просмотра units.</p></div>
+      </section>
+
+      <section class="detail-section" data-permission="adminPanel" id="connectorsSection">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">INTEGRATIONS</p><h2>Коннекторы</h2></div>
+          <button class="button ghost" id="addConnectorBtn" type="button">＋ Коннектор</button>
+        </div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Jobber, Microsoft 365, Google Workspace и пользовательские webhook-интеграции.</p>
+        <div id="connectorsList"><p class="empty-copy">Загрузка…</p></div>
       </section>
     </section>
 
