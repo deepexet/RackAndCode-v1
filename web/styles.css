@@ -112,6 +112,7 @@ dialog { width:min(570px,92vw); padding:0; border:1px solid #30394a; border-radi
 .agent-card:hover { transform:translateY(-4px); box-shadow:0 12px 32px rgba(0,0,0,.5); }
 .agent-hero { width:100%; padding:22px 0 14px; display:flex; flex-direction:column; align-items:center; gap:10px; position:relative; overflow:hidden; }
 .agent-glow { position:absolute; inset:0; opacity:.18; }
+.agent-card[data-agent=claude]   .agent-glow { background:radial-gradient(circle at 50% 60%,#f5c842,transparent 70%); }
 .agent-card[data-agent=codex]    .agent-glow { background:radial-gradient(circle at 50% 60%,#a87aff,transparent 70%); }
 .agent-card[data-agent=scout]    .agent-glow { background:radial-gradient(circle at 50% 60%,#30d7d7,transparent 70%); }
 .agent-card[data-agent=guardian] .agent-glow { background:radial-gradient(circle at 50% 60%,#e05353,transparent 70%); }
@@ -119,6 +120,7 @@ dialog { width:min(570px,92vw); padding:0; border:1px solid #30394a; border-radi
 .agent-card[data-agent=analyst]  .agent-glow { background:radial-gradient(circle at 50% 60%,#4a7fd4,transparent 70%); }
 .agent-card[data-agent=janitor]  .agent-glow { background:radial-gradient(circle at 50% 60%,#f5a623,transparent 70%); }
 .agent-ring { width:72px; height:72px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:34px; position:relative; z-index:1; border:2px solid; }
+.agent-card[data-agent=claude]   .agent-ring { background:#201a04; border-color:#f5c84255; box-shadow:0 0 18px #f5c84244; }
 .agent-card[data-agent=codex]    .agent-ring { background:#16082a; border-color:#a87aff44; box-shadow:0 0 18px #a87aff44; }
 .agent-card[data-agent=scout]    .agent-ring { background:#08201f; border-color:#30d7d744; box-shadow:0 0 18px #30d7d744; }
 .agent-card[data-agent=guardian] .agent-ring { background:#200808; border-color:#e0535344; box-shadow:0 0 18px #e0535344; }

@@ -383,6 +383,7 @@ function renderComputeNodes(unavailable=false){
 }
 
 const AI_TEAM = [
+  { id:'claude',   emoji:'⚡', name:'Claude',   role:'Strategic Partner',    desc:'Продуктовые решения, архитектура, парное программирование с Codex', status:'working',  mood:'Работаю в паре с Codex. Погнали.' },
   { id:'codex',    emoji:'🧠', name:'Codex',    role:'Lead Developer',       desc:'Разрабатывает платформу, архитектура, код, тесты',              status:'working',  mood:'Анализирую приоритеты бэклога...' },
   { id:'scout',    emoji:'🔭', name:'Scout',    role:'System Monitor',       desc:'Следит за API-метриками, uptime и здоровьем сервера',           status:'sleeping', mood:'Всё тихо. Сплю до инцидента.' },
   { id:'guardian', emoji:'🛡️', name:'Guardian', role:'Security & Audit',     desc:'Аудит данных, целостность цепочки событий, изоляция тенантов',  status:'sleeping', mood:'Периметр защищён. Не беспокоить.' },
