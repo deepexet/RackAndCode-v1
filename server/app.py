@@ -2262,6 +2262,124 @@ class WorkspaceStore:
                     skipped += 1
         return {"rebuilt": rebuilt, "skipped": skipped}
 
+    _EXPORT_SCHEMA = "rackpilot-project-export/1"
+
+    def export_project(self, org: str, project_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            proj = conn.execute(
+                "SELECT * FROM projects WHERE organization_id=? AND id=?", (org, project_id)
+            ).fetchone()
+            if not proj:
+                raise LookupError(f"project {project_id} not found")
+            buildings = conn.execute(
+                "SELECT id,code,name,address,floors,attributes FROM buildings "
+                "WHERE organization_id=? AND project_id=?", (org, project_id)
+            ).fetchall()
+            locations = conn.execute(
+                "SELECT id,code,name,kind,building_id,parent_location_id,suite_total,"
+                "floor_number,area_sqm,attributes FROM project_locations "
+                "WHERE organization_id=? AND project_id=?", (org, project_id)
+            ).fetchall()
+            work_items = conn.execute(
+                "SELECT id,code,title,description,status,priority,work_type_id,"
+                "location_id,building_id,due_date,attributes FROM work_items "
+                "WHERE organization_id=? AND project_id=?", (org, project_id)
+            ).fetchall()
+            daily = conn.execute(
+                "SELECT id,work_date,location_id,member_id,notes,completion_percent,"
+                "quantity,status FROM daily_updates "
+                "WHERE organization_id=? AND project_id=?", (org, project_id)
+            ).fetchall()
+
+        def _rows(rows: list) -> list[dict]:
+            return [dict(r) for r in rows]
+
+        return {
+            "schema": self._EXPORT_SCHEMA,
+            "exported_at": _now(),
+            "project": dict(proj),
+            "buildings": _rows(buildings),
+            "locations": _rows(locations),
+            "work_items": _rows(work_items),
+            "daily_updates": _rows(daily),
+        }
+
+    def import_project(self, org: str, payload: dict[str, Any], actor_id: str) -> dict[str, Any]:
+        if payload.get("schema") != self._EXPORT_SCHEMA:
+            raise ValueError("unsupported export schema")
+        proj = payload.get("project", {})
+        if not isinstance(proj, dict) or not proj.get("id"):
+            raise ValueError("missing project data")
+        buildings = payload.get("buildings", [])
+        locations = payload.get("locations", [])
+        work_items = payload.get("work_items", [])
+        daily = payload.get("daily_updates", [])
+        imported = {"buildings": 0, "locations": 0, "work_items": 0, "daily_updates": 0}
+
+        with self._connect() as conn:
+            # Upsert project
+            existing = conn.execute(
+                "SELECT id FROM projects WHERE organization_id=? AND id=?", (org, proj["id"])
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT OR IGNORE INTO projects(id,organization_id,code,name,description,"
+                    "status,progress,start_date,end_date,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (proj["id"], org, proj.get("code",""), proj.get("name",""),
+                     proj.get("description",""), proj.get("status","active"),
+                     proj.get("progress",0), proj.get("start_date"),
+                     proj.get("end_date"), proj.get("created_at",_now()), _now())
+                )
+            for b in buildings:
+                conn.execute(
+                    "INSERT OR IGNORE INTO buildings(id,organization_id,project_id,code,name,"
+                    "address,floors,attributes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (b["id"], org, proj["id"], b.get("code",""), b.get("name",""),
+                     b.get("address"), b.get("floors",1),
+                     b.get("attributes","{}"), b.get("created_at",_now()))
+                )
+                imported["buildings"] += 1
+            for loc in locations:
+                conn.execute(
+                    "INSERT OR IGNORE INTO project_locations(id,organization_id,project_id,"
+                    "code,name,kind,building_id,parent_location_id,suite_total,"
+                    "floor_number,area_sqm,attributes,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (loc["id"], org, proj["id"], loc.get("code",""), loc.get("name",""),
+                     loc.get("kind","area"), loc.get("building_id"),
+                     loc.get("parent_location_id"), loc.get("suite_total"),
+                     loc.get("floor_number"), loc.get("area_sqm"),
+                     loc.get("attributes","{}"), loc.get("created_at",_now()))
+                )
+                imported["locations"] += 1
+            for wi in work_items:
+                conn.execute(
+                    "INSERT OR IGNORE INTO work_items(id,organization_id,project_id,code,"
+                    "title,description,status,priority,work_type_id,location_id,building_id,"
+                    "due_date,attributes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (wi["id"], org, proj["id"], wi.get("code",""), wi.get("title",""),
+                     wi.get("description"), wi.get("status","open"), wi.get("priority","medium"),
+                     wi.get("work_type_id"), wi.get("location_id"), wi.get("building_id"),
+                     wi.get("due_date"), wi.get("attributes","{}"), wi.get("created_at",_now()))
+                )
+                imported["work_items"] += 1
+            for du in daily:
+                conn.execute(
+                    "INSERT OR IGNORE INTO daily_updates(id,organization_id,project_id,"
+                    "work_date,location_id,member_id,notes,completion_percent,quantity,"
+                    "status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (du["id"], org, proj["id"], du.get("work_date",""),
+                     du.get("location_id"), du.get("member_id",actor_id),
+                     du.get("notes",""), du.get("completion_percent"),
+                     du.get("quantity"), du.get("status","in_progress"),
+                     du.get("created_at",_now()))
+                )
+                imported["daily_updates"] += 1
+            self._audit(conn, org, actor_id, "project_imported",
+                        {"project_id": proj["id"], "imported": imported})
+        return {"ok": True, "project_id": proj["id"], "imported": imported}
+
     def get_storage_stats(self, org: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
@@ -3889,6 +4007,15 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except LookupError as err:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
             return
+        # Project export: GET /api/v1/projects/:id/export
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "export":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self.store.export_project(self.organization_id, parts[3])
+                self._json(HTTPStatus.OK, payload)
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
         # Activity: GET /api/v1/projects/:id/activity
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "activity":
             if not self._require_permission("projectRead"): return
@@ -4449,6 +4576,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (LookupError, ValueError, json.JSONDecodeError) as err:
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
+            return
+        # Project import: POST /api/v1/projects/import
+        if path == "/api/v1/projects/import":
+            if not self._require_permission("projectManage"): return
+            try:
+                body = json.loads(self.body)
+                actor = self.session_context.get("user_id", "system")
+                result = self.store.import_project(self.organization_id, body, actor)
+                self._json(HTTPStatus.OK, result)
+            except (ValueError, KeyError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_payload", str(err))
             return
         # Knowledge index rebuild: POST /api/v1/knowledge/rebuild
         if path == "/api/v1/knowledge/rebuild":

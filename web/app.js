@@ -2965,6 +2965,104 @@ function renderProjects(unavailable = false) {
   portfolio.querySelectorAll('[data-open-project]').forEach(button => button.addEventListener('click', () => { location.hash = `project/${encodeURIComponent(button.dataset.openProject)}`; }));
 }
 
+function _locationCompletionPct(project, locationIds) {
+  const set = new Set(locationIds);
+  const relevant = project.dailyUpdates?.filter(u => set.has(u.locationId)) || [];
+  if (!relevant.length) return 0;
+  const done = relevant.filter(u => u.completionPercent >= 100).length;
+  return Math.round((done / relevant.length) * 100);
+}
+
+function _renderFlatLocations(project, canManage) {
+  const locs = project.locations || [];
+  return locs.length
+    ? locs.map(location => {
+        const parent = locs.find(v => v.id === location.parentLocationId);
+        return `<button type="button" data-open-location="${location.id}" style="--location-depth:${location.depth||0}">
+          <span>${escapeHtml(location.code)}</span>
+          <strong>${escapeHtml(location.name)}</strong>
+          <small>${parent ? escapeHtml(parent.name) + ' → ' : ''}${escapeHtml(location.kind)}${location.suiteTotal !== null ? ` · ${location.suiteTotal} suites` : ''}</small>
+        </button>`;
+      }).join('')
+    : '<p class="empty-copy">Добавьте этажи или зоны, чтобы техник мог фиксировать прогресс.</p>';
+}
+
+function _renderBuildingCentricLocations(project) {
+  const buildings = project.buildings || [];
+  const locs = project.locations || [];
+  const KIND_ICON = { floor:'⬛', suite:'🏢', room:'🚪', area:'📐' };
+
+  return buildings.map(b => {
+    const bLocs = locs.filter(l => l.buildingId === b.id || l.building_id === b.id);
+    const rootLocs = bLocs.filter(l => !l.parentLocationId);
+    const allIds = bLocs.map(l => l.id);
+    const pct = _locationCompletionPct(project, allIds);
+
+    const locTree = (parentId) => {
+      const children = bLocs.filter(l => l.parentLocationId === parentId);
+      if (!children.length) return '';
+      return children.map(l => {
+        const icon = KIND_ICON[l.kind] || '📍';
+        const nested = locTree(l.id);
+        return `<div class="bldg-loc" style="margin-left:${(l.depth||0)*12}px">
+          <button type="button" data-open-location="${l.id}" style="--location-depth:0">
+            <span>${icon} ${escapeHtml(l.code)}</span>
+            <strong>${escapeHtml(l.name)}</strong>
+            <small>${escapeHtml(l.kind)}${l.suiteTotal !== null ? ` · ${l.suiteTotal} suites` : ''}</small>
+          </button>
+          ${nested}
+        </div>`;
+      }).join('');
+    };
+
+    const locsHtml = rootLocs.length
+      ? locTree(null) + bLocs.filter(l => !l.parentLocationId && !rootLocs.find(r => r.id === l.id)).map(l => locTree(l.id)).join('')
+      : locTree(null);
+
+    return `<div class="building-block" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:12px;overflow:hidden">
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-size:11px;font-weight:700;color:var(--text-secondary);letter-spacing:.05em">${escapeHtml(b.code)}</span>
+          <h3 style="margin:2px 0 0;font-size:15px;font-weight:700">${escapeHtml(b.name)}</h3>
+          ${b.address ? `<p style="margin:2px 0 0;font-size:12px;color:var(--text-secondary)">${escapeHtml(b.address)}</p>` : ''}
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:18px;font-weight:800;color:var(--accent)">${pct}%</div>
+          <div style="font-size:11px;color:var(--text-secondary)">${bLocs.length} лок.</div>
+        </div>
+      </div>
+      <div style="background:var(--border);height:3px"><div style="width:${pct}%;height:100%;background:var(--accent);transition:width .3s"></div></div>
+      <div class="location-cards" style="padding:8px 12px">
+        ${locsHtml || '<p class="empty-copy" style="font-size:12px;padding:8px 4px">Нет локаций в этом здании</p>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _renderLocationsPanel(project, canManage) {
+  const buildings = project.buildings || [];
+  const hasMultiBuilding = buildings.length > 1;
+  const viewMode = project._locViewMode || (hasMultiBuilding ? 'buildings' : 'list');
+
+  const toggleBtn = buildings.length > 0
+    ? `<button class="button ghost" id="toggleLocViewBtn" type="button" style="font-size:12px">${viewMode === 'buildings' ? '≡ Список' : '🏢 Здания'}</button>`
+    : '';
+
+  const header = `<div class="detail-section-title">
+    <div><p class="eyebrow">LOCATIONS</p><h2>Структура объекта</h2></div>
+    <div style="display:flex;gap:6px;align-items:center">
+      ${toggleBtn}
+      ${canManage ? '<button class="text-button" data-add-location>Добавить</button>' : ''}
+    </div>
+  </div>`;
+
+  const body = (viewMode === 'buildings' && buildings.length)
+    ? _renderBuildingCentricLocations(project)
+    : `<div class="location-cards">${_renderFlatLocations(project, canManage)}</div>`;
+
+  return header + body;
+}
+
 function renderProjectDetail() {
   const container = $('#projectDetailView');
   const project = projects.find(value => value.id === selectedProjectId);
@@ -2975,10 +3073,10 @@ function renderProjectDetail() {
   const openIssues = project.issues.filter(value => value.status !== 'resolved');
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
-  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button>` : ''}<button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ Экспорт</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}<button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis"><article><span>Общий прогресс</span><strong>${project.progress}%</strong></article><article><span>Сегодня обновлено</span><strong>${updatesToday.length}</strong></article><article><span>Открытые проблемы</span><strong>${openIssues.length}</strong></article><article><span>Локации</span><strong>${project.locations.length}</strong></article></section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div></section>
-    <section class="detail-grid"><article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">LOCATIONS</p><h2>Структура объекта</h2></div>${canManage ? '<button class="text-button" data-add-location>Добавить</button>' : ''}</div><div class="location-cards">${project.locations.length ? project.locations.map(location => {const parent=project.locations.find(value=>value.id===location.parentLocationId);return `<button type="button" data-open-location="${location.id}" style="--location-depth:${location.depth||0}"><span>${escapeHtml(location.code)}</span><strong>${escapeHtml(location.name)}</strong><small>${parent?`${escapeHtml(parent.name)} → `:''}${escapeHtml(location.kind)}${location.suiteTotal !== null ? ` · ${location.suiteTotal} suites` : ''}${location.audioDetails ? ` · ${location.audioDetails.speakerCount || 0} speakers` : ''}</small></button>`;}).join('') : '<p class="empty-copy">Добавьте этажи или зоны, чтобы техник мог фиксировать прогресс.</p>'}</div></article>
+    <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
     <section class="detail-section" id="projectTeamSection">
       <div class="detail-section-title"><div><p class="eyebrow">КОМАНДА</p><h2>Назначенные сотрудники</h2></div>${canManage ? '<button class="button ghost" id="assignMemberBtn" type="button">＋ Назначить</button>' : ''}</div>
@@ -3014,6 +3112,18 @@ function renderProjectDetail() {
   container.querySelectorAll('[data-daily-update]').forEach(button => button.addEventListener('click', () => openDailyDialog(project)));
   container.querySelectorAll('[data-edit-daily]').forEach(button => button.addEventListener('click', () => openDailyDialog(project, project.dailyUpdates.find(value => value.id === button.dataset.editDaily))));
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
+
+  container.querySelector('#exportProjectBtn')?.addEventListener('click', () => exportProjectData(project.id, project.name));
+  container.querySelector('#importProjectInput')?.addEventListener('change', e => {
+    if (e.target.files[0]) openProjectImportPreview(e.target.files[0]);
+    e.target.value = '';
+  });
+
+  container.querySelector('#toggleLocViewBtn')?.addEventListener('click', () => {
+    const cur = project._locViewMode || ((project.buildings||[]).length > 1 ? 'buildings' : 'list');
+    project._locViewMode = cur === 'buildings' ? 'list' : 'buildings';
+    renderProjectDetail();
+  });
   setupProjectObjects(project.id);
   hydrateProjectObjects(project.id);
   setupDigitalTwin(project.id);
@@ -4140,6 +4250,74 @@ function deleteTask() {
   toast('Задача удалена');
 }
 
+async function exportProjectData(projectId, projectName) {
+  try {
+    const data = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/export`);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    const slug = (projectName || projectId).replace(/[^a-zа-яё0-9]+/gi, '-').toLowerCase();
+    link.download = `rp-project-${slug}-${new Date().toISOString().slice(0,10)}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    toast('Данные проекта экспортированы');
+  } catch (e) { toast(`Ошибка экспорта: ${e.message}`); }
+}
+
+let _pendingProjectImport = null;
+
+async function openProjectImportPreview(file) {
+  try {
+    const raw = JSON.parse(await file.text());
+    if (raw.schema !== 'rackpilot-project-export/1') {
+      toast('Неверный формат файла (ожидается rackpilot-project-export/1)');
+      return;
+    }
+    _pendingProjectImport = raw;
+    const proj = raw.project || {};
+    const preview = document.getElementById('projectImportPreview');
+    if (preview) {
+      preview.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px">
+          <tr><td style="padding:5px 8px;color:var(--text-secondary)">Проект</td><td style="padding:5px 8px;font-weight:600">${escapeHtml(proj.name||'—')} <span style="color:var(--text-secondary)">${escapeHtml(proj.code||'')}</span></td></tr>
+          <tr><td style="padding:5px 8px;color:var(--text-secondary)">Статус</td><td style="padding:5px 8px">${escapeHtml(proj.status||'—')}</td></tr>
+          <tr><td style="padding:5px 8px;color:var(--text-secondary)">Здания</td><td style="padding:5px 8px">${(raw.buildings||[]).length}</td></tr>
+          <tr><td style="padding:5px 8px;color:var(--text-secondary)">Локации</td><td style="padding:5px 8px">${(raw.locations||[]).length}</td></tr>
+          <tr><td style="padding:5px 8px;color:var(--text-secondary)">Work items</td><td style="padding:5px 8px">${(raw.work_items||[]).length}</td></tr>
+          <tr><td style="padding:5px 8px;color:var(--text-secondary)">Daily updates</td><td style="padding:5px 8px">${(raw.daily_updates||[]).length}</td></tr>
+          <tr><td style="padding:5px 8px;color:var(--text-secondary)">Экспортирован</td><td style="padding:5px 8px">${(raw.exported_at||'').slice(0,16).replace('T',' ')}</td></tr>
+        </table>
+        <p style="font-size:12px;color:var(--text-secondary);margin:0">Существующие записи с совпадающими ID будут пропущены (INSERT OR IGNORE).</p>`;
+    }
+    document.getElementById('projectImportDialog')?.showModal();
+  } catch { toast('Не удалось прочитать файл'); }
+}
+
+function setupProjectImport() {
+  document.getElementById('confirmProjectImportBtn')?.addEventListener('click', async () => {
+    if (!_pendingProjectImport) return;
+    const btn = document.getElementById('confirmProjectImportBtn');
+    btn.disabled = true;
+    try {
+      const result = await apiFetch('/api/v1/projects/import', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify(_pendingProjectImport),
+      });
+      document.getElementById('projectImportDialog')?.close();
+      _pendingProjectImport = null;
+      toast(`Импорт: ${result.imported?.work_items||0} задач, ${result.imported?.locations||0} локаций`);
+      hydrateProjects();
+    } catch (e) { toast(`Ошибка импорта: ${e.message}`); }
+    finally { btn.disabled = false; }
+  });
+
+  document.querySelector('[data-close-dialog="projectImportDialog"]')?.addEventListener('click', () => {
+    document.getElementById('projectImportDialog')?.close();
+    _pendingProjectImport = null;
+  });
+}
+
 function exportState() {
   const blob = new Blob([JSON.stringify({ ...state, exportedAt: new Date().toISOString() }, null, 2)], { type: 'application/json' });
   const link = document.createElement('a');
@@ -4216,6 +4394,7 @@ async function setup() {
   $('#refreshLogsButton')?.addEventListener('click', hydrateLogs);
   $('#exportLogsBtn')?.addEventListener('click', exportLogsCSV);
   $('#refreshApiMetricsButton').addEventListener('click', hydrateApiMetrics);
+  setupProjectImport();
   window.addEventListener('online', _onNetworkOnline);
   window.addEventListener('offline', _onNetworkOffline);
   _updateOfflineBanner();

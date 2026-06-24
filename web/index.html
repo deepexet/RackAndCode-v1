@@ -80,8 +80,8 @@
       <label class="role-switcher">Role<select id="roleSwitcher" aria-label="Current role preview"><option value="Administrator">Administrator</option><option value="ProjectManager">Project Manager</option><option value="Supervisor">Supervisor</option><option value="Technician">Technician</option></select></label>
       <div class="top-actions">
         <span class="save-state" id="saveState"><i></i> Локально сохранено</span>
-        <button class="button ghost" id="exportButton" type="button" data-permission="developmentWorkspace">Экспорт задач</button>
-        <label class="button ghost file-button" data-permission="developmentWorkspace">Импорт задач<input id="importInput" type="file" accept="application/json"></label>
+        <button class="button ghost" id="exportButton" type="button" data-permission="developmentWorkspace" title="Экспорт Dev Workspace (задачи канбана)">⬇ Workspace</button>
+        <label class="button ghost file-button" data-permission="developmentWorkspace" title="Импорт Dev Workspace">⬆ Workspace<input id="importInput" type="file" accept="application/json"></label>
         <button class="button primary" id="addTaskButton" type="button" data-permission="developmentWorkspace">＋ Новая задача</button>
         <button class="button ghost" id="logoutButton" type="button" title="Выйти" style="padding:6px 10px">⏻</button>
       </div>
@@ -733,6 +733,20 @@
 
   <dialog id="jobberReportDialog">
     <form><div class="dialog-head"><div><p class="eyebrow">JOBBER UPDATE</p><h2>Отчет по выполненным работам</h2></div><button class="icon-button" type="button" data-close-dialog="jobberReportDialog" aria-label="Закрыть">×</button></div><label>Дата<input id="jobberReportDate" type="date"></label><label>Готовый текст<textarea id="jobberReportText" rows="12" readonly></textarea></label><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="jobberReportDialog">Закрыть</button><button class="button primary" id="copyJobberReport" type="button">Копировать</button></div></form>
+  </dialog>
+
+  <!-- Project data import preview -->
+  <dialog id="projectImportDialog" style="max-width:540px;width:100%">
+    <div class="dialog-head">
+      <div><p class="eyebrow">ИМПОРТ ПРОЕКТА</p><h2>Предпросмотр данных</h2></div>
+      <button class="icon-button" type="button" data-close-dialog="projectImportDialog" aria-label="Закрыть">×</button>
+    </div>
+    <div id="projectImportPreview" style="margin-top:12px;font-size:13px"></div>
+    <div class="dialog-actions" style="margin-top:16px">
+      <span></span>
+      <button class="button ghost" type="button" data-close-dialog="projectImportDialog">Отмена</button>
+      <button class="button primary" id="confirmProjectImportBtn" type="button">Импортировать</button>
+    </div>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
