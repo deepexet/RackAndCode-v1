@@ -435,7 +435,26 @@
         </dialog>
       </section>
 
-      <section class="detail-section" id="aiTeamSection" data-permission="adminPanel"><div class="detail-section-title"><div><p class="eyebrow">AI TEAM</p><h2>Команда агентов</h2></div><span class="git-sync-status">Концепция</span></div><p style="color:#778195;font-size:13px;margin-bottom:14px">Специализированные агенты на базе Claude. Каждый работает в своём контексте, общаются через очередь событий. Реализация — следующий этап.</p><div class="ai-team-grid" id="aiTeamGrid"></div></section>
+      <section class="detail-section" id="aiTeamSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">AI AGENTS</p><h2>Technical &amp; Documentation</h2></div>
+          <select id="aiAgentProjectFilter" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+            <option value="">All projects</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="button ghost" id="selectTechAgent" type="button" style="font-size:12px">⚙ Technical</button>
+          <button class="button ghost" id="selectDocAgent" type="button" style="font-size:12px">📄 Documentation</button>
+          <span id="activeAgentLabel" style="font-size:11px;font-weight:700;color:var(--accent);align-self:center"></span>
+        </div>
+        <div id="agentChatHistory" style="display:flex;flex-direction:column;gap:10px;max-height:360px;overflow-y:auto;margin-bottom:10px;padding-right:4px"></div>
+        <div style="display:flex;gap:8px">
+          <input id="agentQueryInput" type="text" placeholder="Ask about assets, configs, cables, documents…"
+            style="flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px"
+            autocomplete="off">
+          <button class="button primary" id="sendAgentQueryBtn" type="button">Ask</button>
+        </div>
+      </section>
       <section class="detail-section" id="privacySection" data-permission="adminPanel">
         <div class="detail-section-title">
           <div><p class="eyebrow">ПРИВАТНОСТЬ</p><h2>Политика сбора данных</h2></div>

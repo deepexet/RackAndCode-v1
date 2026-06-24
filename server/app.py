@@ -2765,6 +2765,208 @@ Rules:
             result.append(d)
         return result
 
+    # -- Specialized AI agents ------------------------------------------------
+
+    _TECH_AGENT_SYSTEM = """You are a Technical Agent for a field operations platform.
+You answer questions about equipment (assets), their relationships, service history, and configurations.
+You are given JSON context containing relevant assets, relationships, and service events.
+Rules:
+- Answer concisely and factually based ONLY on the provided context
+- Always cite your sources as [Asset: <code>] or [Event: <date>]
+- If the context does not contain enough information, say so explicitly
+- Prefer bullet points for lists of facts
+- Output plain text (no markdown headers, no code blocks)
+"""
+
+    _DOC_AGENT_SYSTEM = """You are a Documentation Agent for a field operations platform.
+You answer questions about project documents, technical specifications, and stored knowledge.
+You are given JSON context containing relevant document chunks retrieved via full-text search.
+Rules:
+- Answer concisely based ONLY on the provided document chunks
+- Always cite your sources as [Doc: <name>, chunk <n>]
+- If the chunks don't answer the question, say so explicitly
+- Do not hallucinate facts not present in the context
+- Output plain text (no markdown headers, no code blocks)
+"""
+
+    def _build_tech_context(
+        self, conn: sqlite3.Connection, org: str, query: str, project_id: str | None
+    ) -> tuple[list[dict], str]:
+        """Retrieve relevant assets + recent service events for technical agent."""
+        # Simple keyword-based retrieval: match query words against asset name/type/notes
+        words = [w.strip() for w in query.lower().split() if len(w.strip()) > 2][:6]
+        rows = conn.execute(
+            "SELECT id, code, name, asset_type, status, location_id, attributes "
+            "FROM dt_assets WHERE organization_id=?" +
+            (f" AND project_id=?" if project_id else ""),
+            (org, project_id) if project_id else (org,),
+        ).fetchall()
+        assets = [dict(r) for r in rows]
+        # Score by word match
+        def score(a: dict) -> int:
+            text = f"{a.get('name','')} {a.get('asset_type','')} {a.get('code','')}".lower()
+            return sum(1 for w in words if w in text)
+        assets = sorted(assets, key=score, reverse=True)[:10]
+
+        sources: list[dict] = []
+        for a in assets:
+            events = conn.execute(
+                "SELECT event_type, performed_at, technician_id, notes "
+                "FROM asset_service_events WHERE asset_id=? ORDER BY performed_at DESC LIMIT 3",
+                (a['id'],),
+            ).fetchall()
+            cfg = conn.execute(
+                "SELECT config_snapshot, recorded_at FROM asset_configurations "
+                "WHERE asset_id=? ORDER BY recorded_at DESC LIMIT 1",
+                (a['id'],),
+            ).fetchone()
+            rels = conn.execute(
+                "SELECT b.name as target_name, b.code as target_code, r.relation_type "
+                "FROM dt_relationships r JOIN dt_assets b ON b.id=r.to_asset_id "
+                "WHERE r.from_asset_id=? LIMIT 5",
+                (a['id'],),
+            ).fetchall()
+            sources.append({
+                'asset_code': a.get('code'), 'asset_name': a.get('name'),
+                'type': a.get('asset_type'), 'status': a.get('status'),
+                'service_events': [dict(e) for e in events],
+                'latest_config': dict(cfg) if cfg else None,
+                'relationships': [dict(r) for r in rels],
+            })
+        context_json = json.dumps(sources, ensure_ascii=False)[:6000]
+        return sources, context_json
+
+    def _build_doc_context(
+        self, conn: sqlite3.Connection, org: str, query: str,
+        project_id: str | None, allowed_project_ids: list[str] | None,
+    ) -> tuple[list[dict], str]:
+        """Retrieve relevant knowledge chunks for documentation agent."""
+        tokens = [t for t in query.split() if len(t) > 2][:8]
+        fts_query = " OR ".join(f'"{t}"' for t in tokens) if tokens else query[:100]
+        try:
+            rows = conn.execute(
+                "SELECT kf.chunk_id, kf.object_id, kf.project_id, "
+                "snippet(knowledge_fts, 3, '<b>', '</b>', '…', 20) as snippet, "
+                "rank "
+                "FROM knowledge_fts kf "
+                "WHERE knowledge_fts MATCH ? "
+                "ORDER BY rank LIMIT 8",
+                (fts_query,),
+            ).fetchall()
+        except Exception:
+            rows = []
+
+        sources = []
+        for row in rows:
+            obj = conn.execute(
+                "SELECT name, mime_type, project_id, access_policy "
+                "FROM objects WHERE id=?", (row['object_id'],)
+            ).fetchone()
+            if not obj:
+                continue
+            if obj['access_policy'] == 'restricted':
+                continue
+            chunk = conn.execute(
+                "SELECT chunk_index, chunk_text FROM knowledge_chunks WHERE id=?",
+                (row['chunk_id'],),
+            ).fetchone()
+            sources.append({
+                'object_name': obj['name'],
+                'chunk_index': chunk['chunk_index'] if chunk else 0,
+                'snippet': row['snippet'],
+                'text': chunk['chunk_text'][:600] if chunk else '',
+            })
+        context_json = json.dumps(sources, ensure_ascii=False)[:6000]
+        return sources, context_json
+
+    def technical_agent_query(
+        self, org: str, query: str, user_id: str,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            sources, context_json = self._build_tech_context(conn, org, query, project_id)
+
+        router = self.get_ai_router(org)
+        if not router.available:
+            return {
+                'answer': f"Technical agent unavailable (provider: {router.provider}). "
+                          f"Configure API key or use 'local' provider.",
+                'sources': sources,
+                'provider': router.provider,
+                'model': router.model,
+            }
+
+        prompt = f"Context (assets and service data):\n{context_json}\n\nQuestion: {query}"
+        try:
+            result = router.invoke(prompt, system=self._TECH_AGENT_SYSTEM, max_tokens=800)
+            self.log_ai_invocation(
+                org, user_id, 'technical_agent',
+                result.get('provider', router.provider), result.get('model', router.model),
+                result.get('prompt_tokens', 0), result.get('completion_tokens', 0),
+                result.get('latency_ms', 0), None,
+            )
+            return {
+                'answer': result.get('text', ''),
+                'sources': sources,
+                'provider': result.get('provider', router.provider),
+                'model': result.get('model', router.model),
+                'latency_ms': result.get('latency_ms', 0),
+            }
+        except RuntimeError as exc:
+            self.log_ai_invocation(org, user_id, 'technical_agent', router.provider, router.model,
+                                   0, 0, 0, str(exc))
+            raise
+
+    def documentation_agent_query(
+        self, org: str, query: str, user_id: str,
+        project_id: str | None = None,
+        allowed_project_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            sources, context_json = self._build_doc_context(
+                conn, org, query, project_id, allowed_project_ids
+            )
+
+        router = self.get_ai_router(org)
+        if not router.available:
+            return {
+                'answer': f"Documentation agent unavailable (provider: {router.provider}). "
+                          f"Configure API key or use 'local' provider.",
+                'sources': sources,
+                'provider': router.provider,
+                'model': router.model,
+            }
+
+        if not sources:
+            return {
+                'answer': "No relevant documents found in the knowledge base for this query.",
+                'sources': [],
+                'provider': router.provider,
+                'model': router.model,
+                'latency_ms': 0,
+            }
+
+        prompt = f"Document chunks:\n{context_json}\n\nQuestion: {query}"
+        try:
+            result = router.invoke(prompt, system=self._DOC_AGENT_SYSTEM, max_tokens=800)
+            self.log_ai_invocation(
+                org, user_id, 'documentation_agent',
+                result.get('provider', router.provider), result.get('model', router.model),
+                result.get('prompt_tokens', 0), result.get('completion_tokens', 0),
+                result.get('latency_ms', 0), None,
+            )
+            return {
+                'answer': result.get('text', ''),
+                'sources': sources,
+                'provider': result.get('provider', router.provider),
+                'model': result.get('model', router.model),
+                'latency_ms': result.get('latency_ms', 0),
+            }
+        except RuntimeError as exc:
+            self.log_ai_invocation(org, user_id, 'documentation_agent', router.provider, router.model,
+                                   0, 0, 0, str(exc))
+            raise
+
     def get_storage_stats(self, org: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
@@ -4990,6 +5192,41 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (LookupError, ValueError, json.JSONDecodeError) as err:
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
+            return
+        # Technical agent: POST /api/v1/ai/agents/technical
+        if path == "/api/v1/ai/agents/technical":
+            if not self._require_permission("projectRead"): return
+            try:
+                body = json.loads(self.body)
+                query = str(body.get("query", "")).strip()[:1000]
+                project_id = body.get("project_id") or None
+                if not query:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_query", "query required"); return
+                user_id = self.session_context.get("user_id", "unknown")
+                result = self.store.technical_agent_query(
+                    self.organization_id, query, user_id, project_id
+                )
+                self._json(HTTPStatus.OK, result)
+            except RuntimeError as err:
+                self._error(HTTPStatus.BAD_GATEWAY, "agent_error", str(err))
+            return
+        # Documentation agent: POST /api/v1/ai/agents/documentation
+        if path == "/api/v1/ai/agents/documentation":
+            if not self._require_permission("projectRead"): return
+            try:
+                body = json.loads(self.body)
+                query = str(body.get("query", "")).strip()[:1000]
+                project_id = body.get("project_id") or None
+                if not query:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_query", "query required"); return
+                user_id = self.session_context.get("user_id", "unknown")
+                allowed = self.store.get_user_allowed_projects(self.organization_id, user_id)
+                result = self.store.documentation_agent_query(
+                    self.organization_id, query, user_id, project_id, allowed
+                )
+                self._json(HTTPStatus.OK, result)
+            except RuntimeError as err:
+                self._error(HTTPStatus.BAD_GATEWAY, "agent_error", str(err))
             return
         # Field note parse: POST /api/v1/ai/parse-note
         if path == "/api/v1/ai/parse-note":

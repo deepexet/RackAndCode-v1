@@ -1665,6 +1665,115 @@ function setupFieldNote() {
   });
 }
 
+// ── AI Agents ─────────────────────────────────────────────────────────────
+let _activeAgent = 'technical';
+
+function _agentBubble(role, text, sources, meta) {
+  const isUser = role === 'user';
+  const avatar = isUser ? '👤' : (_activeAgent === 'technical' ? '⚙' : '📄');
+  const bgColor = isUser ? 'var(--surface)' : 'rgba(79,142,247,.08)';
+  const border = isUser ? 'var(--border)' : 'rgba(79,142,247,.25)';
+
+  const sourcesHtml = (sources || []).length
+    ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">
+        ${sources.map(s => {
+          const label = s.asset_code
+            ? `⚙ ${escapeHtml(s.asset_code)}`
+            : `📄 ${escapeHtml((s.object_name||'').slice(0,24))}`;
+          return `<span style="font-size:10px;font-weight:600;background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.25);border-radius:4px;padding:2px 6px;color:var(--accent)">${label}</span>`;
+        }).join('')}
+       </div>`
+    : '';
+  const metaHtml = meta
+    ? `<div style="font-size:10px;color:var(--text-secondary);margin-top:5px">${escapeHtml(meta)}</div>`
+    : '';
+
+  return `<div style="display:flex;gap:10px;align-items:flex-start">
+    <span style="font-size:18px;flex-shrink:0;margin-top:2px">${avatar}</span>
+    <div style="flex:1;background:${bgColor};border:1px solid ${border};border-radius:10px;padding:10px 12px">
+      <div style="font-size:13px;line-height:1.6;white-space:pre-wrap">${escapeHtml(text)}</div>
+      ${sourcesHtml}${metaHtml}
+    </div>
+  </div>`;
+}
+
+function setupAiAgents() {
+  const historyEl = document.getElementById('agentChatHistory');
+  const inputEl = document.getElementById('agentQueryInput');
+  const sendBtn = document.getElementById('sendAgentQueryBtn');
+  const labelEl = document.getElementById('activeAgentLabel');
+
+  function setAgent(type) {
+    _activeAgent = type;
+    if (labelEl) labelEl.textContent = type === 'technical' ? '⚙ Technical Agent' : '📄 Documentation Agent';
+    document.getElementById('selectTechAgent')?.classList.toggle('primary', type === 'technical');
+    document.getElementById('selectDocAgent')?.classList.toggle('primary', type === 'documentation');
+    inputEl?.focus();
+  }
+
+  document.getElementById('selectTechAgent')?.addEventListener('click', () => setAgent('technical'));
+  document.getElementById('selectDocAgent')?.addEventListener('click', () => setAgent('documentation'));
+  setAgent('technical');
+
+  // Populate project filter from cached projects list
+  function populateProjectFilter() {
+    const sel = document.getElementById('aiAgentProjectFilter');
+    if (!sel || !projects?.length) return;
+    sel.innerHTML = '<option value="">All projects</option>' +
+      projects.map(p => `<option value="${p.id}">${escapeHtml(p.code)} · ${escapeHtml(p.name)}</option>`).join('');
+  }
+  populateProjectFilter();
+
+  async function sendQuery() {
+    const query = inputEl?.value?.trim();
+    if (!query) return;
+    if (!historyEl) return;
+
+    // Append user bubble
+    historyEl.insertAdjacentHTML('beforeend', _agentBubble('user', query, null, null));
+    if (inputEl) inputEl.value = '';
+    sendBtn && (sendBtn.disabled = true);
+
+    // Typing indicator
+    const typingId = `typing-${Date.now()}`;
+    historyEl.insertAdjacentHTML('beforeend',
+      `<div id="${typingId}" style="color:var(--text-secondary);font-size:12px;padding-left:32px">Agent is thinking…</div>`
+    );
+    historyEl.scrollTop = historyEl.scrollHeight;
+
+    const projectId = document.getElementById('aiAgentProjectFilter')?.value || undefined;
+    const endpoint = _activeAgent === 'technical'
+      ? '/api/v1/ai/agents/technical'
+      : '/api/v1/ai/agents/documentation';
+
+    try {
+      const result = await apiFetch(endpoint, {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ query, project_id: projectId || null }),
+      });
+      document.getElementById(typingId)?.remove();
+      const meta = result.model && result.model !== 'local'
+        ? `${result.provider} · ${result.model} · ${result.latency_ms || 0}ms`
+        : (result.provider === 'local' ? 'Local mode — configure LLM for full answers' : null);
+      historyEl.insertAdjacentHTML('beforeend',
+        _agentBubble('agent', result.answer || '(no answer)', result.sources, meta)
+      );
+    } catch (e) {
+      document.getElementById(typingId)?.remove();
+      historyEl.insertAdjacentHTML('beforeend',
+        _agentBubble('agent', `Error: ${e.message}`, null, null)
+      );
+    }
+
+    sendBtn && (sendBtn.disabled = false);
+    historyEl.scrollTop = historyEl.scrollHeight;
+  }
+
+  sendBtn?.addEventListener('click', sendQuery);
+  inputEl?.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); } });
+}
+
 // ── Language toggle ───────────────────────────────────────────────────────
 function _updateLangBtn() {
   const btn = document.getElementById('langToggleBtn');
@@ -4796,6 +4905,7 @@ async function setup() {
   setupCodexDialog();
   setupTeam();
   setupFieldNote();
+  setupAiAgents();
   setupLangToggle();
   setupAiGateway();
   setupTimeTracking();
