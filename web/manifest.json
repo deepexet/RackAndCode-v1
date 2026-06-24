@@ -1,0 +1,29 @@
+{
+  "name": "RackPilot",
+  "short_name": "RackPilot",
+  "description": "AI-native field operations platform",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d1117",
+  "theme_color": "#4f8ef7",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%234f8ef7'/><text y='140' x='96' text-anchor='middle' font-size='120' font-family='system-ui'>⚡</text></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Мои задачи",
+      "url": "/#tech",
+      "description": "Задачи полевого специалиста"
+    },
+    {
+      "name": "Новый отчёт",
+      "url": "/#tech/report",
+      "description": "Ежедневный отчёт"
+    }
+  ]
+}

@@ -371,3 +371,25 @@ body[style*="padding-top"] .topbar { top:41px; }
 .log-filters { display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px;align-items:flex-end }
 .log-filters label { display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted) }
 .log-filters select,.log-filters input[type=search] { padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px }
+
+/* ── Tech PWA View ──────────────────────────────────────────────────────── */
+.tech-page { display:flex;flex-direction:column;height:100vh;overflow:hidden;padding-bottom:env(safe-area-inset-bottom) }
+.tech-bottom-nav { display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--nav-bg,#0b1018);border-top:1px solid var(--border);z-index:200;padding-bottom:env(safe-area-inset-bottom) }
+.tech-nav-btn { flex:1;display:flex;flex-direction:column;align-items:center;padding:8px 4px 6px;background:none;border:none;color:var(--text-secondary);cursor:pointer;gap:2px;font-size:10px;font-family:inherit;transition:color .15s }
+.tech-nav-btn.active { color:var(--accent,#4f8ef7) }
+.tech-nav-icon { font-size:20px;line-height:1 }
+.tech-tab-content { display:none;flex:1;overflow-y:auto;padding-bottom:72px }
+.tech-tab-content.active { display:block }
+.tech-header { padding:16px 16px 12px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:10;display:flex;justify-content:space-between;align-items:center }
+.tech-capture-card { background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px }
+.tech-capture-title { font-size:14px;font-weight:700;margin:0 0 12px }
+.tech-project-card { background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;cursor:pointer;transition:border-color .15s }
+.tech-project-card:active { border-color:var(--accent) }
+.tech-task-card { background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:12px }
+.tech-task-check { width:22px;height:22px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer }
+.tech-task-check.done { background:var(--accent-green,#2bb46a);border-color:var(--accent-green,#2bb46a) }
+.status-badge-danger { background:rgba(224,83,83,.2);color:#e05353;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700 }
+.upload-item { display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px }
+.upload-item-thumb { width:40px;height:40px;border-radius:6px;object-fit:cover;flex-shrink:0 }
+.upload-progress { height:3px;border-radius:2px;background:var(--border);margin-top:4px;overflow:hidden }
+.upload-progress-bar { height:100%;background:var(--accent);border-radius:2px;transition:width .3s }

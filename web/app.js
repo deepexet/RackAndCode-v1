@@ -615,7 +615,9 @@ function renderRoute() {
   const routeParts = requested.split('/');
   selectedProjectId = routeParts[0] === 'project' && routeParts[1] ? decodeURIComponent(routeParts[1]) : null;
   selectedLocationId = routeParts[2] === 'location' && routeParts[3] ? decodeURIComponent(routeParts[3]) : null;
-  let route = selectedProjectId ? 'projects' : (['overview', 'projects', 'logs', 'api', 'admin'].includes(requested) ? requested : 'overview');
+  const techSubRoute = routeParts[0] === 'tech' ? (routeParts[1] || 'home') : null;
+  let route = selectedProjectId ? 'projects' : (['overview', 'projects', 'logs', 'api', 'admin', 'tech'].includes(routeParts[0]) ? routeParts[0] : 'overview');
+  if (routeParts[0] === 'tech') route = 'tech';
   if (!routeAllowed(route)) {
     route = 'overview';
     selectedProjectId = null;
@@ -638,6 +640,7 @@ function renderRoute() {
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
   if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue()]); renderAITeam(); }
+  if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -1612,6 +1615,285 @@ function setupTimeTracking() {
       hydrateTimeTracking();
     } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
+}
+
+// ── Tech PWA View ─────────────────────────────────────────────────────────
+
+let _techSetupDone = false;
+let _mediaRecorder = null;
+let _voiceChunks = [];
+let _voiceTimerInterval = null;
+let _uploadQueue = [];  // [{id, file, projectId, note, status, progress}]
+
+// ── Bottom-nav tab switcher ───────────────────────────────────────────────
+function _switchTechTab(tab) {
+  document.querySelectorAll('.tech-tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tech-nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.techTab === tab));
+  const target = document.getElementById(`tech-tab-${tab}`);
+  if (target) target.classList.add('active');
+  if (tab === 'capture') _populateCaptureProjectSelect();
+  if (tab === 'report') _populateReportProjectSelect();
+}
+
+function setupTechBottomNav() {
+  document.querySelectorAll('.tech-nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => _switchTechTab(btn.dataset.techTab));
+  });
+}
+
+// ── Home tab ─────────────────────────────────────────────────────────────
+function _techGreeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Доброе утро';
+  if (h < 18) return 'Добрый день';
+  return 'Добрый вечер';
+}
+
+function _renderTechHomeCards() {
+  const el = document.getElementById('techHomeProjectCards');
+  if (!el) return;
+  const greetEl = document.getElementById('techGreeting');
+  if (greetEl) greetEl.textContent = _techGreeting();
+  if (!projects.length) { el.innerHTML = '<p class="empty-copy">Нет доступных проектов.</p>'; return; }
+  const active = projects.filter(p => p.status === 'active' || !p.status).slice(0, 6);
+  el.innerHTML = active.map(p => {
+    const loc = p.locations?.length || 0;
+    const pct = p.completionPercent ?? 0;
+    return `<div class="tech-project-card" onclick="location.hash='project/${encodeURIComponent(p.id)}'">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+        <span style="font-weight:700;font-size:15px">${escapeHtml(p.name)}</span>
+        <span style="font-size:11px;color:var(--text-secondary)">${loc} локаций</span>
+      </div>
+      <div style="background:var(--bg);border-radius:4px;height:4px;overflow:hidden;margin-bottom:8px">
+        <div style="width:${pct}%;height:100%;background:var(--accent);border-radius:4px"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary)">
+        <span>${escapeHtml(p.client || p.address || '')}</span>
+        <span>${pct}% выполнено</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Tasks tab ─────────────────────────────────────────────────────────────
+async function _renderTechTasks() {
+  const el = document.getElementById('techTasksList');
+  if (!el) return;
+  try {
+    const resp = await fetch('/api/v1/projects', { headers: apiHeaders({ Accept: 'application/json' }) });
+    const { projects: all = [] } = resp.ok ? await resp.json() : {};
+    // Collect work items from all projects (that have them)
+    const items = [];
+    for (const p of all) {
+      (p.workItems || []).forEach(wi => { if (wi.status !== 'done') items.push({ ...wi, projectName: p.name, projectId: p.id }); });
+    }
+    if (!items.length) { el.innerHTML = '<p class="empty-copy">Нет активных задач.</p>'; return; }
+    const sorted = [...items].sort((a,b) => {
+      const pri = {critical:0,high:1,medium:2,low:3};
+      return (pri[a.priority]||2)-(pri[b.priority]||2);
+    });
+    const PRI_COLOR = { critical:'#e05353', high:'#e09800', medium:'var(--accent)', low:'var(--text-secondary)' };
+    el.innerHTML = sorted.slice(0,30).map(wi => {
+      const color = PRI_COLOR[wi.priority] || 'var(--text-secondary)';
+      const done = wi.status === 'done';
+      return `<div class="tech-task-card">
+        <div class="tech-task-check ${done?'done':''}" data-wi-id="${wi.id}" data-proj-id="${wi.projectId}">
+          ${done?'<span style="color:#fff;font-size:13px">✓</span>':''}
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:14px">${escapeHtml(wi.title)}</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">
+            ${escapeHtml(wi.projectName)}
+            <span style="margin-left:8px;font-weight:700;color:${color}">${wi.priority||''}</span>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+// ── Capture tab (FS-030) ──────────────────────────────────────────────────
+function _populateCaptureProjectSelect() {
+  const sel = document.getElementById('techCaptureProject');
+  if (!sel || sel.options.length > 1) return;
+  projects.forEach(p => { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; sel.appendChild(o); });
+}
+
+function _populateReportProjectSelect() {
+  const sel = document.getElementById('techReportProject');
+  if (!sel || sel.options.length > 0) return;
+  projects.forEach(p => { const o = document.createElement('option'); o.value = p.id; o.textContent = p.name; sel.appendChild(o); });
+}
+
+function _compressImage(file, maxPx = 1920, quality = 0.82) {
+  return new Promise(resolve => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxPx || height > maxPx) {
+        if (width > height) { height = Math.round(height * maxPx / width); width = maxPx; }
+        else { width = Math.round(width * maxPx / height); height = maxPx; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      canvas.toBlob(blob => resolve(blob || file), 'image/jpeg', quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
+function _renderUploadQueue() {
+  const wrap = document.getElementById('techUploadQueue');
+  const list = document.getElementById('techUploadQueueList');
+  if (!wrap || !list) return;
+  wrap.style.display = _uploadQueue.length ? '' : 'none';
+  list.innerHTML = _uploadQueue.map(item => {
+    const icon = item.file.type.startsWith('audio') ? '🎤' : '🖼';
+    const name = item.file.name?.slice(0, 24) || 'файл';
+    const pct = item.progress || 0;
+    const statusText = item.status === 'uploading' ? `${pct}%` : item.status === 'done' ? '✓ Загружено' : item.status === 'error' ? '✕ Ошибка' : 'Ожидание…';
+    return `<div class="upload-item">
+      <span style="font-size:20px">${icon}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(name)}</div>
+        <div class="upload-progress"><div class="upload-progress-bar" style="width:${pct}%"></div></div>
+      </div>
+      <span style="font-size:12px;color:var(--text-secondary)">${statusText}</span>
+    </div>`;
+  }).join('');
+}
+
+async function _uploadCapturedFile(file, projectId, note) {
+  const compressed = file.type.startsWith('image') ? await _compressImage(file) : file;
+  const id = crypto.randomUUID();
+  const ext = file.type.startsWith('audio') ? '.webm' : '.jpg';
+  const fname = `capture_${new Date().toISOString().replace(/[:.]/g,'_')}${ext}`;
+  _uploadQueue.push({ id, file: compressed, projectId, note, status: 'pending', progress: 0 });
+  _renderUploadQueue();
+
+  const item = _uploadQueue.find(q => q.id === id);
+  item.status = 'uploading';
+  _renderUploadQueue();
+
+  try {
+    const resp = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/objects`, {
+      method: 'POST',
+      headers: {
+        ...apiHeaders({}),
+        'Content-Type': compressed.type || 'application/octet-stream',
+        'X-File-Name': fname,
+        'Idempotency-Key': createIdempotencyKey(),
+      },
+      body: compressed,
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    item.status = 'done'; item.progress = 100;
+    toast('Файл загружен');
+  } catch(e) {
+    item.status = 'error';
+    // Queue for offline retry
+    _enqueueWrite({ label: `Загрузка: ${fname}`, method: 'POST', path: `/api/v1/projects/${projectId}/objects`, binary: true });
+    toast('Добавлено в очередь (офлайн)');
+  }
+  _renderUploadQueue();
+}
+
+function setupCapture() {
+  // Camera input
+  ['techCameraInput','techGalleryInput'].forEach(id => {
+    const inp = document.getElementById(id);
+    if (!inp) return;
+    inp.addEventListener('change', async () => {
+      const projectId = document.getElementById('techCaptureProject')?.value || '';
+      const note = document.getElementById('techCaptureNote')?.value || '';
+      for (const file of inp.files) await _uploadCapturedFile(file, projectId, note);
+      inp.value = '';
+    });
+  });
+
+  // Voice note
+  const startBtn = document.getElementById('techVoiceStartBtn');
+  const stopBtn = document.getElementById('techVoiceStopBtn');
+  const timerEl = document.getElementById('techVoiceTimer');
+
+  startBtn?.addEventListener('click', async () => {
+    if (!navigator.mediaDevices?.getUserMedia) { toast('Микрофон недоступен'); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      _voiceChunks = [];
+      _mediaRecorder = new MediaRecorder(stream);
+      _mediaRecorder.ondataavailable = ev => { if (ev.data.size > 0) _voiceChunks.push(ev.data); };
+      _mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        clearInterval(_voiceTimerInterval);
+        if (timerEl) timerEl.style.display = 'none';
+        if (!_voiceChunks.length) return;
+        const blob = new Blob(_voiceChunks, { type: 'audio/webm' });
+        const file = new File([blob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+        const projectId = document.getElementById('techCaptureProject')?.value || '';
+        const note = document.getElementById('techCaptureNote')?.value || '';
+        if (projectId) await _uploadCapturedFile(file, projectId, note);
+        else toast('Выберите проект для привязки голосовой заметки');
+      };
+      _mediaRecorder.start(200);
+      let secs = 0;
+      if (timerEl) { timerEl.style.display = ''; timerEl.textContent = '00:00'; }
+      _voiceTimerInterval = setInterval(() => {
+        secs++;
+        if (timerEl) timerEl.textContent = `${String(Math.floor(secs/60)).padStart(2,'0')}:${String(secs%60).padStart(2,'0')}`;
+        if (secs >= 300) stopBtn?.click(); // max 5 min
+      }, 1000);
+      startBtn.style.display = 'none'; stopBtn.style.display = '';
+    } catch(e) { toast(`Ошибка микрофона: ${e.message}`); }
+  });
+
+  stopBtn?.addEventListener('click', () => {
+    _mediaRecorder?.stop();
+    startBtn.style.display = ''; stopBtn.style.display = 'none';
+  });
+}
+
+// ── Report tab ────────────────────────────────────────────────────────────
+function setupTechReport() {
+  const btn = document.getElementById('techSubmitReportBtn');
+  const status = document.getElementById('techReportStatus');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const projectId = document.getElementById('techReportProject')?.value || '';
+    const notes = document.getElementById('techReportNotes')?.value?.trim() || '';
+    if (!projectId) { toast('Выберите проект'); return; }
+    if (!notes) { toast('Введите заметки о работе'); return; }
+    btn.disabled = true;
+    try {
+      await apiFetchOrQueue(`/api/v1/projects/${encodeURIComponent(projectId)}/daily-updates`, {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ notes, workDate: new Date().toISOString().slice(0,10) }),
+      }, { label: 'Ежедневный отчёт', method: 'POST', path: `/api/v1/projects/${projectId}/daily-updates`, body: { notes } });
+      document.getElementById('techReportNotes').value = '';
+      if (status) { status.style.display=''; status.textContent='✓ Отчёт отправлен'; }
+      toast('Отчёт отправлен');
+    } catch(e) {
+      if (status) { status.style.display=''; status.textContent=`Ошибка: ${e.message}`; }
+    } finally { btn.disabled = false; }
+  });
+}
+
+// ── Main entry ────────────────────────────────────────────────────────────
+async function hydrateTechView(tab = 'home') {
+  if (!_techSetupDone) {
+    setupTechBottomNav();
+    setupCapture();
+    setupTechReport();
+    _techSetupDone = false; // reset on each project render
+  }
+  _switchTechTab(tab);
+  _renderTechHomeCards();
+  if (tab === 'tasks') _renderTechTasks();
 }
 
 // ── Digital Twin graph ─────────────────────────────────────────────────────
@@ -3957,3 +4239,13 @@ async function setup() {
 }
 
 setup();
+
+// PWA service worker registration
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    // Listen for messages from SW (e.g. flush outbox request)
+    navigator.serviceWorker.addEventListener('message', ev => {
+      if (ev.data?.type === 'FLUSH_OUTBOX' && navigator.onLine) _flushWriteOutbox();
+    });
+  }).catch(() => {});  // ignore — SW is enhancement only
+}

@@ -2,9 +2,15 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <meta name="description" content="RackPilot by Valeronix — Manage Projects, Inventory and Field Operations in One Place">
+  <meta name="theme-color" content="#4f8ef7">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="RackPilot">
+  <link rel="manifest" href="/manifest.json">
   <title>RackPilot by Valeronix · Development Workspace</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -51,7 +57,7 @@
       <span class="brand-mark">V</span>
       <span><strong>RackPilot</strong><small>by Valeronix</small></span>
     </a>
-    <nav class="primary-nav" aria-label="Разделы платформы"><a href="#overview" data-route-link="overview">Обзор</a><a href="#projects" data-route-link="projects">Проекты</a><a href="#logs" data-route-link="logs">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin">Admin</a></nav>
+    <nav class="primary-nav" aria-label="Разделы платформы"><a href="#overview" data-route-link="overview">Обзор</a><a href="#projects" data-route-link="projects">Проекты</a><a href="#tech" data-route-link="tech">ТК</a><a href="#logs" data-route-link="logs">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin">Admin</a></nav>
     <div class="header-right">
       <div class="agent-indicator idle" id="agentIndicator" title="Статус разработки" role="button" tabindex="0" style="cursor:pointer"><i></i><span><strong>Codex</strong><small id="agentStatusText">Статус загружается…</small></span><button id="requestContinueButton" type="button" title="Запросить продолжение разработки" aria-label="Запросить продолжение разработки">▶</button></div>
       <dialog id="codexInfoDialog" style="max-width:480px;width:100%">
@@ -516,6 +522,115 @@
       <section class="detail-section workflow-admin" data-permission="adminPanel"><div class="detail-section-title"><div><p class="eyebrow">PROJECT WORKFLOW</p><h2>Виды работ и этапы</h2></div><button class="button primary" id="addWorkTypeButton" type="button">＋ Вид работ</button></div><p>Настройка применяется ко всем проектам текущей организации.</p><div class="workflow-admin-list" id="workflowAdminList"></div></section>
       <section class="detail-section workflow-admin" data-permission="adminPanel"><div class="detail-section-title"><div><p class="eyebrow">FORM SCHEMA</p><h2>Дополнительные поля</h2></div><button class="button primary" id="addCustomFieldButton" type="button">＋ Поле</button></div><p>Поля автоматически появляются в формах локаций и units.</p><div class="workflow-admin-list" id="customFieldAdminList"></div></section>
     </section>
+
+    <!-- ── Tech View (PWA mobile flow) ─────────────────────────────────── -->
+    <section class="app-view tech-page" data-view="tech" id="tech">
+      <!-- Bottom nav tabs -->
+      <nav class="tech-bottom-nav" id="techBottomNav">
+        <button class="tech-nav-btn active" data-tech-tab="home">
+          <span class="tech-nav-icon">🏠</span><span>Главная</span>
+        </button>
+        <button class="tech-nav-btn" data-tech-tab="tasks">
+          <span class="tech-nav-icon">✅</span><span>Задачи</span>
+        </button>
+        <button class="tech-nav-btn" data-tech-tab="capture">
+          <span class="tech-nav-icon">📷</span><span>Фото</span>
+        </button>
+        <button class="tech-nav-btn" data-tech-tab="report">
+          <span class="tech-nav-icon">📋</span><span>Отчёт</span>
+        </button>
+      </nav>
+
+      <!-- Home tab -->
+      <div class="tech-tab-content active" id="tech-tab-home">
+        <div class="tech-header">
+          <div>
+            <p class="eyebrow" style="margin:0">РАБОЧИЙ ДЕНЬ</p>
+            <h2 id="techGreeting" style="margin:4px 0 0;font-size:20px">Добрый день</h2>
+          </div>
+          <span class="sync-indicator" id="saveState" style="font-size:12px">
+            <span class="sync-dot"></span><span> Синхр.</span>
+          </span>
+        </div>
+        <div id="techHomeProjectCards" style="display:flex;flex-direction:column;gap:12px;padding:16px">
+          <p class="empty-copy">Загрузка проектов…</p>
+        </div>
+      </div>
+
+      <!-- Tasks tab -->
+      <div class="tech-tab-content" id="tech-tab-tasks">
+        <div class="tech-header">
+          <div><p class="eyebrow" style="margin:0">МОИ ЗАДАЧИ</p><h2 style="margin:4px 0 0;font-size:20px">Текущие задачи</h2></div>
+        </div>
+        <div id="techTasksList" style="padding:16px;display:flex;flex-direction:column;gap:10px">
+          <p class="empty-copy">Загрузка…</p>
+        </div>
+      </div>
+
+      <!-- Capture tab (FS-030) -->
+      <div class="tech-tab-content" id="tech-tab-capture">
+        <div class="tech-header">
+          <div><p class="eyebrow" style="margin:0">МЕДИА</p><h2 style="margin:4px 0 0;font-size:20px">Фото и заметки</h2></div>
+        </div>
+        <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+          <!-- Camera capture -->
+          <div class="tech-capture-card">
+            <h3 class="tech-capture-title">📷 Фотография</h3>
+            <label class="button primary" style="display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;width:100%;box-sizing:border-box">
+              Снять фото
+              <input type="file" accept="image/*" capture="environment" id="techCameraInput" style="display:none">
+            </label>
+            <label class="button ghost" style="display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;width:100%;box-sizing:border-box;margin-top:8px">
+              Выбрать из галереи
+              <input type="file" accept="image/*" id="techGalleryInput" multiple style="display:none">
+            </label>
+          </div>
+          <!-- Voice note -->
+          <div class="tech-capture-card">
+            <h3 class="tech-capture-title">🎤 Голосовая заметка</h3>
+            <button class="button primary" id="techVoiceStartBtn" style="width:100%">Начать запись</button>
+            <button class="button ghost" id="techVoiceStopBtn" style="width:100%;display:none">⏹ Остановить</button>
+            <div id="techVoiceTimer" style="text-align:center;font-size:13px;color:var(--text-secondary);margin-top:6px;display:none">00:00</div>
+          </div>
+          <!-- Bind target selector -->
+          <div class="tech-capture-card">
+            <h3 class="tech-capture-title">📎 Привязать к</h3>
+            <select id="techCaptureProject" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box;margin-bottom:8px">
+              <option value="">— Проект —</option>
+            </select>
+            <input id="techCaptureNote" type="text" placeholder="Описание (необязательно)" maxlength="200"
+              style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box">
+          </div>
+          <!-- Upload queue -->
+          <div id="techUploadQueue" style="display:none">
+            <p class="eyebrow" style="margin:0 0 8px">ОЧЕРЕДЬ ЗАГРУЗКИ</p>
+            <div id="techUploadQueueList" style="display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Report tab (quick daily update) -->
+      <div class="tech-tab-content" id="tech-tab-report">
+        <div class="tech-header">
+          <div><p class="eyebrow" style="margin:0">ЕЖЕДНЕВНЫЙ ОТЧЁТ</p><h2 style="margin:4px 0 0;font-size:20px">Сводка за день</h2></div>
+        </div>
+        <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+          <div class="tech-capture-card">
+            <label style="font-size:13px;font-weight:600;display:block;margin-bottom:8px">Проект
+              <select id="techReportProject" style="display:block;width:100%;margin-top:6px;padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box"></select>
+            </label>
+            <label style="font-size:13px;font-weight:600;display:block;margin-bottom:8px">Заметки о работе
+              <textarea id="techReportNotes" rows="5" maxlength="4000"
+                placeholder="Что сделали сегодня? Проблемы, блокеры, следующие шаги…"
+                style="display:block;width:100%;margin-top:6px;padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);resize:vertical;box-sizing:border-box;font-size:14px"></textarea>
+            </label>
+            <button class="button primary" id="techSubmitReportBtn" style="width:100%;margin-top:4px">Отправить отчёт</button>
+            <p id="techReportStatus" style="text-align:center;font-size:13px;color:var(--text-secondary);margin-top:8px;display:none"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <dialog id="taskDialog">
