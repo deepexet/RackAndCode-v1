@@ -328,3 +328,20 @@ body[style*="padding-top"] .topbar { top:41px; }
 .approval-sources { font-size:11px;color:var(--text-muted) }
 .approval-actions { display:flex;gap:8px;align-items:center }
 .approval-note { font-size:11px;color:var(--text-muted);margin:0;font-style:italic }
+
+/* ── Activity feed & Comments ───────────────────────────────────────────── */
+.activity-feed { display:flex;flex-direction:column;gap:6px;margin-bottom:16px }
+.activity-item { display:flex;align-items:flex-start;gap:10px;padding:6px 0 }
+.activity-icon { font-size:16px;width:22px;text-align:center;flex-shrink:0;margin-top:1px }
+.activity-content { display:flex;flex:1;gap:10px;align-items:baseline;flex-wrap:wrap }
+.activity-summary { font-size:13px;flex:1 }
+.activity-time { font-size:11px;color:var(--text-muted);white-space:nowrap }
+.comment-thread { display:flex;flex-direction:column;gap:0 }
+.comment-card { background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px }
+.comment-card.reply { margin-left:28px;border-radius:8px;background:var(--surface-alt,#0a0f1a) }
+.comment-replies { display:flex;flex-direction:column;gap:6px;margin-top:6px }
+.comment-meta { display:flex;gap:10px;align-items:baseline;flex-wrap:wrap }
+.comment-meta strong { font-size:13px }
+.comment-body { margin:0;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word }
+.comment-actions { display:flex;gap:12px }
+.comment-compose { margin-top:8px }

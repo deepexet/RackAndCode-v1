@@ -1514,7 +1514,14 @@ class WorkspaceStore:
                        VALUES (?,?,?,'issue',?,'created','{}',?,'api',?)""",
                     (organization_id,str(uuid.uuid4()),project_id,issue_id,json.dumps({"title":issue_description[:120],"severity":severity}),now),
                 )
-        return next(value for value in self.get_project(organization_id, project_id)["dailyUpdates"] if value["id"] == entry_id)  # type: ignore[index]
+        result = next(value for value in self.get_project(organization_id, project_id)["dailyUpdates"] if value["id"] == entry_id)  # type: ignore[index]
+        loc_name = next((loc["name"] for loc in project["locations"] if loc["id"] == location_id), location_id or "")
+        wt_name = work_type["name"] if work_type else ""
+        actor = payload.get("_actorName", "")
+        self._record_activity(organization_id, project_id, None, actor,
+                              "daily_update" if action_name == "created" else "daily_update_edit",
+                              f"{'Создан' if action_name == 'created' else 'Обновлён'} отчёт — {loc_name} · {wt_name} · {percent}%")
+        return result
 
     def add_work_item_dependency(self, organization_id: str, project_id: str, item_id: str, predecessor_id: str) -> dict[str, Any]:
         project = self.get_project(organization_id, project_id)
@@ -2220,6 +2227,94 @@ class WorkspaceStore:
                 (org, now),
             )
         return cur.rowcount
+
+    # ── Comments & Activity ───────────────────────────────────────────────────
+
+    def add_comment(self, org: str, project_id: str, author_id: str | None,
+                    author_name: str, body: str, parent_id: str | None = None) -> dict[str, Any]:
+        body = body.strip()
+        if not body:
+            raise ValueError("Comment body cannot be empty")
+        if len(body) > 4000:
+            raise ValueError("Comment exceeds 4000 characters")
+        # Verify project belongs to org
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM projects WHERE id=? AND organization_id=?", (project_id, org)).fetchone():
+                raise LookupError("Project not found")
+            if parent_id and not conn.execute("SELECT 1 FROM project_comments WHERE id=? AND project_id=?", (parent_id, project_id)).fetchone():
+                raise LookupError("Parent comment not found")
+
+        # Extract @mentions (words starting with @)
+        mentions = list({w[1:] for w in body.split() if w.startswith("@") and len(w) > 1})
+        cmt_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_comments (id,organization_id,project_id,parent_id,author_id,author_name,body,mentions,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (cmt_id, org, project_id, parent_id, author_id, author_name, body, json.dumps(mentions), now, now),
+            )
+        self._record_activity(org, project_id, author_id, author_name, "comment",
+                              f"{author_name or 'Someone'} добавил комментарий",
+                              {"commentId": cmt_id, "preview": body[:120]})
+        return {"id": cmt_id, "projectId": project_id, "parentId": parent_id,
+                "authorId": author_id, "authorName": author_name, "body": body,
+                "mentions": mentions, "edited": False, "deleted": False,
+                "createdAt": now, "updatedAt": now}
+
+    def list_comments(self, org: str, project_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM projects WHERE id=? AND organization_id=?", (project_id, org)).fetchone():
+                raise LookupError("Project not found")
+            rows = conn.execute(
+                "SELECT id,parent_id,author_id,author_name,body,mentions,edited,deleted,created_at,updated_at "
+                "FROM project_comments WHERE organization_id=? AND project_id=? "
+                "ORDER BY created_at ASC LIMIT ?",
+                (org, project_id, limit),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["mentions"] = json.loads(d.get("mentions") or "[]")
+            except Exception: d["mentions"] = []
+            if d.get("deleted"): d["body"] = ""  # redact deleted body
+            result.append(d)
+        return result
+
+    def delete_comment(self, org: str, comment_id: str, requester_id: str | None) -> bool:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM project_comments WHERE id=? AND organization_id=?", (comment_id, org)).fetchone()
+            if not row: return False
+            conn.execute("UPDATE project_comments SET deleted=1,body='',updated_at=? WHERE id=?",
+                         (utc_now(), comment_id))
+        return True
+
+    def list_activity(self, org: str, project_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id,actor_id,actor_name,event_type,summary,payload,created_at "
+                "FROM project_activity WHERE organization_id=? AND project_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (org, project_id, limit),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["payload"] = json.loads(d.get("payload") or "{}")
+            except Exception: d["payload"] = {}
+            result.append(d)
+        return result
+
+    def _record_activity(self, org: str, project_id: str, actor_id: str | None,
+                         actor_name: str, event_type: str, summary: str,
+                         payload: dict[str, Any] | None = None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_activity (id,organization_id,project_id,actor_id,actor_name,event_type,summary,payload,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), org, project_id, actor_id, actor_name,
+                 event_type, summary, json.dumps(payload or {}, ensure_ascii=False), utc_now()),
+            )
 
     # ── Privacy Controls ─────────────────────────────────────────────────────
 
@@ -2978,6 +3073,25 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     stats = self.store.get_storage_stats(self.organization_id)
                     self._json(HTTPStatus.OK, {"objects": objects, "stats": stats})
                 return
+        # Comments: GET /api/v1/projects/:id/comments
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "comments":
+            if not self._require_permission("projectRead"): return
+            try:
+                comments = self.store.list_comments(self.organization_id, parts[3])
+                self._json(HTTPStatus.OK, {"comments": comments})
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        # Activity: GET /api/v1/projects/:id/activity
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "activity":
+            if not self._require_permission("projectRead"): return
+            try:
+                limit = min(int(self.query_params.get("limit", ["50"])[0]), 200)
+                activity = self.store.list_activity(self.organization_id, parts[3], limit)
+                self._json(HTTPStatus.OK, {"activity": activity})
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
         # Object versions: GET /api/v1/objects/:id/versions
         if path.startswith("/api/v1/objects/") and path.endswith("/versions"):
             obj_id = path[len("/api/v1/objects/"):-len("/versions")]
@@ -3344,6 +3458,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except ValueError as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
+        # Comment delete: POST /api/v1/projects/:pid/comments/:cid/delete
+        if path.startswith("/api/v1/projects/") and len(parts) == 7 and parts[4] == "comments" and parts[6] == "delete":
+            if not self._require_permission("fieldProgress"): return
+            ctx = self.session_context or {}
+            self.store.delete_comment(self.organization_id, parts[5], ctx.get("userId"))
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
         # Object delete: POST /api/v1/objects/:id/delete
         if path.startswith("/api/v1/objects/") and parts[-1] == "delete":
             if not self._require_permission("projectManage"): return
@@ -3360,7 +3481,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not self._require_permission("projectManage"):
                 return
         elif path.startswith("/api/v1/projects/"):
-            permission = "fieldProgress" if (len(parts) == 5 and parts[4] == "daily-updates") else "projectManage"
+            permission = "fieldProgress" if (len(parts) == 5 and parts[4] in ("daily-updates", "comments")) else "projectManage"
             if len(parts)==7 and parts[4]=="locations" and parts[6]=="units":
                 permission = "projectManage"
             if not self._require_permission(permission):
@@ -3397,7 +3518,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         raise ValueError("predecessorId is required")
                     work_item = self.store.add_work_item_dependency(self.organization_id, parts[3], parts[5], predecessor_id)
                     response = {"organizationId": self.organization_id, "workItem": work_item}
-                elif len(parts) != 5 or parts[4] not in {"buildings", "work-items", "locations", "daily-updates"}:
+                elif len(parts) != 5 or parts[4] not in {"buildings", "work-items", "locations", "daily-updates", "comments"}:
                     self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found")
                     return
                 elif parts[4] == "buildings":
@@ -3409,6 +3530,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 elif parts[4] == "locations":
                     location = self.store.create_location(self.organization_id, parts[3], payload)
                     response = {"organizationId": self.organization_id, "location": location}
+                elif parts[4] == "comments":
+                    ctx = self.session_context or {}
+                    comment = self.store.add_comment(
+                        self.organization_id, parts[3],
+                        ctx.get("userId"), ctx.get("name") or ctx.get("email") or "Пользователь",
+                        payload.get("body", ""), payload.get("parentId"),
+                    )
+                    response = {"organizationId": self.organization_id, "comment": comment}
                 else:
                     daily_update = self.store.save_daily_update(self.organization_id, parts[3], payload)
                     response = {"organizationId": self.organization_id, "dailyUpdate": daily_update}

@@ -1468,7 +1468,67 @@ function renderApiMetrics(unavailable=false){const summary=$('#apiSummary'),stat
 
 async function hydrateApiMetrics(){try{const response=await fetch('/api/v1/admin/api-metrics',{headers:apiHeaders()});if(!response.ok)throw new Error('api metrics unavailable');const payload=await response.json();apiMetrics=payload.metrics;renderApiMetrics();}catch{renderApiMetrics(true);}}
 
-function renderAgentStatus(agent){const indicator=$('#agentIndicator');if(!indicator)return;indicator.className=`agent-indicator ${agent.status||'idle'}${agent.needsAction?' needs-action':''}`;const labels={working:'Работает',idle:'Не активен',waiting:'Ожидает',blocked:'Требуется действие',limit:'Достигнут лимит'};$('#agentStatusText').textContent=`${labels[agent.status]||agent.status} · ${agent.message||''}`;$('#requestContinueButton').classList.toggle('requested',Boolean(agent.continuationRequested));$('#requestContinueButton').title=agent.continuationRequested?'Запрос уже зарегистрирован':'Запросить продолжение разработки';}
+let _lastAgentData = null;
+
+function renderAgentStatus(agent) {
+  const indicator = $('#agentIndicator');
+  if (!indicator) return;
+  _lastAgentData = agent;
+  const labels = { working:'Работает', idle:'Не активен', waiting:'Ожидает', blocked:'Требуется действие', limit:'Достигнут лимит' };
+  indicator.className = `agent-indicator ${agent.status||'idle'}${agent.needsAction?' needs-action':''}`;
+  $('#agentStatusText').textContent = `${labels[agent.status]||agent.status} · ${agent.message||''}`;
+  $('#requestContinueButton').classList.toggle('requested', Boolean(agent.continuationRequested));
+  $('#requestContinueButton').title = agent.continuationRequested ? 'Запрос уже зарегистрирован' : 'Запросить продолжение разработки';
+  _syncCodexDialog(agent);
+}
+
+function _syncCodexDialog(agent) {
+  const dialog = $('#codexInfoDialog');
+  if (!dialog || !dialog.open) return;
+  const labels = { working:'Работает', idle:'Не активен', waiting:'Ожидает', blocked:'Требуется действие', limit:'Достигнут лимит' };
+  const statusEl = $('#codexDialogStatus');
+  if (statusEl) statusEl.className = `agent-indicator ${agent.status||'idle'}`;
+  const textEl = $('#codexDialogStatusText');
+  if (textEl) textEl.textContent = labels[agent.status] || agent.status;
+  const msgEl = $('#codexDialogMessage');
+  if (msgEl) msgEl.textContent = agent.message || '';
+  const taskBox = $('#codexDialogTask');
+  const taskText = $('#codexDialogTaskText');
+  if (taskBox && taskText) {
+    if (agent.currentTask) { taskBox.style.display = ''; taskText.textContent = agent.currentTask; }
+    else taskBox.style.display = 'none';
+  }
+  const lastEl = $('#codexDialogLastActive');
+  if (lastEl && agent.lastActive) {
+    const d = new Date(agent.lastActive);
+    lastEl.textContent = `Последняя активность: ${isNaN(d) ? agent.lastActive : d.toLocaleString('ru-RU')}`;
+  }
+  const continueBtn = $('#codexDialogContinueBtn');
+  if (continueBtn) {
+    continueBtn.textContent = agent.continuationRequested ? '✓ Запрос зарегистрирован' : '▶ Запросить продолжение';
+    continueBtn.disabled = Boolean(agent.continuationRequested);
+  }
+}
+
+function setupCodexDialog() {
+  const indicator = $('#agentIndicator');
+  const dialog = $('#codexInfoDialog');
+  const closeBtn = $('#closeCodexDialog');
+  const closeBtn2 = $('#closeCodexDialog2');
+  const continueBtn = $('#codexDialogContinueBtn');
+  if (!indicator || !dialog) return;
+
+  const open = () => { if (_lastAgentData) _syncCodexDialog(_lastAgentData); dialog.showModal(); };
+  indicator.addEventListener('click', e => { if (e.target.closest('#requestContinueButton')) return; open(); });
+  indicator.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  closeBtn?.addEventListener('click', () => dialog.close());
+  closeBtn2?.addEventListener('click', () => dialog.close());
+  continueBtn?.addEventListener('click', async () => {
+    continueBtn.disabled = true;
+    await requestDevelopmentContinuation();
+    if (_lastAgentData) _syncCodexDialog(_lastAgentData);
+  });
+}
 
 async function hydrateAgentStatus(){try{const response=await fetch('/api/v1/development-agent/status',{headers:apiHeaders()});if(!response.ok)throw new Error('status unavailable');const payload=await response.json();renderAgentStatus(payload.agent);}catch{renderAgentStatus({status:'blocked',message:'Статус недоступен',needsAction:true});}}
 
@@ -1695,13 +1755,128 @@ function renderProjectDetail() {
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div>${canProgress ? '<button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button>' : ''}</div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>
     <section class="detail-section" id="projectObjectsSection"><div class="detail-section-title"><div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Файлы проекта</h2></div><label class="button ghost" style="cursor:pointer">＋ Загрузить<input type="file" id="objectFileInput" multiple style="display:none"></label></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input id="objectsSearchInput" type="search" placeholder="Поиск по файлам…" style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px" autocomplete="off"></div><div id="objectsDropZone" class="objects-drop-zone">Перетащите файлы сюда или нажмите «Загрузить»</div><div id="objectsGrid" class="objects-grid"><p class="empty-copy">Загрузка…</p></div><p id="objectsStorageInfo" style="font-size:11px;color:#445060;margin-top:8px"></p></section>
-    <dialog id="objectVersionsDialog" style="max-width:520px;width:100%"><div class="dialog-head"><div><p class="eyebrow">ВЕРСИИ</p><h2 id="objectVersionsName"></h2></div><button class="icon-button" id="closeObjectVersionsDialog" type="button">×</button></div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Версия</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Размер</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Дата</th><th></th></tr></thead><tbody id="objectVersionsList"></tbody></table></div></dialog>`;
+    <dialog id="objectVersionsDialog" style="max-width:520px;width:100%"><div class="dialog-head"><div><p class="eyebrow">ВЕРСИИ</p><h2 id="objectVersionsName"></h2></div><button class="icon-button" id="closeObjectVersionsDialog" type="button">×</button></div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Версия</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Размер</th><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Дата</th><th></th></tr></thead><tbody id="objectVersionsList"></tbody></table></div></dialog>
+    <section class="detail-section" id="projectActivitySection">
+      <div class="detail-section-title"><div><p class="eyebrow">ACTIVITY</p><h2>Активность и комментарии</h2></div></div>
+      <div id="projectActivityFeed" class="activity-feed"><p class="empty-copy">Загрузка…</p></div>
+      <div class="comment-compose" id="commentCompose">
+        <textarea id="commentBody" rows="2" maxlength="4000" placeholder="Оставьте комментарий… (@упоминание поддерживается)" style="width:100%;resize:vertical;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;box-sizing:border-box"></textarea>
+        <div style="display:flex;justify-content:flex-end;margin-top:6px"><button class="button primary" id="commentSubmitBtn" type="button">Отправить</button></div>
+      </div>
+    </section>`;
   container.querySelectorAll('[data-add-location]').forEach(button => button.addEventListener('click', () => openLocationDialog(project)));
   container.querySelectorAll('[data-daily-update]').forEach(button => button.addEventListener('click', () => openDailyDialog(project)));
   container.querySelectorAll('[data-edit-daily]').forEach(button => button.addEventListener('click', () => openDailyDialog(project, project.dailyUpdates.find(value => value.id === button.dataset.editDaily))));
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
   setupProjectObjects(project.id);
   hydrateProjectObjects(project.id);
+  setupProjectComments(project.id);
+  hydrateProjectActivity(project.id);
+}
+
+// ── Comments & Activity ──────────────────────────────────────────────────────
+
+const ACTIVITY_ICONS = {
+  comment: '💬', daily_update: '📋', daily_update_edit: '✏️',
+  location_added: '📍', issue_opened: '⚠️', object_uploaded: '📄',
+};
+
+async function hydrateProjectActivity(projectId) {
+  const feed = document.getElementById('projectActivityFeed');
+  if (!feed) return;
+  try {
+    const [actResp, cmtResp] = await Promise.all([
+      apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/activity`),
+      apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/comments`),
+    ]);
+    const { activity } = await actResp.json();
+    const { comments } = await cmtResp.json();
+
+    // Merge and sort by created_at desc
+    const items = [
+      ...activity.map(a => ({ ...a, _kind: 'activity' })),
+      ...comments.filter(c => !c.deleted && !c.parent_id).map(c => ({ ...c, _kind: 'comment' })),
+    ].sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
+
+    if (!items.length) { feed.innerHTML = '<p class="empty-copy">Нет активности. Напишите первый комментарий.</p>'; return; }
+
+    feed.innerHTML = items.slice(0, 60).map(item => {
+      if (item._kind === 'activity') {
+        const icon = ACTIVITY_ICONS[item.event_type] || '•';
+        return `<div class="activity-item">
+          <span class="activity-icon">${icon}</span>
+          <div class="activity-content">
+            <span class="activity-summary">${escapeHtml(item.summary)}</span>
+            <span class="activity-time">${(item.created_at||'').slice(0,16).replace('T',' ')}</span>
+          </div>
+        </div>`;
+      }
+      // comment
+      const body = item.body.replace(/@(\w+)/g, '<strong>@$1</strong>');
+      const replies = comments.filter(c => c.parent_id === item.id && !c.deleted);
+      return `<div class="comment-thread" data-comment-id="${item.id}">
+        <div class="comment-card">
+          <div class="comment-meta">
+            <strong>${escapeHtml(item.author_name || 'Пользователь')}</strong>
+            <span class="activity-time">${(item.created_at||'').slice(0,16).replace('T',' ')}</span>
+            ${item.edited ? '<span style="font-size:10px;color:var(--text-muted)">(изменён)</span>' : ''}
+          </div>
+          <p class="comment-body">${body}</p>
+          <div class="comment-actions">
+            <button class="text-button comment-reply-btn" data-reply-to="${item.id}" data-reply-name="${escapeHtml(item.author_name||'')}">Ответить</button>
+            <button class="text-button comment-delete-btn" data-id="${item.id}" style="color:var(--text-muted)">Удалить</button>
+          </div>
+        </div>
+        ${replies.length ? `<div class="comment-replies">${replies.map(r => `
+          <div class="comment-card reply">
+            <div class="comment-meta"><strong>${escapeHtml(r.author_name||'')}</strong><span class="activity-time">${(r.created_at||'').slice(0,16).replace('T',' ')}</span></div>
+            <p class="comment-body">${escapeHtml(r.body)}</p>
+            <div class="comment-actions"><button class="text-button comment-delete-btn" data-id="${r.id}" style="color:var(--text-muted)">Удалить</button></div>
+          </div>`).join('')}</div>` : ''}
+      </div>`;
+    }).join('');
+
+    // Reply button: pre-fill textarea with @mention
+    feed.querySelectorAll('.comment-reply-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const ta = document.getElementById('commentBody');
+        if (ta) { ta.value = `@${btn.dataset.replyName} `; ta.focus(); ta.dataset.parentId = btn.dataset.replyTo; }
+      });
+    });
+    // Delete button
+    feed.querySelectorAll('.comment-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить комментарий?')) return;
+        await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/comments/${btn.dataset.id}/delete`,
+          { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+        hydrateProjectActivity(projectId);
+      });
+    });
+  } catch (e) { feed.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+function setupProjectComments(projectId) {
+  const submitBtn = document.getElementById('commentSubmitBtn');
+  const ta = document.getElementById('commentBody');
+  if (!submitBtn || !ta) return;
+
+  const submit = async () => {
+    const body = ta.value.trim();
+    if (!body) return;
+    const parentId = ta.dataset.parentId || null;
+    submitBtn.disabled = true;
+    try {
+      await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/comments`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ body, parentId }),
+      });
+      ta.value = ''; delete ta.dataset.parentId;
+      hydrateProjectActivity(projectId);
+    } catch (e) { toast(e.message); }
+    finally { submitBtn.disabled = false; }
+  };
+  submitBtn.addEventListener('click', submit);
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit(); });
 }
 
 // ── Object Storage ──────────────────────────────────────────────────────────
@@ -2800,6 +2975,7 @@ async function setup() {
   setupSecretsVault();
   setupRetrievalEval();
   setupAIApprovals();
+  setupCodexDialog();
   applyRolePolicy();
   renderRoute();
   render();

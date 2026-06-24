@@ -53,7 +53,23 @@
     </a>
     <nav class="primary-nav" aria-label="Разделы платформы"><a href="#overview" data-route-link="overview">Обзор</a><a href="#projects" data-route-link="projects">Проекты</a><a href="#logs" data-route-link="logs">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin">Admin</a></nav>
     <div class="header-right">
-      <div class="agent-indicator idle" id="agentIndicator" title="Статус разработки"><i></i><span><strong>Codex</strong><small id="agentStatusText">Статус загружается…</small></span><button id="requestContinueButton" type="button" title="Запросить продолжение разработки" aria-label="Запросить продолжение разработки">▶</button></div>
+      <div class="agent-indicator idle" id="agentIndicator" title="Статус разработки" role="button" tabindex="0" style="cursor:pointer"><i></i><span><strong>Codex</strong><small id="agentStatusText">Статус загружается…</small></span><button id="requestContinueButton" type="button" title="Запросить продолжение разработки" aria-label="Запросить продолжение разработки">▶</button></div>
+      <dialog id="codexInfoDialog" style="max-width:480px;width:100%">
+        <div class="dialog-head"><div><p class="eyebrow">CODEX · DEVELOPMENT AGENT</p><h2>Состояние агента</h2></div><button class="icon-button" id="closeCodexDialog" type="button" aria-label="Закрыть">×</button></div>
+        <div id="codexDialogBody" style="display:flex;flex-direction:column;gap:14px;margin-top:4px">
+          <div class="codex-status-row"><span id="codexDialogStatus" class="agent-indicator idle" style="pointer-events:none;cursor:default"><i></i><span id="codexDialogStatusText" style="font-size:13px"></span></span></div>
+          <div id="codexDialogMessage" style="font-size:13px;color:var(--text-muted);line-height:1.6"></div>
+          <div id="codexDialogTask" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px">
+            <p class="eyebrow" style="margin:0 0 6px">Текущая задача</p>
+            <div id="codexDialogTaskText" style="font-size:13px"></div>
+          </div>
+          <div id="codexDialogLastActive" style="font-size:11px;color:var(--text-muted)"></div>
+          <div style="display:flex;gap:10px;padding-top:4px;border-top:1px solid var(--border)">
+            <button class="button primary" id="codexDialogContinueBtn" type="button">▶ Запросить продолжение</button>
+            <button class="button ghost" id="closeCodexDialog2" type="button">Закрыть</button>
+          </div>
+        </div>
+      </dialog>
       <div id="devModeBadge" style="display:none;align-items:center;gap:5px;font-size:10px;font-weight:700;color:#f5a623;background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.25);border-radius:6px;padding:3px 8px;cursor:default" title="Сессия не активна — используется dev-mode (X-RackPilot-Role). Войдите для полной аутентификации.">⚠ DEV</div>
       <label class="role-switcher">Role<select id="roleSwitcher" aria-label="Current role preview"><option value="Administrator">Administrator</option><option value="ProjectManager">Project Manager</option><option value="Supervisor">Supervisor</option><option value="Technician">Technician</option></select></label>
       <div class="top-actions">
