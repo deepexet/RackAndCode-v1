@@ -181,7 +181,10 @@
     </div>
 
     <section class="app-view projects-page" data-view="projects" id="projects">
-      <div id="projectsListView"><header class="page-header"><div><p class="eyebrow">PROJECT OPERATIONS</p><h1>Проекты компании</h1><p>Прогресс по зданиям, этапам и видам работ в отдельном операционном контуре.</p></div><button class="button primary" id="newProjectButton" type="button" data-permission="projectManage">＋ Новый проект</button></header><div class="projects-grid" id="projectsPortfolio" aria-live="polite"><article class="project-card project-loading">Загрузка проектов…</article></div></div>
+      <div id="projectsListView"><header class="page-header"><div><p class="eyebrow">PROJECT OPERATIONS</p><h1>Проекты компании</h1><p>Прогресс по зданиям, этапам и видам работ в отдельном операционном контуре.</p></div><div style="display:flex;gap:8px">
+        <button class="button ghost" id="fromTemplateButton" type="button" data-permission="projectManage">📋 Из шаблона</button>
+        <button class="button primary" id="newProjectButton" type="button" data-permission="projectManage">＋ Новый проект</button>
+      </div></header><div class="projects-grid" id="projectsPortfolio" aria-live="polite"><article class="project-card project-loading">Загрузка проектов…</article></div></div>
       <div id="projectDetailView" class="hidden" aria-live="polite"></div>
     </section>
 
@@ -679,6 +682,15 @@
         </div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Jobber, Microsoft 365, Google Workspace и пользовательские webhook-интеграции.</p>
         <div id="connectorsList"><p class="empty-copy">Загрузка…</p></div>
+      </section>
+
+      <section class="detail-section" data-permission="adminPanel" id="templatesSection">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">TEMPLATES</p><h2>Шаблоны проектов</h2></div>
+          <button class="button ghost" id="addTemplateBtn" type="button">＋ Шаблон</button>
+        </div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:14px">Заготовки проектов с предустановленными задачами. Используй «Из шаблона» при создании проекта.</p>
+        <div id="templatesAdminSection"><p class="empty-copy">Загрузка…</p></div>
       </section>
     </section>
 

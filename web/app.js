@@ -640,7 +640,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -5534,6 +5534,53 @@ async function setup() {
   $('#importInput').addEventListener('change', e => e.target.files[0] && importState(e.target.files[0]));
   $('#clearAuditButton').addEventListener('click', () => { state.audit = []; persist('', { auditDirty: true }); renderAudit(); });
   $('#newProjectButton').addEventListener('click', () => { $('#projectForm').reset(); populateProjectWorkTypeScope(); $('#projectDialog').showModal(); requestAnimationFrame(() => $('#projectCode').focus()); });
+  document.getElementById('fromTemplateButton')?.addEventListener('click', openCreateFromTemplate);
+  document.getElementById('addTemplateBtn')?.addEventListener('click', () => {
+    const dialog = document.createElement('dialog');
+    dialog.innerHTML = `
+      <form method="dialog" style="min-width:320px">
+        <h3 style="margin:0 0 16px">Новый шаблон проекта</h3>
+        <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px;font-size:13px">Название
+          <input id="tplAdminName" required maxlength="120" style="padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px;font-size:13px">Категория
+          <select id="tplAdminCategory" style="padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+            <option value="general">General</option>
+            <option value="residential">Residential</option>
+            <option value="commercial">Commercial</option>
+            <option value="data_centre">Data Centre</option>
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px;font-size:13px">Задачи (по одной на строку)
+          <textarea id="tplAdminItems" rows="5" placeholder="Обследование объекта&#10;Монтаж кабельной трассы&#10;Пусконаладка" style="padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);resize:vertical;font-family:inherit;font-size:13px"></textarea>
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button type="button" id="tplAdminCancelBtn" style="padding:8px 14px">Отмена</button>
+          <button type="submit" class="primary-button" style="padding:8px 14px">Сохранить</button>
+        </div>
+      </form>`;
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    dialog.querySelector('#tplAdminCancelBtn').addEventListener('click', () => { dialog.close(); dialog.remove(); });
+    dialog.querySelector('form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const name = dialog.querySelector('#tplAdminName').value.trim();
+      const category = dialog.querySelector('#tplAdminCategory').value;
+      const items = dialog.querySelector('#tplAdminItems').value
+        .split('\n').map(s => s.trim()).filter(Boolean)
+        .map(title => ({ title, status: 'backlog', priority: 'medium' }));
+      try {
+        const r = await apiFetch('/api/v1/templates', {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ name, category, scaffold: { workItems: items } }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error?.message || r.statusText);
+        dialog.close(); dialog.remove();
+        toast(`Шаблон "${name}" создан`);
+        hydrateTemplatesAdmin();
+      } catch(err) { toast(`Ошибка: ${err.message}`); }
+    });
+  });
   $('#selectAllProjectWorkTypes').addEventListener('click', toggleProjectWorkTypeSelection);
   $('#projectForm').addEventListener('submit', submitProject);
   $('#buildingForm').addEventListener('submit', submitBuilding);
@@ -5707,6 +5754,88 @@ setupNotificationCenter();
 
 // PWA service worker registration
 // ── Global Search ──────────────────────────────────────────────────────────
+
+// ── Project Templates ─────────────────────────────────────────────────────
+
+let _templates = [];
+
+async function loadTemplates() {
+  try {
+    const r = await apiFetch('/api/v1/templates');
+    const { templates = [] } = await r.json();
+    _templates = templates;
+    return templates;
+  } catch { return []; }
+}
+
+async function hydrateTemplatesAdmin() {
+  const container = $('#templatesAdminSection');
+  if (!container) return;
+  const templates = await loadTemplates();
+  const CATEGORY_LABEL = { general:'General', residential:'Residential', commercial:'Commercial', data_centre:'Data Centre' };
+  if (!templates.length) {
+    container.innerHTML = '<p class="empty-copy" style="color:var(--text-muted);font-size:13px">Шаблонов нет. Создайте первый шаблон.</p>';
+  } else {
+    container.innerHTML = templates.map(t => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <strong style="font-size:13px">${escapeHtml(t.name)}</strong>
+          <small style="margin-left:8px;color:var(--text-muted)">${CATEGORY_LABEL[t.category]||t.category}</small>
+          ${t.scaffold.workItems?.length ? `<small style="margin-left:8px;color:var(--text-muted)">${t.scaffold.workItems.length} задач</small>` : ''}
+        </div>
+        <button type="button" class="text-button danger" data-delete-tpl="${t.id}">Удалить</button>
+      </div>`).join('');
+    container.querySelectorAll('[data-delete-tpl]').forEach(btn => btn.addEventListener('click', async () => {
+      if (!confirm('Удалить шаблон?')) return;
+      await apiFetch(`/api/v1/templates/${btn.dataset.deleteTpl}/delete`, { method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}' });
+      hydrateTemplatesAdmin();
+    }));
+  }
+}
+
+async function openCreateFromTemplate() {
+  const templates = await loadTemplates();
+  if (!templates.length) { toast('Шаблонов нет. Сначала создайте шаблон в Admin.'); return; }
+  const sel = templates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
+  const dialog = document.createElement('dialog');
+  dialog.innerHTML = `
+    <form method="dialog" style="min-width:300px">
+      <h3 style="margin:0 0 16px">Создать проект из шаблона</h3>
+      <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;font-size:13px">
+        Шаблон <select id="tplSelect" style="padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">${sel}</select>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:12px;font-size:13px">
+        Код <input id="tplCode" required maxlength="32" style="padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px;margin-bottom:16px;font-size:13px">
+        Название <input id="tplName" required maxlength="120" style="padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button type="button" id="tplCancelBtn" style="padding:8px 14px">Отмена</button>
+        <button type="submit" class="primary-button" style="padding:8px 14px">Создать</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  dialog.querySelector('#tplCancelBtn').addEventListener('click', () => { dialog.close(); dialog.remove(); });
+  dialog.querySelector('form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const tplId = dialog.querySelector('#tplSelect').value;
+    const code = dialog.querySelector('#tplCode').value.trim();
+    const name = dialog.querySelector('#tplName').value.trim();
+    try {
+      const r = await apiFetch(`/api/v1/templates/${tplId}/use`, {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ code, name }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.statusText);
+      const { project } = await r.json();
+      dialog.close(); dialog.remove();
+      toast(`Проект "${name}" создан из шаблона`);
+      location.hash = `project/${project.id}`;
+    } catch(err) { toast(`Ошибка: ${err.message}`); }
+  });
+}
 
 // ── Notification Center ───────────────────────────────────────────────────
 
