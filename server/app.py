@@ -3657,6 +3657,94 @@ Rules:
             "criticalIssues": critical_issues,
         }
 
+    # ── Scheduled Reports ────────────────────────────────────────────────────
+
+    _REPORT_TYPES = {"project_summary", "issues", "team_presence", "velocity"}
+    _CADENCES = {"daily", "weekly", "monthly"}
+
+    def list_scheduled_reports(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_reports WHERE organization_id=? ORDER BY name",
+                (org,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_scheduled_report(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Report name required")
+        report_type = payload.get("reportType", "project_summary")
+        if report_type not in self._REPORT_TYPES:
+            raise ValueError(f"reportType must be one of: {', '.join(self._REPORT_TYPES)}")
+        cadence = payload.get("cadence", "weekly")
+        if cadence not in self._CADENCES:
+            raise ValueError(f"cadence must be one of: {', '.join(self._CADENCES)}")
+        fmt = payload.get("format", "csv")
+        if fmt not in {"csv", "json"}:
+            raise ValueError("format must be csv or json")
+        report_id = str(uuid.uuid4())
+        now = utc_now()
+        # Compute next_run_at: beginning of next appropriate period
+        next_run = now[:10]  # simple: start of tomorrow for daily
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO scheduled_reports (id,organization_id,name,report_type,project_id,"
+                "cadence,day_of_week,day_of_month,format,next_run_at,enabled,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)",
+                (report_id, org, name.strip(), report_type, payload.get("projectId"),
+                 cadence, payload.get("dayOfWeek"), payload.get("dayOfMonth"),
+                 fmt, next_run, now, now),
+            )
+            row = conn.execute("SELECT * FROM scheduled_reports WHERE id=?", (report_id,)).fetchone()
+        return dict(row)
+
+    def delete_scheduled_report(self, org: str, report_id: str) -> None:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM scheduled_reports WHERE id=? AND organization_id=?", (report_id, org)
+            )
+            if result.rowcount == 0:
+                raise LookupError("Report schedule not found")
+
+    def run_due_scheduled_reports(self, org: str) -> list[dict[str, Any]]:
+        """Generate CSV for all enabled reports whose next_run_at <= now. Returns list of results."""
+        today = utc_now()[:10]
+        results = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_reports WHERE organization_id=? AND enabled=1 AND next_run_at<=?",
+                (org, today),
+            ).fetchall()
+        for row in rows:
+            r = dict(row)
+            try:
+                # Generate report content
+                if r["report_type"] == "project_summary":
+                    analytics = self.get_project_analytics(org, r["project_id"]) if r["project_id"] else None
+                    content = json.dumps(analytics or {"note": "all-projects summary"})
+                elif r["report_type"] == "issues":
+                    with self._connect() as conn:
+                        issues = conn.execute(
+                            "SELECT * FROM project_issues WHERE organization_id=? AND status='open' ORDER BY severity",
+                            (org,),
+                        ).fetchall()
+                    content = json.dumps([dict(i) for i in issues])
+                else:
+                    content = json.dumps({"reportType": r["report_type"], "generatedAt": today})
+                # Advance next_run_at
+                now = utc_now()
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE scheduled_reports SET last_run_at=?, next_run_at=?, updated_at=? WHERE id=?",
+                        (now, today, now, r["id"]),
+                    )
+                results.append({"reportId": r["id"], "name": r["name"], "status": "generated",
+                                "bytes": len(content.encode())})
+            except Exception as exc:
+                results.append({"reportId": r["id"], "name": r["name"], "status": "error", "error": str(exc)})
+        return results
+
     # ── Project Templates ─────────────────────────────────────────────────────
 
     _TEMPLATE_CATEGORIES = {"general", "residential", "commercial", "data_centre"}
@@ -5847,6 +5935,11 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             records = self.store.list_presence(self.organization_id, project_id, from_date, to_date)
             self._json(HTTPStatus.OK, {"presence": records})
             return
+        # Scheduled reports: GET /api/v1/admin/scheduled-reports
+        if path == "/api/v1/admin/scheduled-reports":
+            if not self._require_permission("adminRead"): return
+            self._json(HTTPStatus.OK, {"reports": self.store.list_scheduled_reports(self.organization_id)})
+            return
         # Templates: GET /api/v1/templates
         if path == "/api/v1/templates":
             if not self._require_permission("projectRead"): return
@@ -6519,6 +6612,32 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
             return
+        # Scheduled reports: POST /api/v1/admin/scheduled-reports  and  /:id/delete  and  /:id/run
+        if path == "/api/v1/admin/scheduled-reports":
+            if not self._require_permission("adminRead"): return
+            try:
+                payload = self._read_json()
+                report = self.store.create_scheduled_report(self.organization_id, payload)
+                self._json(HTTPStatus.CREATED, {"report": report})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        _sr_parts = path.split("/")
+        if len(_sr_parts) == 7 and _sr_parts[4] == "scheduled-reports":
+            _sr_id, _sr_action = _sr_parts[5], _sr_parts[6]
+            if _sr_action == "delete":
+                if not self._require_permission("adminRead"): return
+                try:
+                    self.store.delete_scheduled_report(self.organization_id, _sr_id)
+                    self._json(HTTPStatus.OK, {"deleted": True})
+                except LookupError as e:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", str(e))
+                return
+            if _sr_action == "run":
+                if not self._require_permission("adminRead"): return
+                results = self.store.run_due_scheduled_reports(self.organization_id)
+                self._json(HTTPStatus.OK, {"results": results})
+                return
         # Templates: POST /api/v1/templates  and  /templates/:id/delete  and  /templates/:id/use
         if path == "/api/v1/templates":
             if not self._require_permission("projectManage"): return

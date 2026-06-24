@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "055")
+        self.assertEqual(first.current_version, "056")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -713,6 +713,28 @@ class WorkspaceStoreTests(unittest.TestCase):
         titles = {wi["title"] for wi in project["workItems"]}
         self.assertIn("Step 1", titles)
         self.assertIn("Step 3", titles)
+
+    def test_scheduled_report_create_list_delete(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "RPT", "name": "Report Test"})
+        report = self.store.create_scheduled_report(DEFAULT_ORGANIZATION_ID, {
+            "name": "Weekly Summary", "reportType": "project_summary",
+            "cadence": "weekly", "projectId": proj["id"], "format": "csv",
+        })
+        self.assertEqual(report["name"], "Weekly Summary")
+        self.assertEqual(report["cadence"], "weekly")
+        self.assertEqual(report["enabled"], 1)
+        reports = self.store.list_scheduled_reports(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(reports), 1)
+        self.store.delete_scheduled_report(DEFAULT_ORGANIZATION_ID, report["id"])
+        self.assertEqual(self.store.list_scheduled_reports(DEFAULT_ORGANIZATION_ID), [])
+
+    def test_scheduled_report_invalid_type_raises(self):
+        with self.assertRaises(ValueError):
+            self.store.create_scheduled_report(DEFAULT_ORGANIZATION_ID, {"name": "X", "reportType": "invalid"})
+
+    def test_scheduled_report_invalid_cadence_raises(self):
+        with self.assertRaises(ValueError):
+            self.store.create_scheduled_report(DEFAULT_ORGANIZATION_ID, {"name": "X", "cadence": "yearly"})
 
     def test_webhook_flush_skips_events_without_url(self):
         proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "WFL", "name": "Flush Test"})
