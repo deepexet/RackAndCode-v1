@@ -122,7 +122,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "035")
+        self.assertEqual(first.current_version, "036")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):

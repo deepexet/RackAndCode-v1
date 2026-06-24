@@ -2137,6 +2137,90 @@ class WorkspaceStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── AI Approval Queue ─────────────────────────────────────────────────────
+
+    _APPROVAL_TTL_HOURS = 72
+
+    def propose_ai_action(self, org: str, proposed_by: str, action_type: str,
+                          action_payload: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+        """Create an approval request for a proposed AI mutation."""
+        if not action_type.strip():
+            raise ValueError("action_type is required")
+        approval_id = str(uuid.uuid4())
+        now = utc_now()
+        expires = (datetime.now(timezone.utc) + timedelta(hours=self._APPROVAL_TTL_HOURS)).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO ai_approvals (id,organization_id,proposed_by,action_type,"
+                "action_payload,evidence,status,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (approval_id, org, proposed_by, action_type,
+                 json.dumps(action_payload, ensure_ascii=False),
+                 json.dumps(evidence, ensure_ascii=False),
+                 "pending", now, expires),
+            )
+        self.audit(org, proposed_by, None, "ai_approval.proposed", "ai_approval", approval_id)
+        return {"id": approval_id, "status": "pending", "createdAt": now, "expiresAt": expires}
+
+    def list_ai_approvals(self, org: str, status: str | None = None) -> list[dict[str, Any]]:
+        now = utc_now()
+        with self._connect() as conn:
+            # Expire stale pending items
+            conn.execute(
+                "UPDATE ai_approvals SET status='expired' WHERE organization_id=? AND status='pending' AND expires_at<=?",
+                (org, now),
+            )
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM ai_approvals WHERE organization_id=? AND status=? ORDER BY created_at DESC LIMIT 100",
+                    (org, status),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM ai_approvals WHERE organization_id=? ORDER BY created_at DESC LIMIT 100",
+                    (org,),
+                ).fetchall()
+        return [self._approval_row(r) for r in rows]
+
+    def review_ai_approval(self, org: str, approval_id: str, reviewer_id: str,
+                           decision: str, note: str = "") -> dict[str, Any]:
+        """decision must be 'approved' or 'rejected'."""
+        if decision not in ("approved", "rejected"):
+            raise ValueError("decision must be 'approved' or 'rejected'")
+        now = utc_now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM ai_approvals WHERE id=? AND organization_id=?", (approval_id, org)
+            ).fetchone()
+            if not row:
+                raise LookupError("Approval not found")
+            if row["status"] != "pending":
+                raise ValueError(f"Cannot review: approval is already '{row['status']}'")
+            conn.execute(
+                "UPDATE ai_approvals SET status=?,reviewed_by=?,reviewed_at=?,reviewer_note=? WHERE id=?",
+                (decision, reviewer_id, now, note, approval_id),
+            )
+            updated = conn.execute("SELECT * FROM ai_approvals WHERE id=?", (approval_id,)).fetchone()
+        self.audit(org, reviewer_id, None, f"ai_approval.{decision}", "ai_approval", approval_id)
+        return self._approval_row(updated)
+
+    @staticmethod
+    def _approval_row(r: Any) -> dict[str, Any]:
+        d = dict(r)
+        for key in ("action_payload", "evidence"):
+            try: d[key] = json.loads(d.get(key) or "{}")
+            except Exception: d[key] = {}
+        return d
+
+    def expire_ai_approvals(self, org: str) -> int:
+        """Expire pending approvals past their TTL. Returns count expired."""
+        now = utc_now()
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE ai_approvals SET status='expired' WHERE organization_id=? AND status='pending' AND expires_at<=?",
+                (org, now),
+            )
+        return cur.rowcount
+
     # ── Privacy Controls ─────────────────────────────────────────────────────
 
     _DEFAULT_PURPOSES: list[tuple[str, int]] = [
@@ -2834,6 +2918,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             runs = self.store.list_eval_runs(self.organization_id)
             self._json(HTTPStatus.OK, {"cases": cases, "runs": runs})
             return
+        if path == "/api/v1/admin/ai-approvals":
+            if not self._require_permission("adminPanel"): return
+            status_filter = self.query_params.get("status", [None])[0]
+            approvals = self.store.list_ai_approvals(self.organization_id, status_filter)
+            self._json(HTTPStatus.OK, {"approvals": approvals})
+            return
         if path == "/api/v1/agent/context":
             if not self._require_permission("agentContext"): return
             ctx = _build_agent_context(self.store)
@@ -3170,6 +3260,39 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED,self.store.record_compute_node(self.organization_id,parts[4],payload))
             except (ValueError,json.JSONDecodeError) as error:
                 self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        # AI approval queue
+        if path == "/api/v1/admin/ai-approvals":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                uid = (self.session_context or {}).get("userId", "agent")
+                result = self.store.propose_ai_action(
+                    self.organization_id, uid,
+                    payload.get("actionType", ""),
+                    payload.get("actionPayload", {}),
+                    payload.get("evidence", {}),
+                )
+                self._json(HTTPStatus.CREATED, {"approval": result})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/admin/ai-approvals/") and parts[-1] in ("approve", "reject"):
+            if not self._require_permission("adminPanel"): return
+            approval_id = parts[-2]
+            decision = "approved" if parts[-1] == "approve" else "rejected"
+            try:
+                payload = self._read_json()
+                note = payload.get("note", "") if isinstance(payload, dict) else ""
+                uid = (self.session_context or {}).get("userId", "")
+                if not uid: self._error(HTTPStatus.UNAUTHORIZED, "auth_required", "Must be authenticated"); return
+                result = self.store.review_ai_approval(self.organization_id, approval_id, uid, decision, note)
+                self._json(HTTPStatus.OK, {"approval": result})
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         # Retrieval eval: POST /api/v1/admin/retrieval-eval/cases, /run, cases/:id/delete
         if path == "/api/v1/admin/retrieval-eval/cases":
@@ -3722,6 +3845,7 @@ def main() -> None:
         for _oid in _orgs:
             store.ensure_privacy_defaults(_oid)
             store.run_retention_purge(_oid)
+            store.expire_ai_approvals(_oid)
     except Exception as _e:
         LOGGER.warning(json.dumps({"event": "privacy_init_failed", "error": str(_e)}))
     # Write agent context snapshot for filesystem-based agents (Codex)

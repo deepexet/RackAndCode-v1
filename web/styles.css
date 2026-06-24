@@ -311,3 +311,20 @@ body[style*="padding-top"] .topbar { top:41px; }
 .badge-warn { font-size:10px;color:#f59e0b;background:rgba(245,158,11,.1);border-radius:4px;padding:2px 5px }
 .badge-muted { font-size:10px;color:var(--text-muted);background:var(--surface-alt,rgba(128,128,128,.1));border-radius:4px;padding:2px 5px }
 .obj-desc { display:block;font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px }
+
+/* ── AI Approval cards ──────────────────────────────────────────────────── */
+.approval-card { background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px }
+.approval-card[data-status="pending"] { border-left:3px solid #f59e0b }
+.approval-card[data-status="approved"] { border-left:3px solid #34d399 }
+.approval-card[data-status="rejected"] { border-left:3px solid #e05353;opacity:.75 }
+.approval-header { display:flex;align-items:center;gap:12px;font-size:13px }
+.approval-type { font-weight:600;flex:1 }
+.approval-status { font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px }
+.approval-time { font-size:11px;color:var(--text-muted) }
+.approval-evidence { font-size:13px;color:var(--text-muted);margin:0;line-height:1.5 }
+.approval-payload { font-size:11px }
+.approval-payload summary { cursor:pointer;color:var(--text-muted);margin-bottom:6px }
+.approval-payload pre { background:var(--surface-alt,#0a1020);border-radius:6px;padding:10px;overflow-x:auto;max-height:160px;font-size:11px }
+.approval-sources { font-size:11px;color:var(--text-muted) }
+.approval-actions { display:flex;gap:8px;align-items:center }
+.approval-note { font-size:11px;color:var(--text-muted);margin:0;font-style:italic }

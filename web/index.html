@@ -236,6 +236,22 @@
           <button class="button ghost" id="mfaBackupDoneBtn" type="button" style="margin-top:12px">Сохранил — закрыть</button>
         </div>
       </section>
+      <section class="detail-section" id="aiApprovalsSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">AI SAFETY</p><h2>Очередь одобрения AI-действий</h2></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="approvalStatusFilter" style="padding:5px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+              <option value="">Все</option>
+              <option value="pending" selected>Ожидают</option>
+              <option value="approved">Одобренные</option>
+              <option value="rejected">Отклонённые</option>
+            </select>
+            <span id="approvalPendingBadge" style="display:none;background:#f59e0b;color:#000;font-size:11px;font-weight:700;border-radius:20px;padding:2px 8px"></span>
+          </div>
+        </div>
+        <p style="color:#778195;font-size:13px;margin:0 0 12px">AI-агент предлагает изменение → вы видите доказательства → одобряете или отклоняете. Изменения применяются только после одобрения.</p>
+        <div id="aiApprovalsList" style="display:flex;flex-direction:column;gap:10px"></div>
+      </section>
       <section class="detail-section" id="retrievalEvalSection" data-permission="adminPanel">
         <div class="detail-section-title">
           <div><p class="eyebrow">INTELLIGENCE · EVAL</p><h2>Оценка качества поиска</h2></div>

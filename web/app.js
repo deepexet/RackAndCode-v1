@@ -541,7 +541,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -1214,6 +1214,85 @@ async function hydrateAuditLog() {
       </div>`).join('')}
     </div>`;
   } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+// ── AI Approval Queue ────────────────────────────────────────────────────
+const ACTION_TYPE_LABELS = {
+  'task.update': 'Обновление задачи',
+  'task.create': 'Создание задачи',
+  'project.update': 'Обновление проекта',
+  'daily_update.create': 'Создание отчёта',
+  'daily_update.update': 'Изменение отчёта',
+  'location.update': 'Обновление локации',
+  'object.delete': 'Удаление файла',
+};
+const STATUS_STYLE = { pending: '#f59e0b', approved: '#34d399', rejected: '#e05353', expired: '#445060' };
+const STATUS_LABEL = { pending: 'Ожидает', approved: 'Одобрено', rejected: 'Отклонено', expired: 'Истекло' };
+
+async function hydrateAIApprovals(statusFilter) {
+  const el = document.getElementById('aiApprovalsList');
+  const badge = document.getElementById('approvalPendingBadge');
+  if (!el) return;
+  const filter = statusFilter ?? document.getElementById('approvalStatusFilter')?.value ?? 'pending';
+  try {
+    const qs = filter ? `?status=${encodeURIComponent(filter)}` : '';
+    const resp = await apiFetch(`/api/v1/admin/ai-approvals${qs}`);
+    const { approvals } = await resp.json();
+    // Update pending badge regardless of filter
+    if (!filter || filter === 'pending') {
+      const pendingCount = approvals.filter(a => a.status === 'pending').length;
+      if (badge) { badge.textContent = `${pendingCount} ожидают`; badge.style.display = pendingCount ? '' : 'none'; }
+    }
+    if (!approvals.length) {
+      el.innerHTML = `<p class="empty-copy">Нет записей${filter ? ` со статусом «${STATUS_LABEL[filter] || filter}»` : ''}.</p>`;
+      return;
+    }
+    el.innerHTML = approvals.map(a => {
+      const color = STATUS_STYLE[a.status] || '#778195';
+      const label = ACTION_TYPE_LABELS[a.action_type] || a.action_type;
+      const ev = a.evidence || {};
+      const payload = a.action_payload || {};
+      return `<div class="approval-card" data-id="${a.id}" data-status="${a.status}">
+        <div class="approval-header">
+          <span class="approval-type">${escapeHtml(label)}</span>
+          <span class="approval-status" style="color:${color}">● ${STATUS_LABEL[a.status] || a.status}</span>
+          <span class="approval-time">${(a.created_at||'').slice(0,16).replace('T',' ')}</span>
+        </div>
+        <div class="approval-body">
+          ${ev.summary ? `<p class="approval-evidence">${escapeHtml(ev.summary)}</p>` : ''}
+          ${Object.keys(payload).length ? `<details class="approval-payload"><summary>Детали изменения</summary><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>` : ''}
+          ${ev.sources?.length ? `<div class="approval-sources"><strong>Источники:</strong> ${ev.sources.map(s => escapeHtml(s)).join(', ')}</div>` : ''}
+        </div>
+        ${a.status === 'pending' ? `<div class="approval-actions">
+          <input class="approval-note-input" type="text" placeholder="Комментарий (необязательно)" data-for="${a.id}" style="flex:1;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+          <button class="button primary approval-approve-btn" data-id="${a.id}" type="button" style="padding:5px 14px;font-size:12px">Одобрить</button>
+          <button class="button ghost approval-reject-btn" data-id="${a.id}" type="button" style="padding:5px 14px;font-size:12px;color:#e05353;border-color:#e05353">Отклонить</button>
+        </div>` : a.reviewer_note ? `<p class="approval-note">Комментарий: ${escapeHtml(a.reviewer_note)}</p>` : ''}
+      </div>`;
+    }).join('');
+
+    el.querySelectorAll('.approval-approve-btn,.approval-reject-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        const action = btn.classList.contains('approval-approve-btn') ? 'approve' : 'reject';
+        const noteEl = el.querySelector(`.approval-note-input[data-for="${id}"]`);
+        const note = noteEl?.value.trim() || '';
+        btn.disabled = true;
+        try {
+          await apiFetch(`/api/v1/admin/ai-approvals/${encodeURIComponent(id)}/${action}`, {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ note }),
+          });
+          toast(action === 'approve' ? 'Действие одобрено' : 'Действие отклонено');
+          hydrateAIApprovals();
+        } catch (e) { toast(e.message); btn.disabled = false; }
+      });
+    });
+  } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+function setupAIApprovals() {
+  const filter = document.getElementById('approvalStatusFilter');
+  if (filter) filter.addEventListener('change', () => hydrateAIApprovals(filter.value));
 }
 
 // ── Retrieval Eval ───────────────────────────────────────────────────────
@@ -2720,6 +2799,7 @@ async function setup() {
   setupFeatureDocs();
   setupSecretsVault();
   setupRetrievalEval();
+  setupAIApprovals();
   applyRolePolicy();
   renderRoute();
   render();
