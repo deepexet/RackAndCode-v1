@@ -396,17 +396,19 @@ function renderAITeam() {
   const grid = document.getElementById('aiTeamGrid');
   if (!grid) return;
   grid.innerHTML = AI_TEAM.map(a => `
-    <article class="agent-card" data-status="${a.status}" data-id="${a.id}">
-      <div class="agent-avatar">${a.emoji}</div>
-      <div class="agent-info">
+    <article class="agent-card" data-agent="${a.id}" data-status="${a.status}">
+      <div class="agent-hero">
+        <div class="agent-glow"></div>
+        <div class="agent-ring">${a.emoji}</div>
+        <div class="agent-status-chip">
+          <span class="agent-status-dot"></span>
+          <span>${AGENT_STATUS_LABEL[a.status] || a.status}</span>
+        </div>
+      </div>
+      <div class="agent-body">
         <strong class="agent-name">${a.name}</strong>
         <span class="agent-role">${a.role}</span>
-        <p class="agent-desc">${a.desc}</p>
         <p class="agent-mood">&ldquo;${a.mood}&rdquo;</p>
-        <div class="agent-status-badge">
-          <span class="agent-status-dot"></span>
-          <span class="agent-status-label">${AGENT_STATUS_LABEL[a.status] || a.status}</span>
-        </div>
       </div>
     </article>
   `).join('');
