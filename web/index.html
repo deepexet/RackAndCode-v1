@@ -303,8 +303,44 @@
           </label>
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;padding:0 20px 20px">
+          <button class="button ghost" id="viewServiceHistoryBtn" type="button" style="display:none">История</button>
           <button class="button ghost" id="cancelAssetBtn" type="button">Отмена</button>
           <button class="button primary" id="submitAssetBtn" type="button">Сохранить</button>
+        </div>
+      </dialog>
+
+      <!-- Service History Dialog -->
+      <dialog id="serviceHistoryDialog" style="max-width:580px;width:100%">
+        <div class="dialog-head">
+          <div><p class="eyebrow">ИСТОРИЯ</p><h2 id="serviceHistoryTitle">Обслуживание</h2></div>
+          <button class="icon-button" id="closeServiceHistoryDialog" type="button">×</button>
+        </div>
+        <div style="padding:0 20px 8px">
+          <div id="serviceEventsList" style="max-height:300px;overflow-y:auto;margin-bottom:16px"></div>
+          <div style="border-top:1px solid var(--border);padding-top:14px">
+            <h3 style="font-size:13px;font-weight:600;margin:0 0 10px">Добавить событие</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+              <label style="font-size:12px;font-weight:600">Тип
+                <select id="svcEventType" style="display:block;width:100%;margin-top:4px;padding:7px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+                  <option value="inspection">Инспекция</option>
+                  <option value="repair">Ремонт</option>
+                  <option value="replacement">Замена</option>
+                  <option value="config_change">Смена конфига</option>
+                  <option value="calibration">Калибровка</option>
+                  <option value="note" selected>Заметка</option>
+                </select>
+              </label>
+              <label style="font-size:12px;font-weight:600">Исполнитель
+                <input id="svcPerformedBy" type="text" maxlength="100" style="display:block;width:100%;margin-top:4px;padding:7px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);box-sizing:border-box">
+              </label>
+            </div>
+            <label style="font-size:12px;font-weight:600;display:block">Описание
+              <textarea id="svcDescription" rows="2" style="display:block;width:100%;margin-top:4px;padding:7px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);resize:vertical;box-sizing:border-box"></textarea>
+            </label>
+            <div style="display:flex;justify-content:flex-end;margin-top:10px">
+              <button class="button primary" id="submitServiceEventBtn" type="button">Добавить</button>
+            </div>
+          </div>
         </div>
       </dialog>
 

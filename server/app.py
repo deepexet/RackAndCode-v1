@@ -2564,6 +2564,118 @@ class WorkspaceStore:
         rels = [r for r in all_rels if r["from_asset_id"] in asset_ids or r["to_asset_id"] in asset_ids]
         return {"assets": assets, "relationships": rels}
 
+    # ── Service History ───────────────────────────────────────────────────────
+
+    def add_service_event(self, org: str, asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM dt_assets WHERE id=? AND organization_id=?", (asset_id, org)).fetchone():
+                raise LookupError("Asset not found")
+            evt_id = str(uuid.uuid4())
+            now = utc_now()
+            conn.execute(
+                "INSERT INTO asset_service_events (id,organization_id,asset_id,event_type,performed_by,"
+                "performed_at,description,attributes,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (evt_id, org, asset_id,
+                 payload.get("eventType","note"),
+                 payload.get("performedBy",""),
+                 payload.get("performedAt", now),
+                 payload.get("description","")[:2000],
+                 json.dumps(payload.get("attributes",{})),
+                 now),
+            )
+            row = conn.execute("SELECT * FROM asset_service_events WHERE id=?", (evt_id,)).fetchone()
+        d = dict(row)
+        try: d["attributes"] = json.loads(d["attributes"])
+        except Exception: d["attributes"] = {}
+        return d
+
+    def list_service_events(self, org: str, asset_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM asset_service_events WHERE organization_id=? AND asset_id=? "
+                "ORDER BY performed_at DESC LIMIT ?", (org, asset_id, limit)
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["attributes"] = json.loads(d["attributes"])
+            except Exception: d["attributes"] = {}
+            result.append(d)
+        return result
+
+    def save_config_snapshot(self, org: str, asset_id: str, config: dict[str, Any],
+                             notes: str = "", recorded_by: str = "") -> dict[str, Any]:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM dt_assets WHERE id=? AND organization_id=?", (asset_id, org)).fetchone():
+                raise LookupError("Asset not found")
+            cfg_id = str(uuid.uuid4())
+            now = utc_now()
+            conn.execute(
+                "INSERT INTO asset_configurations (id,organization_id,asset_id,config_snapshot,"
+                "notes,recorded_at,recorded_by) VALUES (?,?,?,?,?,?,?)",
+                (cfg_id, org, asset_id, json.dumps(config), notes[:1000], now, recorded_by),
+            )
+            row = conn.execute("SELECT * FROM asset_configurations WHERE id=?", (cfg_id,)).fetchone()
+        d = dict(row)
+        try: d["configSnapshot"] = json.loads(d.pop("config_snapshot"))
+        except Exception: d["configSnapshot"] = {}
+        return d
+
+    def list_config_snapshots(self, org: str, asset_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM asset_configurations WHERE organization_id=? AND asset_id=? "
+                "ORDER BY recorded_at DESC LIMIT ?", (org, asset_id, limit)
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["configSnapshot"] = json.loads(d.pop("config_snapshot"))
+            except Exception: d["configSnapshot"] = {}
+            result.append(d)
+        return result
+
+    # ── Document Bindings (FS-025) ────────────────────────────────────────────
+
+    def bind_object(self, org: str, object_id: str, target_type: str, target_id: str, notes: str = "") -> dict[str, Any]:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM objects WHERE id=? AND organization_id=?", (object_id, org)).fetchone():
+                raise LookupError("Object not found")
+            bind_id = str(uuid.uuid4())
+            now = utc_now()
+            conn.execute(
+                "INSERT OR REPLACE INTO object_bindings (id,organization_id,object_id,target_type,target_id,notes,created_at)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (bind_id, org, object_id, target_type, target_id, notes[:500], now),
+            )
+            row = conn.execute("SELECT * FROM object_bindings WHERE object_id=? AND target_type=? AND target_id=?",
+                               (object_id, target_type, target_id)).fetchone()
+        return dict(row)
+
+    def unbind_object(self, org: str, bind_id: str) -> None:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM object_bindings WHERE id=? AND organization_id=?", (bind_id, org)).fetchone():
+                raise LookupError("Binding not found")
+            conn.execute("DELETE FROM object_bindings WHERE id=?", (bind_id,))
+
+    def list_bindings_for_target(self, org: str, target_type: str, target_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT b.*, o.name as object_name, o.mime_type, o.size_bytes "
+                "FROM object_bindings b JOIN objects o ON o.id=b.object_id "
+                "WHERE b.organization_id=? AND b.target_type=? AND b.target_id=?",
+                (org, target_type, target_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_bindings_for_object(self, org: str, object_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM object_bindings WHERE organization_id=? AND object_id=?",
+                (org, object_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # ── Time Tracking ────────────────────────────────────────────────────────
 
     def start_session(self, org: str, member_id: str, project_id: str,
@@ -3376,6 +3488,27 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             approvals = self.store.list_ai_approvals(self.organization_id, status_filter)
             self._json(HTTPStatus.OK, {"approvals": approvals})
             return
+        # Service history: GET /api/v1/assets/:id/service, GET /api/v1/assets/:id/configs
+        if path.startswith("/api/v1/assets/") and parts[-1] == "service":
+            if not self._require_permission("projectRead"): return
+            asset_id = parts[-2]
+            self._json(HTTPStatus.OK, {"events": self.store.list_service_events(self.organization_id, asset_id)})
+            return
+        if path.startswith("/api/v1/assets/") and parts[-1] == "configs":
+            if not self._require_permission("projectRead"): return
+            asset_id = parts[-2]
+            self._json(HTTPStatus.OK, {"snapshots": self.store.list_config_snapshots(self.organization_id, asset_id)})
+            return
+        # Object bindings: GET /api/v1/objects/:id/bindings, GET /api/v1/bindings/:type/:id
+        if path.startswith("/api/v1/objects/") and parts[-1] == "bindings":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"bindings": self.store.list_bindings_for_object(self.organization_id, parts[-2])})
+            return
+        if path.startswith("/api/v1/bindings/") and len(parts) == 5:
+            if not self._require_permission("projectRead"): return
+            target_type, target_id = parts[3], parts[4]
+            self._json(HTTPStatus.OK, {"documents": self.store.list_bindings_for_target(self.organization_id, target_type, target_id)})
+            return
         # Digital Twin: GET /api/v1/projects/:id/twin, GET /api/v1/assets, GET /api/v1/assets/:id/relationships
         if len(parts) == 5 and parts[3] == "projects" and parts[5] == "twin":
             if not self._require_permission("projectRead"): return
@@ -3779,6 +3912,53 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED,self.store.record_compute_node(self.organization_id,parts[4],payload))
             except (ValueError,json.JSONDecodeError) as error:
                 self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        # Service events: POST /api/v1/assets/:id/service
+        if path.startswith("/api/v1/assets/") and parts[-1] == "service":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                evt = self.store.add_service_event(self.organization_id, parts[-2], payload)
+                self._json(HTTPStatus.CREATED, {"event": evt})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        # Config snapshot: POST /api/v1/assets/:id/configs
+        if path.startswith("/api/v1/assets/") and parts[-1] == "configs":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                uid = (self.session_context or {}).get("userId","")
+                snap = self.store.save_config_snapshot(self.organization_id, parts[-2],
+                    payload.get("config",{}), payload.get("notes",""), uid)
+                self._json(HTTPStatus.CREATED, {"snapshot": snap})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        # Document bindings
+        if path == "/api/v1/bindings":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                binding = self.store.bind_object(self.organization_id,
+                    payload.get("objectId",""), payload.get("targetType","project"),
+                    payload.get("targetId",""), payload.get("notes",""))
+                self._json(HTTPStatus.CREATED, {"binding": binding})
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/bindings/") and parts[-1] == "delete":
+            if not self._require_permission("projectManage"): return
+            try:
+                self.store.unbind_object(self.organization_id, parts[-2])
+                self._json(HTTPStatus.OK, {"ok": True})
+            except LookupError as err: self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
             return
         # Digital Twin mutations
         if path == "/api/v1/assets":

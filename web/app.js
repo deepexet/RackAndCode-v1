@@ -1909,7 +1909,72 @@ function openAssetDialog(projectId, asset = null) {
   document.getElementById('assetSerial').value = asset?.serial_number || '';
   document.getElementById('assetNotes').value = asset?.notes || '';
   dialog._projectId = projectId;
+  const histBtn = document.getElementById('viewServiceHistoryBtn');
+  if (histBtn) { histBtn.style.display = asset ? '' : 'none'; histBtn._asset = asset; }
   dialog.showModal();
+}
+
+// ── Service History ───────────────────────────────────────────────────────
+const SVC_ICON = { inspection:'🔍', repair:'🔧', replacement:'🔄', config_change:'⚙️', calibration:'📐', note:'📝' };
+
+async function openServiceHistory(assetId, assetName) {
+  const dialog = document.getElementById('serviceHistoryDialog');
+  const listEl = document.getElementById('serviceEventsList');
+  if (!dialog || !listEl) return;
+  document.getElementById('serviceHistoryTitle').textContent = assetName;
+  dialog._assetId = assetId;
+  listEl.innerHTML = '<p style="color:var(--text-secondary);font-size:13px">Загрузка…</p>';
+  dialog.showModal();
+  try {
+    const resp = await apiFetch(`/api/v1/assets/${assetId}/service`);
+    const { events = [] } = resp;
+    if (!events.length) {
+      listEl.innerHTML = '<p class="empty-copy">Событий нет.</p>';
+      return;
+    }
+    listEl.innerHTML = events.map(e => {
+      const dt = new Date(e.performed_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+      return `<div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:18px;width:24px;flex-shrink:0">${SVC_ICON[e.event_type]||'📝'}</span>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:13px;font-weight:600;text-transform:capitalize">${e.event_type.replace('_',' ')}</span>
+            <span style="font-size:11px;color:var(--text-secondary)">${dt}</span>
+          </div>
+          ${e.performed_by?`<div style="font-size:12px;color:var(--text-secondary)">${escapeHtml(e.performed_by)}</div>`:''}
+          ${e.description?`<div style="font-size:13px;margin-top:4px">${escapeHtml(e.description)}</div>`:''}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(ex) { listEl.innerHTML = `<p style="color:#e05353">${ex.message}</p>`; }
+}
+
+function setupServiceHistory() {
+  const dialog = document.getElementById('serviceHistoryDialog');
+  const closeBtn = document.getElementById('closeServiceHistoryDialog');
+  const submitBtn = document.getElementById('submitServiceEventBtn');
+  if (!dialog) return;
+  closeBtn?.addEventListener('click', () => dialog.close());
+  submitBtn?.addEventListener('click', async () => {
+    const assetId = dialog._assetId;
+    if (!assetId) return;
+    const payload = {
+      eventType: document.getElementById('svcEventType').value,
+      performedBy: document.getElementById('svcPerformedBy').value.trim(),
+      description: document.getElementById('svcDescription').value.trim(),
+      performedAt: new Date().toISOString(),
+    };
+    try {
+      await apiFetch(`/api/v1/assets/${assetId}/service`, {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify(payload),
+      });
+      document.getElementById('svcDescription').value = '';
+      await openServiceHistory(assetId, document.getElementById('serviceHistoryTitle').textContent);
+      toast('Событие добавлено');
+    } catch(ex) { toast(`Ошибка: ${ex.message}`); }
+  });
 }
 
 function setupDigitalTwin(projectId) {
@@ -1920,10 +1985,15 @@ function setupDigitalTwin(projectId) {
   const closeBtn = document.getElementById('closeAssetDialog');
   const cancelBtn = document.getElementById('cancelAssetBtn');
   const submitBtn = document.getElementById('submitAssetBtn');
+  const histBtn = document.getElementById('viewServiceHistoryBtn');
   if (!dialog) return;
 
   closeBtn?.addEventListener('click', () => dialog.close());
   cancelBtn?.addEventListener('click', () => dialog.close());
+  histBtn?.addEventListener('click', () => {
+    const asset = histBtn._asset;
+    if (asset) { dialog.close(); openServiceHistory(asset.id, asset.name); }
+  });
 
   submitBtn?.addEventListener('click', async () => {
     const id = document.getElementById('assetDialogId').value;
@@ -2587,6 +2657,7 @@ function renderProjectDetail() {
   setupProjectObjects(project.id);
   hydrateProjectObjects(project.id);
   setupDigitalTwin(project.id);
+  setupServiceHistory();
   hydrateDigitalTwin(project.id);
   setupProjectComments(project.id);
   hydrateProjectActivity(project.id);
