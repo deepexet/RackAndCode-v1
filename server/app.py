@@ -32,6 +32,7 @@ import urllib.error
 import subprocess
 
 from server.migrations import MigrationRunner
+from server.ai_router import AIRouter, classify as ai_classify
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = ROOT / "web"
@@ -2380,6 +2381,89 @@ class WorkspaceStore:
                         {"project_id": proj["id"], "imported": imported})
         return {"ok": True, "project_id": proj["id"], "imported": imported}
 
+    # -- AI router config -------------------------------------------------------
+
+    def get_ai_router(self, org: str) -> AIRouter:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT provider, model, env_key_var, max_tokens, temperature, enabled "
+                "FROM ai_router_config WHERE organization_id=?", (org,)
+            ).fetchone()
+        if not row:
+            return AIRouter.default()
+        return AIRouter(dict(row))
+
+    def get_ai_router_config(self, org: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT provider, model, env_key_var, max_tokens, temperature, enabled "
+                "FROM ai_router_config WHERE organization_id=?", (org,)
+            ).fetchone()
+        if not row:
+            return {"provider": "local", "model": "local", "env_key_var": "ANTHROPIC_API_KEY",
+                    "max_tokens": 1024, "temperature": 0.3, "enabled": True}
+        return dict(row)
+
+    def save_ai_router_config(self, org: str, config: dict[str, Any]) -> None:
+        allowed_providers = {"anthropic", "openai", "local"}
+        provider = config.get("provider", "local")
+        if provider not in allowed_providers:
+            raise ValueError(f"provider must be one of {allowed_providers}")
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM ai_router_config WHERE organization_id=?", (org,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE ai_router_config SET provider=?, model=?, env_key_var=?, "
+                    "max_tokens=?, temperature=?, enabled=?, updated_at=? "
+                    "WHERE organization_id=?",
+                    (provider, config.get("model", "claude-haiku-4-5-20251001"),
+                     config.get("env_key_var", "ANTHROPIC_API_KEY"),
+                     int(config.get("max_tokens", 1024)),
+                     float(config.get("temperature", 0.3)),
+                     1 if config.get("enabled", True) else 0,
+                     _now(), org)
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO ai_router_config(id, organization_id, provider, model, "
+                    "env_key_var, max_tokens, temperature, enabled, updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    (_uid(), org, provider,
+                     config.get("model", "claude-haiku-4-5-20251001"),
+                     config.get("env_key_var", "ANTHROPIC_API_KEY"),
+                     int(config.get("max_tokens", 1024)),
+                     float(config.get("temperature", 0.3)),
+                     1 if config.get("enabled", True) else 0,
+                     _now())
+                )
+
+    def log_ai_invocation(
+        self, org: str, user_id: str | None, intent: str,
+        provider: str, model: str,
+        prompt_tokens: int, completion_tokens: int,
+        latency_ms: int, error: str | None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO ai_invocation_log(id, organization_id, user_id, intent, "
+                "provider, model, prompt_tokens, completion_tokens, latency_ms, error, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (_uid(), org, user_id, intent, provider, model,
+                 prompt_tokens, completion_tokens, latency_ms, error, _now())
+            )
+
+    def list_ai_invocations(self, org: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, user_id, intent, provider, model, prompt_tokens, "
+                "completion_tokens, latency_ms, error, created_at "
+                "FROM ai_invocation_log WHERE organization_id=? "
+                "ORDER BY created_at DESC LIMIT ?", (org, limit)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_storage_stats(self, org: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
@@ -4007,6 +4091,25 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except LookupError as err:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
             return
+        # AI status: GET /api/v1/ai/status
+        if path == "/api/v1/ai/status":
+            if not self._require_permission("adminPanel"): return
+            config = self.store.get_ai_router_config(self.organization_id)
+            router = self.store.get_ai_router(self.organization_id)
+            key_set = bool(os.environ.get(config.get("env_key_var", "ANTHROPIC_API_KEY")))
+            self._json(HTTPStatus.OK, {
+                "config": config,
+                "available": router.available,
+                "key_set": key_set,
+            })
+            return
+        # AI invocation log: GET /api/v1/ai/log
+        if path == "/api/v1/ai/log":
+            if not self._require_permission("adminPanel"): return
+            limit = min(int(self.query_params.get("limit", ["50"])[0]), 200)
+            log = self.store.list_ai_invocations(self.organization_id, limit)
+            self._json(HTTPStatus.OK, {"log": log})
+            return
         # Project export: GET /api/v1/projects/:id/export
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "export":
             if not self._require_permission("projectManage"): return
@@ -4576,6 +4679,61 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (LookupError, ValueError, json.JSONDecodeError) as err:
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
+            return
+        # AI router config: POST /api/v1/ai/config
+        if path == "/api/v1/ai/config":
+            if not self._require_permission("adminPanel"): return
+            try:
+                config = json.loads(self.body)
+                self.store.save_ai_router_config(self.organization_id, config)
+                self._json(HTTPStatus.OK, {"ok": True})
+            except (ValueError, KeyError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_config", str(err))
+            return
+        # AI classify: POST /api/v1/ai/classify (local, no LLM call)
+        if path == "/api/v1/ai/classify":
+            if not self._require_permission("projectRead"): return
+            try:
+                body = json.loads(self.body)
+                text = str(body.get("text", ""))[:2000]
+                result = ai_classify(text)
+                self._json(HTTPStatus.OK, result)
+            except Exception as err:
+                self._error(HTTPStatus.BAD_REQUEST, "classify_error", str(err))
+            return
+        # AI invoke: POST /api/v1/ai/invoke
+        if path == "/api/v1/ai/invoke":
+            if not self._require_permission("adminPanel"): return
+            try:
+                body = json.loads(self.body)
+                prompt = str(body.get("prompt", ""))[:4000]
+                system = str(body.get("system", "You are a helpful field operations assistant."))[:1000]
+                intent = str(body.get("intent", "invoke"))
+                if not prompt:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_prompt", "prompt required"); return
+                router = self.store.get_ai_router(self.organization_id)
+                if not router.available:
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "router_unavailable",
+                                f"Provider {router.provider!r}: set env var for key"); return
+                t0 = time.monotonic()
+                result = router.invoke(prompt, system=system)
+                latency = int((time.monotonic() - t0) * 1000)
+                user_id = self.session_context.get("user_id")
+                self.store.log_ai_invocation(
+                    self.organization_id, user_id, intent,
+                    result.get("provider", router.provider),
+                    result.get("model", router.model),
+                    result.get("prompt_tokens", 0), result.get("completion_tokens", 0),
+                    latency, None,
+                )
+                self._json(HTTPStatus.OK, result)
+            except RuntimeError as err:
+                user_id = self.session_context.get("user_id")
+                self.store.log_ai_invocation(
+                    self.organization_id, user_id, "invoke",
+                    "unknown", "unknown", 0, 0, 0, str(err),
+                )
+                self._error(HTTPStatus.BAD_GATEWAY, "llm_error", str(err))
             return
         # Project import: POST /api/v1/projects/import
         if path == "/api/v1/projects/import":

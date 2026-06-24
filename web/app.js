@@ -1498,7 +1498,117 @@ function setupAIApprovals() {
   if (filter) filter.addEventListener('change', () => hydrateAIApprovals(filter.value));
 }
 
-// ── Knowledge Search ──────────────────────────────────────────────────────
+// ── AI Router / Gateway ───────────────────────────────────────────────────
+async function hydrateAiGateway() {
+  const badge = document.getElementById('aiRouterStatusBadge');
+  try {
+    const { config, available, key_set } = await apiFetch('/api/v1/ai/status');
+    if (badge) {
+      const color = available ? 'var(--accent)' : '#e05353';
+      const label = available ? '● Доступен' : (key_set ? '● Не активен' : '● Нет ключа');
+      badge.textContent = label;
+      badge.style.color = color;
+    }
+    // Populate form
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    set('aiProvider', config.provider || 'anthropic');
+    set('aiModel', config.model || '');
+    set('aiEnvKeyVar', config.env_key_var || 'ANTHROPIC_API_KEY');
+    set('aiMaxTokens', config.max_tokens || 1024);
+    const enabledEl = document.getElementById('aiEnabled');
+    if (enabledEl) enabledEl.checked = config.enabled !== false && config.enabled !== 0;
+  } catch { if (badge) { badge.textContent = '● Ошибка'; badge.style.color = '#e05353'; } }
+}
+
+function setupAiGateway() {
+  hydrateAiGateway();
+
+  document.getElementById('aiRouterConfigForm')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const config = {
+      provider: document.getElementById('aiProvider')?.value || 'anthropic',
+      model: document.getElementById('aiModel')?.value || '',
+      env_key_var: document.getElementById('aiEnvKeyVar')?.value || 'ANTHROPIC_API_KEY',
+      max_tokens: parseInt(document.getElementById('aiMaxTokens')?.value || '1024', 10),
+      temperature: 0.3,
+      enabled: document.getElementById('aiEnabled')?.checked ?? true,
+    };
+    try {
+      await apiFetch('/api/v1/ai/config', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify(config),
+      });
+      toast('Конфигурация AI сохранена');
+      hydrateAiGateway();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
+  document.getElementById('aiClassifyBtn')?.addEventListener('click', async () => {
+    const text = document.getElementById('aiTestPrompt')?.value?.trim();
+    if (!text) return;
+    const resultEl = document.getElementById('aiTestResult');
+    if (!resultEl) return;
+    resultEl.style.display = 'block';
+    resultEl.textContent = 'Классификация…';
+    try {
+      const r = await apiFetch('/api/v1/ai/classify', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ text }),
+      });
+      resultEl.textContent = `Intent: ${r.intent}  Confidence: ${(r.confidence*100).toFixed(0)}%\nTags: ${r.tags.join(', ') || '—'}`;
+    } catch(e) { resultEl.textContent = `Ошибка: ${e.message}`; }
+  });
+
+  document.getElementById('aiInvokeBtn')?.addEventListener('click', async () => {
+    const prompt = document.getElementById('aiTestPrompt')?.value?.trim();
+    if (!prompt) return;
+    const resultEl = document.getElementById('aiTestResult');
+    if (!resultEl) return;
+    const btn = document.getElementById('aiInvokeBtn');
+    btn.disabled = true;
+    resultEl.style.display = 'block';
+    resultEl.textContent = 'Отправка запроса…';
+    try {
+      const r = await apiFetch('/api/v1/ai/invoke', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ prompt, intent: 'test' }),
+      });
+      resultEl.textContent = `[${r.provider} · ${r.model} · ${r.latency_ms}ms · ${r.prompt_tokens}+${r.completion_tokens} tokens]\n\n${r.text}`;
+    } catch(e) { resultEl.textContent = `Ошибка: ${e.message}`; }
+    finally { btn.disabled = false; }
+  });
+
+  document.getElementById('loadAiLogBtn')?.addEventListener('click', async () => {
+    const logEl = document.getElementById('aiInvocationLog');
+    if (!logEl) return;
+    try {
+      const { log = [] } = await apiFetch('/api/v1/ai/log?limit=50');
+      if (!log.length) { logEl.innerHTML = '<p class="empty-copy">Вызовов нет.</p>'; return; }
+      logEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--text-secondary);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:5px 8px">Время</th><th style="padding:5px 8px">Интент</th>
+          <th style="padding:5px 8px">Провайдер</th><th style="padding:5px 8px">Токены</th>
+          <th style="padding:5px 8px">ms</th><th style="padding:5px 8px">Ошибка</th>
+        </tr></thead>
+        <tbody>${log.map(e => {
+          const dt = new Date(e.created_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:5px 8px;white-space:nowrap">${dt}</td>
+            <td style="padding:5px 8px">${escapeHtml(e.intent)}</td>
+            <td style="padding:5px 8px">${escapeHtml(e.provider)} / ${escapeHtml(e.model)}</td>
+            <td style="padding:5px 8px">${e.prompt_tokens}+${e.completion_tokens}</td>
+            <td style="padding:5px 8px">${e.latency_ms}</td>
+            <td style="padding:5px 8px;color:#e05353">${e.error ? escapeHtml(e.error.slice(0,60)) : ''}</td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+    } catch(e) { logEl.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
+  });
+}
+
+// ── Knowledge Search ───────────────────────────────────────────────────────
 function setupKnowledgeSearch() {
   const inp = document.getElementById('knowledgeSearchInput');
   const btn = document.getElementById('knowledgeSearchBtn');
@@ -4501,6 +4611,7 @@ async function setup() {
   setupAIApprovals();
   setupCodexDialog();
   setupTeam();
+  setupAiGateway();
   setupTimeTracking();
   setupConflictQueue();
   setupKnowledgeSearch();
