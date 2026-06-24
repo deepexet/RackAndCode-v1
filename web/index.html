@@ -57,7 +57,7 @@
       <span class="brand-mark">V</span>
       <span><strong>RackPilot</strong><small>by Valeronix</small></span>
     </a>
-    <nav class="primary-nav" aria-label="Разделы платформы"><a href="#overview" data-route-link="overview">Обзор</a><a href="#projects" data-route-link="projects">Проекты</a><a href="#tech" data-route-link="tech">ТК</a><a href="#logs" data-route-link="logs">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin">Admin</a></nav>
+    <nav class="primary-nav" aria-label="Platform navigation"><a href="#overview" data-route-link="overview" data-i18n="NAV_OVERVIEW">Overview</a><a href="#projects" data-route-link="projects" data-i18n="NAV_PROJECTS">Projects</a><a href="#tech" data-route-link="tech" data-i18n="NAV_TECH">Field</a><a href="#logs" data-route-link="logs" data-i18n="NAV_LOGS">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin" data-i18n="NAV_ADMIN">Admin</a></nav>
     <div class="header-right">
       <div class="agent-indicator idle" id="agentIndicator" title="Статус разработки" role="button" tabindex="0" style="cursor:pointer"><i></i><span><strong>Codex</strong><small id="agentStatusText">Статус загружается…</small></span><button id="requestContinueButton" type="button" title="Запросить продолжение разработки" aria-label="Запросить продолжение разработки">▶</button></div>
       <dialog id="codexInfoDialog" style="max-width:480px;width:100%">
@@ -77,13 +77,14 @@
         </div>
       </dialog>
       <div id="devModeBadge" style="display:none;align-items:center;gap:5px;font-size:10px;font-weight:700;color:#f5a623;background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.25);border-radius:6px;padding:3px 8px;cursor:default" title="Сессия не активна — используется dev-mode (X-RackPilot-Role). Войдите для полной аутентификации.">⚠ DEV</div>
-      <label class="role-switcher">Role<select id="roleSwitcher" aria-label="Current role preview"><option value="Administrator">Administrator</option><option value="ProjectManager">Project Manager</option><option value="Supervisor">Supervisor</option><option value="Technician">Technician</option></select></label>
+      <label class="role-switcher" data-i18n-label="ROLE_LABEL">Role<select id="roleSwitcher" aria-label="Current role preview"><option value="Administrator">Administrator</option><option value="ProjectManager">Project Manager</option><option value="Supervisor">Supervisor</option><option value="Technician">Technician</option></select></label>
+      <button id="langToggleBtn" type="button" class="button ghost" title="Switch language / Сменить язык" style="padding:4px 8px;font-size:12px;font-weight:700;min-width:36px">EN</button>
       <div class="top-actions">
-        <span class="save-state" id="saveState"><i></i> Локально сохранено</span>
-        <button class="button ghost" id="exportButton" type="button" data-permission="developmentWorkspace" title="Экспорт Dev Workspace (задачи канбана)">⬇ Workspace</button>
-        <label class="button ghost file-button" data-permission="developmentWorkspace" title="Импорт Dev Workspace">⬆ Workspace<input id="importInput" type="file" accept="application/json"></label>
-        <button class="button primary" id="addTaskButton" type="button" data-permission="developmentWorkspace">＋ Новая задача</button>
-        <button class="button ghost" id="logoutButton" type="button" title="Выйти" style="padding:6px 10px">⏻</button>
+        <span class="save-state" id="saveState"><i></i> <span data-i18n="SAVE_STATE_OK">Saved locally</span></span>
+        <button class="button ghost" id="exportButton" type="button" data-permission="developmentWorkspace" data-i18n="HDR_EXPORT_WS">⬇ Workspace</button>
+        <label class="button ghost file-button" data-permission="developmentWorkspace"><span data-i18n="HDR_IMPORT_WS">⬆ Workspace</span><input id="importInput" type="file" accept="application/json"></label>
+        <button class="button primary" id="addTaskButton" type="button" data-permission="developmentWorkspace" data-i18n="HDR_NEW_TASK">＋ New task</button>
+        <button class="button ghost" id="logoutButton" type="button" style="padding:6px 10px" data-i18n="HDR_LOGOUT">⏻</button>
       </div>
     </div>
   </header>
@@ -210,34 +211,34 @@
       <section class="detail-section compute-help"><p class="eyebrow">ENROLLMENT</p><h2>Подключение Mac</h2><p>Agent работает только после ручного запуска. Возможность выполнять вычисления дополнительно требует флага <code>--compute-enabled</code> и разрешения переключателем администратора.</p><pre>python3 scripts/mac_agent.py --server http://192.168.8.138:4173 --name "M1 Pro" --compute-enabled</pre></section>
       <section class="detail-section" id="aiGatewaySection" data-permission="adminPanel">
         <div class="detail-section-title">
-          <div><p class="eyebrow">AI ROUTER</p><h2>Провайдер и использование</h2></div>
-          <span id="aiRouterStatusBadge" style="font-size:12px;font-weight:700;color:var(--text-secondary)">Загрузка…</span>
+          <div><p class="eyebrow" data-i18n="AI_EYEBROW">AI ROUTER</p><h2 data-i18n="AI_TITLE">Provider &amp; usage</h2></div>
+          <span id="aiRouterStatusBadge" style="font-size:12px;font-weight:700;color:var(--text-secondary)" data-i18n="BTN_LOADING">Loading…</span>
         </div>
-        <p style="color:#778195;font-size:13px;margin-bottom:16px">Единая точка AI-запросов. Ключ читается из переменной окружения — никогда не хранится в БД.</p>
+        <p style="color:#778195;font-size:13px;margin-bottom:16px" data-i18n="AI_DESC">Single entry point for all AI requests. Key read from env — never stored in DB.</p>
 
         <form id="aiRouterConfigForm" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px">
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Провайдер
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px"><span data-i18n="AI_PROVIDER">Provider</span>
             <select id="aiProvider" style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
               <option value="anthropic">Anthropic Claude</option>
               <option value="openai">OpenAI GPT</option>
               <option value="local">Local (no API)</option>
             </select>
           </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Модель
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px"><span data-i18n="AI_MODEL">Model</span>
             <input id="aiModel" type="text" placeholder="claude-haiku-4-5-20251001" maxlength="100"
               style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
           </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Env-переменная ключа
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px"><span data-i18n="AI_ENV_KEY">API key env var</span>
             <input id="aiEnvKeyVar" type="text" placeholder="ANTHROPIC_API_KEY" maxlength="80"
               style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
           </label>
-          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Max tokens
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px"><span data-i18n="AI_MAX_TOKENS">Max tokens</span>
             <input id="aiMaxTokens" type="number" min="64" max="8192" value="1024"
               style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
           </label>
           <div style="grid-column:1/-1;display:flex;gap:8px;align-items:center;justify-content:flex-end">
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-              <input type="checkbox" id="aiEnabled" checked> Включён
+              <input type="checkbox" id="aiEnabled" checked> <span data-i18n="AI_ENABLED">Enabled</span>
             </label>
             <button class="button primary" type="submit" style="font-size:13px">Сохранить</button>
           </div>
@@ -245,12 +246,12 @@
 
         <!-- Test invoke panel -->
         <div style="border-top:1px solid var(--border);padding-top:14px;margin-bottom:14px">
-          <p class="eyebrow" style="margin-bottom:8px">ТЕСТ ЗАПРОСА</p>
+          <p class="eyebrow" style="margin-bottom:8px" data-i18n="AI_TEST_EYEBROW">TEST PROMPT</p>
           <div style="display:flex;gap:8px">
-            <input id="aiTestPrompt" type="text" placeholder="Введите промпт для теста…"
+            <input id="aiTestPrompt" type="text" data-i18n-placeholder="AI_TEST_PLACEHOLDER" placeholder="Enter a test prompt…"
               style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
-            <button class="button ghost" id="aiClassifyBtn" type="button" style="white-space:nowrap">🏷 Classify</button>
-            <button class="button primary" id="aiInvokeBtn" type="button" style="white-space:nowrap">▶ Invoke</button>
+            <button class="button ghost" id="aiClassifyBtn" type="button" style="white-space:nowrap" data-i18n="AI_CLASSIFY">🏷 Classify</button>
+            <button class="button primary" id="aiInvokeBtn" type="button" style="white-space:nowrap" data-i18n="AI_INVOKE">▶ Invoke</button>
           </div>
           <div id="aiTestResult" style="margin-top:10px;font-size:12px;white-space:pre-wrap;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;display:none"></div>
         </div>
@@ -258,8 +259,8 @@
         <!-- Invocation log -->
         <div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-            <p class="eyebrow">LOG ВЫЗОВОВ</p>
-            <button class="button ghost" id="loadAiLogBtn" style="font-size:12px">Загрузить лог</button>
+            <p class="eyebrow" data-i18n="AI_LOG_EYEBROW">INVOCATION LOG</p>
+            <button class="button ghost" id="loadAiLogBtn" style="font-size:12px" data-i18n="AI_LOG_LOAD">Load log</button>
           </div>
           <div id="aiInvocationLog"></div>
         </div>
@@ -492,20 +493,21 @@
       <!-- Knowledge Search + Audit -->
       <section class="detail-section" id="knowledgeSearchSection" data-permission="adminPanel">
         <div class="detail-section-title">
-          <div><p class="eyebrow">KNOWLEDGE BASE</p><h2>Поиск по базе знаний</h2></div>
-          <button class="button ghost" id="rebuildKnowledgeBtn" type="button">↺ Пересобрать индекс</button>
+          <div><p class="eyebrow" data-i18n="KS_EYEBROW">KNOWLEDGE BASE</p><h2 data-i18n="KS_TITLE">AI document search</h2></div>
+          <button class="button ghost" id="rebuildKnowledgeBtn" type="button" data-i18n="KS_REBUILD">↺ Rebuild index</button>
         </div>
         <div style="display:flex;gap:8px;margin-bottom:14px">
-          <input id="knowledgeSearchInput" type="search" placeholder="Поиск по документам…"
+          <input id="knowledgeSearchInput" type="search" data-i18n-placeholder="KS_PLACEHOLDER"
+            placeholder="Search across all project documents…"
             style="flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px"
             autocomplete="off">
-          <button class="button primary" id="knowledgeSearchBtn" type="button">Найти</button>
+          <button class="button primary" id="knowledgeSearchBtn" type="button" data-i18n="KS_SEARCH">Search</button>
         </div>
         <div id="knowledgeSearchResults" style="display:flex;flex-direction:column;gap:10px"></div>
         <div style="margin-top:24px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <h3 style="font-size:14px;font-weight:600;color:var(--text-secondary);margin:0">AUDIT LOG ПОИСКА</h3>
-            <button class="button ghost" id="loadRetrievalLogBtn" style="font-size:12px">Загрузить лог</button>
+            <h3 style="font-size:14px;font-weight:600;color:var(--text-secondary);margin:0" data-i18n="KS_LOG_EYEBROW">SEARCH AUDIT LOG</h3>
+            <button class="button ghost" id="loadRetrievalLogBtn" style="font-size:12px" data-i18n="KS_LOG_LOAD">Load log</button>
           </div>
           <div id="retrievalLogList"></div>
         </div>
@@ -770,14 +772,14 @@
   <!-- Project data import preview -->
   <dialog id="projectImportDialog" style="max-width:540px;width:100%">
     <div class="dialog-head">
-      <div><p class="eyebrow">ИМПОРТ ПРОЕКТА</p><h2>Предпросмотр данных</h2></div>
+      <div><p class="eyebrow" data-i18n="IMPORT_EYEBROW">PROJECT IMPORT</p><h2 data-i18n="IMPORT_TITLE">Import preview</h2></div>
       <button class="icon-button" type="button" data-close-dialog="projectImportDialog" aria-label="Закрыть">×</button>
     </div>
     <div id="projectImportPreview" style="margin-top:12px;font-size:13px"></div>
     <div class="dialog-actions" style="margin-top:16px">
       <span></span>
-      <button class="button ghost" type="button" data-close-dialog="projectImportDialog">Отмена</button>
-      <button class="button primary" id="confirmProjectImportBtn" type="button">Импортировать</button>
+      <button class="button ghost" type="button" data-close-dialog="projectImportDialog" data-i18n="BTN_CANCEL">Cancel</button>
+      <button class="button primary" id="confirmProjectImportBtn" type="button" data-i18n="IMPORT_CONFIRM">Import</button>
     </div>
   </dialog>
 

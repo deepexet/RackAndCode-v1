@@ -1,4 +1,5 @@
 import { STATUSES, AREAS, INITIAL_TASKS } from './data.js';
+import { t, getLang, setLang, applyI18n } from './i18n.js';
 
 const STORAGE_KEY = 'rackpilot.workspace.v1';
 const LEGACY_STORAGE_KEYS = ['fieldos.workspace.v1'];
@@ -1498,6 +1499,21 @@ function setupAIApprovals() {
   if (filter) filter.addEventListener('change', () => hydrateAIApprovals(filter.value));
 }
 
+// ── Language toggle ───────────────────────────────────────────────────────
+function _updateLangBtn() {
+  const btn = document.getElementById('langToggleBtn');
+  if (btn) btn.textContent = getLang().toUpperCase();
+}
+
+function setupLangToggle() {
+  _updateLangBtn();
+  applyI18n();
+  document.getElementById('langToggleBtn')?.addEventListener('click', () => {
+    setLang(getLang() === 'en' ? 'ru' : 'en');
+    _updateLangBtn();
+  });
+}
+
 // ── AI Router / Gateway ───────────────────────────────────────────────────
 async function hydrateAiGateway() {
   const badge = document.getElementById('aiRouterStatusBadge');
@@ -1505,9 +1521,10 @@ async function hydrateAiGateway() {
     const { config, available, key_set } = await apiFetch('/api/v1/ai/status');
     if (badge) {
       const color = available ? 'var(--accent)' : '#e05353';
-      const label = available ? '● Доступен' : (key_set ? '● Не активен' : '● Нет ключа');
+      const label = available ? t('AI_STATUS_OK') : (key_set ? t('AI_STATUS_OFF') : t('AI_STATUS_NO_KEY'));
       badge.textContent = label;
       badge.style.color = color;
+      badge.removeAttribute('data-i18n');
     }
     // Populate form
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
@@ -4611,6 +4628,7 @@ async function setup() {
   setupAIApprovals();
   setupCodexDialog();
   setupTeam();
+  setupLangToggle();
   setupAiGateway();
   setupTimeTracking();
   setupConflictQueue();
