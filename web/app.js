@@ -1541,6 +1541,39 @@ function setupKnowledgeSearch() {
     } catch(e) { toast(`Ошибка: ${e.message}`); }
     finally { rebuildBtn.disabled = false; rebuildBtn.textContent = '↺ Пересобрать индекс'; }
   });
+
+  // Retrieval audit log
+  const logBtn = document.getElementById('loadRetrievalLogBtn');
+  logBtn?.addEventListener('click', async () => {
+    const logEl = document.getElementById('retrievalLogList');
+    if (!logEl) return;
+    logBtn.disabled = true;
+    try {
+      const { log = [] } = await apiFetch('/api/v1/knowledge/log?limit=50');
+      if (!log.length) { logEl.innerHTML = '<p class="empty-copy">Записей нет.</p>'; return; }
+      const POLICY_COLOR = { org:'var(--accent)', project:'var(--accent-yellow,#e09800)', restricted:'#e05353' };
+      logEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--text-secondary);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:6px 8px">Время</th><th style="padding:6px 8px">Пользователь</th>
+          <th style="padding:6px 8px">Запрос</th><th style="padding:6px 8px">Результаты</th>
+          <th style="padding:6px 8px">Отфильтровано</th>
+        </tr></thead>
+        <tbody>${log.map(e => {
+          const dt = new Date(e.created_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+          const filtered = e.filtered_count > 0
+            ? `<span style="color:#e05353;font-weight:600">${e.filtered_count}</span>`
+            : '—';
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:7px 8px;white-space:nowrap">${dt}</td>
+            <td style="padding:7px 8px">${escapeHtml(e.user_id||'—')} <span style="color:var(--text-secondary)">${escapeHtml(e.user_role||'')}</span></td>
+            <td style="padding:7px 8px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.query)}</td>
+            <td style="padding:7px 8px">${e.result_count}</td>
+            <td style="padding:7px 8px">${filtered}</td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+    } catch(err) { logEl.innerHTML = `<p style="color:#e05353">${err.message}</p>`; }
+    finally { logBtn.disabled = false; }
+  });
 }
 
 // ── Time Tracking ──────────────────────────────────────────────────────────
@@ -3183,15 +3216,25 @@ function fmtBytes(b) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const _POLICY_BADGE = {
+  org:        '<span style="font-size:9px;color:var(--accent);font-weight:700">ORG</span>',
+  project:    '<span style="font-size:9px;color:var(--accent-yellow,#e09800);font-weight:700">PROJ</span>',
+  restricted: '<span style="font-size:9px;color:#e05353;font-weight:700">🔒</span>',
+};
+
 function _renderObjectCard(o, projectId) {
   const quarantine = o.scan_result === 'quarantine';
+  const policy = o.access_policy || 'org';
   const scanBadge = quarantine
     ? '<span class="badge-warn">⚠ Карантин</span>'
     : (o.version_number > 1 ? `<span class="badge-muted">v${o.version_number}</span>` : '');
+  const policyBadge = _POLICY_BADGE[policy] || '';
   const versionBtn = o.version_number >= 1
     ? `<button class="button ghost obj-versions-btn" data-id="${o.id}" data-name="${escapeHtml(o.name)}" type="button" title="История версий" style="padding:4px 8px;font-size:12px">⊞</button>`
     : '';
-  return `<div class="object-card${quarantine ? ' quarantine' : ''}" data-obj-id="${o.id}">
+  const policyBtn = `<button class="button ghost obj-policy-btn" data-id="${o.id}" data-policy="${policy}"
+    type="button" title="Политика доступа: ${policy}" style="padding:4px 6px;font-size:11px">${policyBadge}</button>`;
+  return `<div class="object-card${quarantine ? ' quarantine' : ''}${policy === 'restricted' ? ' obj-restricted' : ''}" data-obj-id="${o.id}">
     <div class="object-icon">${mimeIcon(o.mime_type)}</div>
     <div class="object-info">
       <strong title="${escapeHtml(o.name)}">${escapeHtml(o.name)}</strong>
@@ -3202,6 +3245,7 @@ function _renderObjectCard(o, projectId) {
     <div class="object-actions">
       ${!quarantine ? `<a class="button ghost" href="/api/v1/objects/${o.id}" download="${escapeHtml(o.name)}" style="padding:4px 8px;font-size:12px">↓</a>` : ''}
       ${versionBtn}
+      ${policyBtn}
       <button class="button ghost obj-delete-btn" data-id="${o.id}" type="button" style="padding:4px 8px;font-size:12px">✕</button>
     </div>
   </div>`;
@@ -3233,6 +3277,23 @@ async function hydrateProjectObjects(projectId, query = '') {
     });
     grid.querySelectorAll('.obj-versions-btn').forEach(btn => {
       btn.addEventListener('click', () => showObjectVersions(btn.dataset.id, btn.dataset.name, projectId));
+    });
+    grid.querySelectorAll('.obj-policy-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const current = btn.dataset.policy || 'org';
+        const cycle = { org: 'project', project: 'restricted', restricted: 'org' };
+        const next = cycle[current] || 'org';
+        const labels = { org: 'Org-wide (все в организации)', project: 'Project-only (только назначенные)', restricted: 'Restricted (блок для AI retrieval)' };
+        if (!confirm(`Изменить политику доступа:\n${labels[current]} → ${labels[next]}`)) return;
+        try {
+          await apiFetch(`/api/v1/objects/${btn.dataset.id}/policy`, {
+            method: 'POST',
+            headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+            body: JSON.stringify({ policy: next }),
+          });
+          hydrateProjectObjects(projectId);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
     });
   } catch (e) { grid.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
 }

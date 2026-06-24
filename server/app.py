@@ -2104,32 +2104,139 @@ class WorkspaceStore:
             pass
         return True
 
+    def get_user_allowed_projects(self, org: str, user_id: str) -> list[str] | None:
+        """
+        Returns list of project_ids the user is assigned to, or None if they have
+        org-wide access (admin/manager roles).
+        """
+        with self._connect() as conn:
+            # Check user role — admins and managers see everything
+            session = conn.execute(
+                "SELECT role FROM sessions WHERE user_id=? AND organization_id=? "
+                "AND expires_at > ? ORDER BY issued_at DESC LIMIT 1",
+                (user_id, org, utc_now()),
+            ).fetchone()
+            if session and session["role"] in ("admin", "manager"):
+                return None  # unrestricted
+            # Tech / viewer: return their assigned project IDs
+            rows = conn.execute(
+                "SELECT DISTINCT project_id FROM project_assignments "
+                "WHERE organization_id=? AND member_id IN ("
+                "  SELECT id FROM team_members WHERE organization_id=? AND user_id=?"
+                ")",
+                (org, org, user_id),
+            ).fetchall()
+        assigned = [r["project_id"] for r in rows]
+        return assigned  # empty list = no assignments yet
+
     def search_knowledge(self, org: str, query: str,
-                         project_id: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
-        """BM25-ranked chunk search across knowledge_fts."""
+                         project_id: str | None = None,
+                         allowed_project_ids: list[str] | None = None,
+                         limit: int = 10,
+                         user_id: str | None = None,
+                         user_role: str = "") -> list[dict[str, Any]]:
+        """
+        BM25-ranked chunk search across knowledge_fts with permission gate.
+
+        allowed_project_ids=None  → org-wide access (admin)
+        allowed_project_ids=[]    → no access — returns empty
+        allowed_project_ids=[...]  → restricted to those projects only
+        """
         if not query.strip():
             return []
+        # Permission gate: merge explicit project filter + access list
+        effective_projects: list[str] | None = None
+        if allowed_project_ids is not None:
+            if project_id:
+                # User must be allowed to access the requested project
+                if project_id not in allowed_project_ids:
+                    self._log_retrieval(org, user_id, user_role, query, allowed_project_ids, 0, 0)
+                    return []
+                effective_projects = [project_id]
+            else:
+                effective_projects = allowed_project_ids
+        elif project_id:
+            effective_projects = [project_id]
+
         fts_query = ' OR '.join(
             f'"{word}"' for word in query.split()[:8] if len(word) > 1
         ) or f'"{query}"'
+
         with self._connect() as conn:
-            where = "kf.object_id IN (SELECT id FROM objects WHERE organization_id=?)"
+            # Build permission-aware WHERE clause
+            conditions = [
+                "kf.object_id IN (SELECT id FROM objects WHERE organization_id=?)",
+                "o.access_policy != 'restricted'",  # never return restricted objects
+            ]
             params: list[Any] = [org]
-            if project_id:
-                where += " AND kf.project_id=?"
-                params.append(project_id)
+
+            if effective_projects is not None:
+                if not effective_projects:
+                    # No allowed projects → empty result
+                    self._log_retrieval(org, user_id, user_role, query, allowed_project_ids or [], 0, 0)
+                    return []
+                placeholders = ",".join("?" * len(effective_projects))
+                conditions.append(
+                    f"(o.access_policy = 'org' OR o.project_id IN ({placeholders}))"
+                )
+                params.extend(effective_projects)
+
             params.append(fts_query)
-            params.append(limit)
+            params.append(limit * 2)  # fetch extra; will filter restricted post-hoc
+
+            where_clause = " AND ".join(conditions)
             rows = conn.execute(
                 f"SELECT kf.chunk_id, kf.object_id, kf.project_id, kf.chunk_text, "
                 f"o.name AS object_name, o.mime_type, o.project_id AS obj_project_id, "
+                f"o.access_policy, "
                 f"snippet(knowledge_fts,3,'<b>','</b>','…',30) AS snippet, "
                 f"rank "
                 f"FROM knowledge_fts kf "
                 f"JOIN objects o ON o.id=kf.object_id "
-                f"WHERE {where} AND knowledge_fts MATCH ? "
+                f"WHERE {where_clause} AND knowledge_fts MATCH ? "
                 f"ORDER BY rank LIMIT ?",
                 params,
+            ).fetchall()
+
+        results = [dict(r) for r in rows if r["access_policy"] != "restricted"]
+        filtered = len(rows) - len(results)
+        results = results[:limit]
+        self._log_retrieval(org, user_id, user_role, query,
+                            allowed_project_ids if allowed_project_ids is not None else [],
+                            len(results), filtered)
+        return results
+
+    def _log_retrieval(self, org: str, user_id: str | None, user_role: str,
+                       query: str, allowed_projects: list[str],
+                       result_count: int, filtered_count: int) -> None:
+        log_id = str(uuid.uuid4())
+        now = utc_now()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO retrieval_log (id,organization_id,user_id,user_role,"
+                    "query,allowed_projects,result_count,filtered_count,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (log_id, org, user_id, user_role,
+                     query[:500], json.dumps(allowed_projects),
+                     result_count, filtered_count, now),
+                )
+        except Exception:
+            pass  # audit failure must not break retrieval
+
+    def set_object_policy(self, org: str, obj_id: str, policy: str) -> dict[str, Any]:
+        if policy not in ("org", "project", "restricted"):
+            raise ValueError(f"Invalid policy: {policy}")
+        with self._connect() as conn:
+            row = conn.execute("SELECT id FROM objects WHERE id=? AND organization_id=?", (obj_id, org)).fetchone()
+            if not row: raise LookupError("Object not found")
+            conn.execute("UPDATE objects SET access_policy=? WHERE id=?", (policy, obj_id))
+        return {"id": obj_id, "accessPolicy": policy}
+
+    def list_retrieval_log(self, org: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM retrieval_log WHERE organization_id=? ORDER BY created_at DESC LIMIT ?",
+                (org, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -3632,7 +3739,23 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             q = self.query_params.get("q", [""])[0].strip()
             project_id = self.query_params.get("projectId", [None])[0]
             limit = min(int(self.query_params.get("limit", ["10"])[0]), 50)
-            self._json(HTTPStatus.OK, {"results": self.store.search_knowledge(self.organization_id, q, project_id, limit)})
+            ctx = self.session_context or {}
+            user_id = ctx.get("userId")
+            user_role = ctx.get("role","")
+            # Derive per-user project scope (None = org-wide for admins)
+            allowed = self.store.get_user_allowed_projects(self.organization_id, user_id) if user_id else []
+            results = self.store.search_knowledge(
+                self.organization_id, q, project_id,
+                allowed_project_ids=allowed, limit=limit,
+                user_id=user_id, user_role=user_role,
+            )
+            self._json(HTTPStatus.OK, {"results": results})
+            return
+        # Retrieval audit log: GET /api/v1/knowledge/log
+        if path == "/api/v1/knowledge/log":
+            if not self._require_permission("adminPanel"): return
+            limit = min(int(self.query_params.get("limit", ["50"])[0]), 200)
+            self._json(HTTPStatus.OK, {"log": self.store.list_retrieval_log(self.organization_id, limit)})
             return
         # Service history: GET /api/v1/assets/:id/service, GET /api/v1/assets/:id/configs
         if path.startswith("/api/v1/assets/") and parts[-1] == "service":
@@ -4314,6 +4437,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             ctx = self.session_context or {}
             self.store.delete_comment(self.organization_id, parts[5], ctx.get("userId"))
             self._json(HTTPStatus.OK, {"ok": True})
+            return
+        # Object access policy: POST /api/v1/objects/:id/policy
+        if path.startswith("/api/v1/objects/") and parts[-1] == "policy":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                result = self.store.set_object_policy(self.organization_id, parts[-2], payload.get("policy","org"))
+                self._json(HTTPStatus.OK, result)
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
             return
         # Knowledge index rebuild: POST /api/v1/knowledge/rebuild
         if path == "/api/v1/knowledge/rebuild":

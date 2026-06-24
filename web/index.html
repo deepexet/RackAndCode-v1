@@ -457,7 +457,7 @@
         <p style="color:#778195;font-size:13px;margin:0 0 12px">AI-агент предлагает изменение → вы видите доказательства → одобряете или отклоняете. Изменения применяются только после одобрения.</p>
         <div id="aiApprovalsList" style="display:flex;flex-direction:column;gap:10px"></div>
       </section>
-      <!-- Knowledge Search -->
+      <!-- Knowledge Search + Audit -->
       <section class="detail-section" id="knowledgeSearchSection" data-permission="adminPanel">
         <div class="detail-section-title">
           <div><p class="eyebrow">KNOWLEDGE BASE</p><h2>Поиск по базе знаний</h2></div>
@@ -470,6 +470,13 @@
           <button class="button primary" id="knowledgeSearchBtn" type="button">Найти</button>
         </div>
         <div id="knowledgeSearchResults" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div style="margin-top:24px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <h3 style="font-size:14px;font-weight:600;color:var(--text-secondary);margin:0">AUDIT LOG ПОИСКА</h3>
+            <button class="button ghost" id="loadRetrievalLogBtn" style="font-size:12px">Загрузить лог</button>
+          </div>
+          <div id="retrievalLogList"></div>
+        </div>
       </section>
 
       <section class="detail-section" id="retrievalEvalSection" data-permission="adminPanel">
