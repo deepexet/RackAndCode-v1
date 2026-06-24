@@ -5,6 +5,8 @@ const LEGACY_STORAGE_KEYS = ['fieldos.workspace.v1'];
 const UNIT_OUTBOX_KEY = 'rackpilot.unit-outbox.v1';
 const LEGACY_UNIT_OUTBOX_KEYS = ['fieldos.unit-outbox.v1'];
 const WRITE_OUTBOX_KEY = 'rackpilot.write-outbox.v1';
+const PROJECTS_CACHE_KEY = 'rackpilot.projects-cache.v1';
+const SYNC_CURSOR_KEY = 'rackpilot.sync-cursor.v1';
 const ROLE_KEY = 'rackpilot.role-preview.v1';
 const ORGANIZATION_ID = 'local-dev';
 const state = loadState();
@@ -87,7 +89,14 @@ function _updateOfflineBanner() {
   const unitLen = typeof unitOutbox !== 'undefined' ? (unitOutbox?.length || 0) : 0;
   const total = _writeOutbox.length + unitLen;
   banner.style.display = isOffline ? 'flex' : 'none';
-  if (countEl) countEl.textContent = total > 0 ? `${total} в очереди` : '';
+  const cursor = _loadSyncCursor();
+  const elapsed = cursor ? _elapsed(cursor) : null;
+  if (countEl) {
+    const parts = [];
+    if (total > 0) parts.push(`${total} в очереди`);
+    if (elapsed) parts.push(`данные ${elapsed}`);
+    countEl.textContent = parts.join(' · ');
+  }
   document.body.style.paddingTop = isOffline ? '41px' : '';
   // Metrics card
   const card = document.getElementById('syncMetricCard');
@@ -96,11 +105,36 @@ function _updateOfflineBanner() {
   if (metric) metric.textContent = total;
 }
 
+// ── Sync cursor & projects cache ─────────────────────────────────────────
+function _saveSyncCursor() {
+  localStorage.setItem(SYNC_CURSOR_KEY, new Date().toISOString());
+}
+function _loadSyncCursor() {
+  return localStorage.getItem(SYNC_CURSOR_KEY);
+}
+function _saveProjectsCache(data) {
+  try { localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify({ ts: new Date().toISOString(), data })); }
+  catch { /* quota exceeded — skip */ }
+}
+function _loadProjectsCache() {
+  try { const raw = localStorage.getItem(PROJECTS_CACHE_KEY); return raw ? JSON.parse(raw) : null; }
+  catch { return null; }
+}
+function _elapsed(isoTs) {
+  if (!isoTs) return null;
+  const sec = Math.floor((Date.now() - new Date(isoTs).getTime()) / 1000);
+  if (sec < 60) return 'только что';
+  if (sec < 3600) return `${Math.floor(sec/60)} мин. назад`;
+  if (sec < 86400) return `${Math.floor(sec/3600)} ч. назад`;
+  return `${Math.floor(sec/86400)} дн. назад`;
+}
+
 function _onNetworkOnline() {
   _updateOfflineBanner();
   setSyncState('saving');
   Promise.all([_flushWriteOutbox(), flushUnitOutbox()]).then(() => {
     syncToServer();
+    hydrateProjects().then(() => _saveSyncCursor());
   });
 }
 function _onNetworkOffline() {
@@ -295,8 +329,10 @@ function setSyncState(mode) {
   indicator.classList.toggle('saving', mode === 'saving');
   indicator.classList.toggle('offline', mode === 'offline');
   const pendingTotal = _writeOutbox.length + (unitOutbox?.length || 0);
-  const offlineLabel = pendingTotal > 0 ? ` Офлайн (${pendingTotal})` : ' Сохранено офлайн';
-  indicator.lastChild.textContent = mode === 'offline' ? offlineLabel : mode === 'saving' ? ' Синхронизация…' : ' Синхронизировано';
+  const cursor = _loadSyncCursor();
+  const offlineLabel = pendingTotal > 0 ? ` Офлайн (${pendingTotal})` : ' Офлайн';
+  const syncedLabel = cursor ? ` Синхр. ${_elapsed(cursor)}` : ' Синхронизировано';
+  indicator.lastChild.textContent = mode === 'offline' ? offlineLabel : mode === 'saving' ? ' Синхронизация…' : syncedLabel;
   _updateOfflineBanner();
 }
 
@@ -348,11 +384,24 @@ async function hydrateProjects() {
     const response = await fetch('/api/v1/projects', { headers: apiHeaders({ Accept: 'application/json' }) });
     if (!response.ok) throw new Error('Projects API unavailable');
     projects = (await response.json()).projects;
+    _saveProjectsCache(projects);
+    _saveSyncCursor();
     applyUnitOutbox();
     renderProjects();
     if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
   } catch {
-    if (!projects.length) renderProjects(true);
+    // Serve from cache when offline or server unreachable
+    const cached = _loadProjectsCache();
+    if (cached?.data?.length && !projects.length) {
+      projects = cached.data;
+      applyUnitOutbox();
+      renderProjects();
+      if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
+      const age = _elapsed(cached.ts);
+      if (age) setSyncState('offline');
+    } else if (!projects.length) {
+      renderProjects(true);
+    }
   }
 }
 
@@ -471,6 +520,7 @@ async function hydrateFromServer() {
       state.fullReplace = false;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       _taskDataVersion++;
+      _saveSyncCursor();
       setSyncState('synced');
       render();
       return;
@@ -3274,8 +3324,13 @@ async function setup() {
   setInterval(()=>{ if(!document.hidden) hydrateAgentStatus(); }, 15000);
   // Flush write outbox every 30s if online
   setInterval(()=>{ if(navigator.onLine && _writeOutbox.length) _flushWriteOutbox(); }, 30000);
+  // Refresh elapsed time in banner/indicator every 60s
+  setInterval(()=>{ _updateOfflineBanner(); setSyncState(navigator.onLine ? 'synced' : 'offline'); }, 60000);
   // Initial banner state
   _updateOfflineBanner();
+  // Restore projects from cache immediately before first network fetch
+  const _initCache = _loadProjectsCache();
+  if (_initCache?.data?.length && !projects.length) { projects = _initCache.data; renderProjects(); }
 }
 
 setup();
