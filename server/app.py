@@ -2018,6 +2018,125 @@ class WorkspaceStore:
             ).fetchone()
         return {"count": row["count"], "totalBytes": row["total"], "quotaBytes": self._org_quota_bytes()}
 
+    # ── Knowledge retrieval evaluation ────────────────────────────────────────
+
+    def create_eval_case(self, org: str, payload: dict[str, Any], created_by: str | None) -> dict[str, Any]:
+        if not payload.get("query", "").strip():
+            raise ValueError("query is required")
+        case_id = str(uuid.uuid4())
+        now = utc_now()
+        expected = payload.get("expectedDocNames", [])
+        if not isinstance(expected, list):
+            raise ValueError("expectedDocNames must be a list of strings")
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO retrieval_test_cases (id,organization_id,project_id,query,expected_doc_names,notes,created_by,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (case_id, org, payload.get("projectId"), payload["query"].strip(),
+                 json.dumps(expected, ensure_ascii=False), payload.get("notes", ""),
+                 created_by, now, now),
+            )
+        return self._eval_case_row_to_dict({"id": case_id, "organization_id": org,
+            "project_id": payload.get("projectId"), "query": payload["query"].strip(),
+            "expected_doc_names": json.dumps(expected), "notes": payload.get("notes", ""),
+            "created_by": created_by, "created_at": now, "updated_at": now})
+
+    def list_eval_cases(self, org: str, project_id: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if project_id:
+                rows = conn.execute(
+                    "SELECT * FROM retrieval_test_cases WHERE organization_id=? AND project_id=? ORDER BY created_at DESC",
+                    (org, project_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM retrieval_test_cases WHERE organization_id=? ORDER BY created_at DESC LIMIT 200",
+                    (org,),
+                ).fetchall()
+        return [self._eval_case_row_to_dict(r) for r in rows]
+
+    def delete_eval_case(self, org: str, case_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM retrieval_test_cases WHERE id=? AND organization_id=?", (case_id, org)
+            )
+        return cur.rowcount > 0
+
+    @staticmethod
+    def _eval_case_row_to_dict(r: Any) -> dict[str, Any]:
+        d = dict(r) if not isinstance(r, dict) else r
+        try: d["expectedDocNames"] = json.loads(d.pop("expected_doc_names", "[]"))
+        except Exception: d["expectedDocNames"] = []
+        d.setdefault("projectId", d.pop("project_id", None))
+        return d
+
+    def run_retrieval_eval(self, org: str, project_id: str | None, ran_by: str | None,
+                           k_precision: int = 3, k_recall: int = 5) -> dict[str, Any]:
+        """Run all eval cases for org (or project), compute P@k and R@k."""
+        cases = self.list_eval_cases(org, project_id)
+        if not cases:
+            raise LookupError("No evaluation test cases found")
+
+        details = []
+        total_precision = 0.0
+        total_recall = 0.0
+        hits = 0
+
+        for case in cases:
+            results = self.search_objects(org, case["query"], project_id=project_id, limit=max(k_precision, k_recall))
+            result_names = [r["name"] for r in results]
+            expected = set(case["expectedDocNames"])
+
+            if not expected:
+                details.append({"caseId": case["id"], "query": case["query"],
+                                 "note": "no expected docs — skipped"})
+                continue
+
+            top_p = result_names[:k_precision]
+            top_r = result_names[:k_recall]
+            precision = sum(1 for n in top_p if n in expected) / k_precision if top_p else 0.0
+            recall = sum(1 for n in top_r if n in expected) / len(expected) if expected else 0.0
+            hit = any(n in expected for n in top_r)
+
+            total_precision += precision
+            total_recall += recall
+            if hit: hits += 1
+
+            details.append({
+                "caseId": case["id"], "query": case["query"],
+                "expected": sorted(expected), "retrieved": result_names[:k_recall],
+                "precisionAtK": round(precision, 3), "recallAtK": round(recall, 3), "hit": hit,
+            })
+
+        valid = len(details)
+        p_avg = round(total_precision / valid, 3) if valid else 0.0
+        r_avg = round(total_recall / valid, 3) if valid else 0.0
+        hit_rate = round(hits / valid, 3) if valid else 0.0
+
+        run_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO retrieval_eval_runs (id,organization_id,project_id,case_count,precision_at_3,"
+                "recall_at_5,hit_rate,details,ran_by,ran_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (run_id, org, project_id, len(cases), p_avg, r_avg, hit_rate,
+                 json.dumps(details, ensure_ascii=False), ran_by, now),
+            )
+        return {
+            "runId": run_id, "caseCount": len(cases), "validCases": valid,
+            "precisionAt3": p_avg, "recallAt5": r_avg, "hitRate": hit_rate,
+            "details": details, "ranAt": now,
+        }
+
+    def list_eval_runs(self, org: str, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id,project_id,case_count,precision_at_3,recall_at_5,hit_rate,ran_by,ran_at "
+                "FROM retrieval_eval_runs WHERE organization_id=? ORDER BY ran_at DESC LIMIT ?",
+                (org, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # ── Privacy Controls ─────────────────────────────────────────────────────
 
     _DEFAULT_PURPOSES: list[tuple[str, int]] = [
@@ -2709,6 +2828,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             limit = min(int(self.query_params.get("limit", ["100"])[0]), 500)
             self._json(HTTPStatus.OK, {"entries": self.store.list_audit_log(self.organization_id, limit)})
             return
+        if path == "/api/v1/admin/retrieval-eval":
+            if not self._require_permission("adminPanel"): return
+            cases = self.store.list_eval_cases(self.organization_id)
+            runs = self.store.list_eval_runs(self.organization_id)
+            self._json(HTTPStatus.OK, {"cases": cases, "runs": runs})
+            return
         if path == "/api/v1/agent/context":
             if not self._require_permission("agentContext"): return
             ctx = _build_agent_context(self.store)
@@ -3045,6 +3170,39 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED,self.store.record_compute_node(self.organization_id,parts[4],payload))
             except (ValueError,json.JSONDecodeError) as error:
                 self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        # Retrieval eval: POST /api/v1/admin/retrieval-eval/cases, /run, cases/:id/delete
+        if path == "/api/v1/admin/retrieval-eval/cases":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, dict): raise ValueError("JSON object expected")
+                uid = (self.session_context or {}).get("userId")
+                case = self.store.create_eval_case(self.organization_id, payload, uid)
+                self._json(HTTPStatus.CREATED, {"case": case})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path == "/api/v1/admin/retrieval-eval/run":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                project_id = payload.get("projectId") if isinstance(payload, dict) else None
+                uid = (self.session_context or {}).get("userId")
+                result = self.store.run_retrieval_eval(self.organization_id, project_id, uid)
+                self._json(HTTPStatus.OK, {"result": result})
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/admin/retrieval-eval/cases/") and parts[-1] == "delete":
+            if not self._require_permission("adminPanel"): return
+            case_id = parts[-2]
+            if self.store.delete_eval_case(self.organization_id, case_id):
+                self._json(HTTPStatus.OK, {"ok": True})
+            else:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Case not found")
             return
         # Object upload: POST /api/v1/projects/:id/objects — raw binary body
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "objects":

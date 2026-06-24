@@ -541,7 +541,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -1214,6 +1214,125 @@ async function hydrateAuditLog() {
       </div>`).join('')}
     </div>`;
   } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+// ── Retrieval Eval ───────────────────────────────────────────────────────
+let _evalCases = [];
+let _evalRuns = [];
+
+async function hydrateRetrievalEval() {
+  try {
+    const resp = await apiFetch('/api/v1/admin/retrieval-eval');
+    const { cases, runs } = await resp.json();
+    _evalCases = cases || [];
+    _evalRuns = runs || [];
+    _renderEvalCases();
+    _renderEvalRunHistory();
+  } catch (e) { /* silent — non-critical panel */ }
+}
+
+function _renderEvalCases() {
+  const el = document.getElementById('evalCasesList');
+  if (!el) return;
+  if (!_evalCases.length) { el.innerHTML = '<p class="empty-copy" style="font-size:12px">Нет тест-кейсов. Добавьте первый выше.</p>'; return; }
+  el.innerHTML = _evalCases.map(c => `
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;background:var(--surface);border-radius:8px;border:1px solid var(--border)">
+      <div style="flex:1;min-width:0">
+        <strong style="font-size:13px">${escapeHtml(c.query)}</strong>
+        ${c.expectedDocNames?.length ? `<div style="font-size:11px;color:#778195;margin-top:3px">→ ${c.expectedDocNames.map(n => escapeHtml(n)).join(', ')}</div>` : ''}
+        ${c.notes ? `<div style="font-size:11px;color:#556070;margin-top:2px">${escapeHtml(c.notes)}</div>` : ''}
+      </div>
+      <button class="button ghost eval-del-btn" data-id="${c.id}" type="button" style="padding:3px 8px;font-size:11px">✕</button>
+    </div>`).join('');
+  el.querySelectorAll('.eval-del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await apiFetch(`/api/v1/admin/retrieval-eval/cases/${btn.dataset.id}/delete`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+      hydrateRetrievalEval();
+    });
+  });
+}
+
+function _renderEvalRunHistory() {
+  const el = document.getElementById('evalRunHistory');
+  if (!el || !_evalRuns.length) return;
+  el.innerHTML = `<p class="eyebrow" style="margin:0 0 8px">История запусков</p>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr>
+        <th style="text-align:left;padding:4px 8px;color:var(--text-muted)">Дата</th>
+        <th style="text-align:right;padding:4px 8px;color:var(--text-muted)">Кейсов</th>
+        <th style="text-align:right;padding:4px 8px;color:var(--text-muted)">P@3</th>
+        <th style="text-align:right;padding:4px 8px;color:var(--text-muted)">R@5</th>
+        <th style="text-align:right;padding:4px 8px;color:var(--text-muted)">Hit rate</th>
+      </tr></thead>
+      <tbody>${_evalRuns.map(r => `<tr>
+        <td style="padding:4px 8px;color:var(--text-muted)">${(r.ran_at||'').slice(0,16).replace('T',' ')}</td>
+        <td style="padding:4px 8px;text-align:right">${r.case_count}</td>
+        <td style="padding:4px 8px;text-align:right;color:${r.precision_at_3>=0.7?'#34d399':'#f59e0b'}">${(r.precision_at_3*100).toFixed(0)}%</td>
+        <td style="padding:4px 8px;text-align:right;color:${r.recall_at_5>=0.7?'#34d399':'#f59e0b'}">${(r.recall_at_5*100).toFixed(0)}%</td>
+        <td style="padding:4px 8px;text-align:right;color:${r.hit_rate>=0.8?'#34d399':'#f59e0b'}">${(r.hit_rate*100).toFixed(0)}%</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+}
+
+function setupRetrievalEval() {
+  const addBtn = document.getElementById('addEvalCaseBtn');
+  const runBtn = document.getElementById('runEvalBtn');
+  const queryInput = document.getElementById('evalQueryInput');
+  const expectedInput = document.getElementById('evalExpectedInput');
+  if (!addBtn || !runBtn) return;
+
+  addBtn.addEventListener('click', async () => {
+    const query = queryInput?.value.trim();
+    if (!query) { toast('Введите поисковый запрос'); return; }
+    const expectedDocNames = (expectedInput?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      await apiFetch('/api/v1/admin/retrieval-eval/cases', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ query, expectedDocNames }),
+      });
+      if (queryInput) queryInput.value = '';
+      if (expectedInput) expectedInput.value = '';
+      hydrateRetrievalEval();
+    } catch (e) { toast(e.message); }
+  });
+
+  runBtn.addEventListener('click', async () => {
+    if (!_evalCases.length) { toast('Добавьте хотя бы один тест-кейс'); return; }
+    runBtn.disabled = true; runBtn.textContent = '⏳ Запуск…';
+    try {
+      const resp = await apiFetch('/api/v1/admin/retrieval-eval/run', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
+      });
+      const { result } = await resp.json();
+      _showEvalResult(result);
+      hydrateRetrievalEval();
+    } catch (e) { toast(e.message); }
+    finally { runBtn.disabled = false; runBtn.textContent = '▶ Запустить оценку'; }
+  });
+}
+
+function _showEvalResult(r) {
+  const panel = document.getElementById('evalRunResults');
+  const metrics = document.getElementById('evalMetrics');
+  const details = document.getElementById('evalRunDetails');
+  const ranAt = document.getElementById('evalRunAt');
+  if (!panel) return;
+  panel.style.display = '';
+  if (ranAt) ranAt.textContent = (r.ranAt||'').slice(0,16).replace('T',' ');
+  const pct = v => `${(v*100).toFixed(0)}%`;
+  const color = v => v >= 0.7 ? '#34d399' : '#f59e0b';
+  if (metrics) metrics.innerHTML = [
+    { label: 'P@3', val: r.precisionAt3 }, { label: 'R@5', val: r.recallAt5 },
+    { label: 'Hit rate', val: r.hitRate }, { label: 'Кейсов', val: r.validCases, raw: true },
+  ].map(m => `<article><span>${m.label}</span><strong style="color:${m.raw?'var(--text)':color(m.val)}">${m.raw?m.val:pct(m.val)}</strong></article>`).join('');
+  if (details) details.innerHTML = (r.details||[]).map(d => `
+    <div style="padding:8px 10px;background:var(--surface);border-radius:8px;border:1px solid var(--border);border-left:3px solid ${d.hit?'#34d399':'#f59e0b'}">
+      <div style="font-weight:600;margin-bottom:4px">${escapeHtml(d.query)}</div>
+      ${d.note ? `<small style="color:#778195">${d.note}</small>` : `
+      <div style="font-size:11px;color:#778195">Ожидалось: ${(d.expected||[]).join(', ')}</div>
+      <div style="font-size:11px;color:#556070">Получено: ${(d.retrieved||[]).slice(0,3).join(', ')}</div>
+      <div style="font-size:11px;margin-top:3px">P@3: <b>${pct(d.precisionAtK)}</b> R@5: <b>${pct(d.recallAtK)}</b> ${d.hit?'✓ hit':'✗ miss'}</div>`}
+    </div>`).join('');
 }
 
 function setupSecretsVault() {
@@ -2600,6 +2719,7 @@ async function setup() {
   setupAIGateway();
   setupFeatureDocs();
   setupSecretsVault();
+  setupRetrievalEval();
   applyRolePolicy();
   renderRoute();
   render();

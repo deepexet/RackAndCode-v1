@@ -236,6 +236,28 @@
           <button class="button ghost" id="mfaBackupDoneBtn" type="button" style="margin-top:12px">Сохранил — закрыть</button>
         </div>
       </section>
+      <section class="detail-section" id="retrievalEvalSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">INTELLIGENCE · EVAL</p><h2>Оценка качества поиска</h2></div>
+          <button class="button primary" id="runEvalBtn" type="button">▶ Запустить оценку</button>
+        </div>
+        <p style="color:#778195;font-size:13px;margin:0 0 12px">Тест-кейсы для измерения Precision@3 и Recall@5 по FTS-индексу документов.</p>
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          <input id="evalQueryInput" type="text" placeholder="Поисковый запрос" style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          <input id="evalExpectedInput" type="text" placeholder="Ожидаемые файлы (через запятую)" style="flex:2;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          <button class="button ghost" id="addEvalCaseBtn" type="button">＋ Кейс</button>
+        </div>
+        <div id="evalCasesList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:18px"></div>
+        <div id="evalRunResults" style="display:none">
+          <div class="detail-section-title" style="margin-top:4px">
+            <div><p class="eyebrow">ПОСЛЕДНИЙ ЗАПУСК</p></div>
+            <span id="evalRunAt" style="font-size:11px;color:#778195"></span>
+          </div>
+          <div class="metrics" style="margin:8px 0 16px" id="evalMetrics"></div>
+          <div id="evalRunDetails" style="font-size:12px;display:flex;flex-direction:column;gap:8px"></div>
+        </div>
+        <div id="evalRunHistory" style="margin-top:18px"></div>
+      </section>
       <section class="detail-section" id="secretsVaultSection" data-permission="secretsManage">
         <div class="detail-section-title">
           <div><p class="eyebrow">SECRETS VAULT</p><h2>Зашифрованные секреты</h2></div>
