@@ -455,6 +455,34 @@
           <button class="button primary" id="sendAgentQueryBtn" type="button">Ask</button>
         </div>
       </section>
+      <!-- Integration SDK — Webhooks -->
+      <section class="detail-section" id="webhooksSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">INTEGRATION SDK</p><h2>Outgoing webhooks</h2></div>
+          <button class="button primary" id="addWebhookBtn" type="button">＋ Add webhook</button>
+        </div>
+        <p style="color:#778195;font-size:13px;margin-bottom:14px">POST JSON events to external URLs. Signed with HMAC-SHA256 in <code>X-RackPilot-Signature-256</code>.</p>
+        <div id="webhooksList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
+        <div id="webhookDeliveryLog" style="display:none">
+          <p class="eyebrow" style="margin-bottom:8px">DELIVERY LOG</p>
+          <div id="webhookDeliveryList"></div>
+        </div>
+
+        <dialog id="webhookDialog" style="max-width:500px;width:100%">
+          <div class="dialog-head">
+            <div><p class="eyebrow">WEBHOOK</p><h2>Add endpoint</h2></div>
+            <button class="icon-button" type="button" data-close-dialog="webhookDialog">×</button>
+          </div>
+          <form id="webhookForm" style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
+            <label style="font-size:13px">Name<input id="whName" type="text" required maxlength="100" placeholder="Jobber updates" style="display:block;width:100%;margin-top:4px;padding:8px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px"></label>
+            <label style="font-size:13px">URL<input id="whUrl" type="url" required placeholder="https://…" style="display:block;width:100%;margin-top:4px;padding:8px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px"></label>
+            <label style="font-size:13px">Secret key <small style="color:var(--text-secondary)">(leave blank to auto-generate)</small><input id="whSecret" type="text" placeholder="Auto-generated" maxlength="128" style="display:block;width:100%;margin-top:4px;padding:8px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:monospace"></label>
+            <label style="font-size:13px">Events <small style="color:var(--text-secondary)">(comma-separated, * for all)</small><input id="whEvents" type="text" value="*" placeholder="* or daily_update,work_item_updated" style="display:block;width:100%;margin-top:4px;padding:8px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px"></label>
+            <div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="webhookDialog">Cancel</button><button class="button primary" type="submit">Save</button></div>
+          </form>
+        </dialog>
+      </section>
+
       <section class="detail-section" id="privacySection" data-permission="adminPanel">
         <div class="detail-section-title">
           <div><p class="eyebrow">ПРИВАТНОСТЬ</p><h2>Политика сбора данных</h2></div>

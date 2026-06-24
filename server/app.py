@@ -33,6 +33,7 @@ import subprocess
 
 from server.migrations import MigrationRunner
 from server.ai_router import AIRouter, classify as ai_classify
+from server.connectors import deliver_once, _RETRY_DELAYS, _MAX_ATTEMPTS, WebhookDeliveryWorker
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = ROOT / "web"
@@ -2967,6 +2968,149 @@ Rules:
                                    0, 0, 0, str(exc))
             raise
 
+    # -- Webhook integration ---------------------------------------------------
+
+    def create_webhook(
+        self, org: str, name: str, url: str, secret_key: str,
+        events: list[str], created_by: str,
+    ) -> dict[str, Any]:
+        wid = _uid()
+        secret_hash = hashlib.sha256(secret_key.encode()).hexdigest()
+        events_json = json.dumps(events or ['*'])
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO webhook_configs(id, organization_id, name, url, secret_hash, "
+                "events, enabled, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,1,?,?,?)",
+                (wid, org, name, url, secret_hash, events_json, created_by, _now(), _now()),
+            )
+        return {"id": wid, "name": name, "url": url, "events": events}
+
+    def list_webhooks(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, name, url, events, enabled, created_at "
+                "FROM webhook_configs WHERE organization_id=? ORDER BY created_at DESC",
+                (org,),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d['events'] = json.loads(d['events'])
+            result.append(d)
+        return result
+
+    def toggle_webhook(self, org: str, webhook_id: str, enabled: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE webhook_configs SET enabled=?, updated_at=? WHERE organization_id=? AND id=?",
+                (1 if enabled else 0, _now(), org, webhook_id),
+            )
+
+    def delete_webhook(self, org: str, webhook_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM webhook_configs WHERE organization_id=? AND id=?", (org, webhook_id)
+            )
+
+    def dispatch_event(self, org: str, event_type: str, payload: dict[str, Any]) -> int:
+        """Queue delivery to all enabled webhooks that subscribe to this event type."""
+        with self._connect() as conn:
+            hooks = conn.execute(
+                "SELECT id, url, secret_hash, events FROM webhook_configs "
+                "WHERE organization_id=? AND enabled=1", (org,)
+            ).fetchall()
+            queued = 0
+            now = _now()
+            for hook in hooks:
+                events = json.loads(hook['events'])
+                if '*' not in events and event_type not in events:
+                    continue
+                delivery_id = _uid()
+                full_payload = {
+                    'id': delivery_id,
+                    'organization_id': org,
+                    'event': event_type,
+                    'created_at': now,
+                    'data': payload,
+                }
+                conn.execute(
+                    "INSERT INTO webhook_deliveries(id, organization_id, webhook_id, event_type, "
+                    "payload, attempts, next_retry_at, created_at) VALUES(?,?,?,?,?,0,?,?)",
+                    (delivery_id, org, hook['id'],
+                     event_type, json.dumps(full_payload, ensure_ascii=False),
+                     now, now),
+                )
+                queued += 1
+        return queued
+
+    def flush_webhook_deliveries(self) -> int:
+        """Process due deliveries. Called by WebhookDeliveryWorker thread."""
+        now = _now()
+        with self._connect() as conn:
+            due = conn.execute(
+                "SELECT d.id, d.webhook_id, d.event_type, d.payload, d.attempts, "
+                "w.url, w.secret_hash "
+                "FROM webhook_deliveries d "
+                "JOIN webhook_configs w ON w.id=d.webhook_id "
+                "WHERE d.next_retry_at IS NOT NULL AND d.next_retry_at <= ? "
+                "ORDER BY d.next_retry_at LIMIT 50",
+                (now,),
+            ).fetchall()
+
+        delivered = 0
+        for row in due:
+            attempts = row['attempts'] + 1
+            payload = json.loads(row['payload'])
+            status, error = deliver_once(
+                row['url'], row['secret_hash'],
+                row['event_type'], row['id'], payload,
+            )
+            success = 200 <= status < 300
+            if success:
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE webhook_deliveries SET attempts=?, last_status=?, last_error=NULL, "
+                        "next_retry_at=NULL, delivered_at=? WHERE id=?",
+                        (attempts, status, _now(), row['id']),
+                    )
+                delivered += 1
+            else:
+                delay_idx = min(attempts, _MAX_ATTEMPTS - 1)
+                if attempts >= _MAX_ATTEMPTS:
+                    next_retry = None
+                else:
+                    delay = _RETRY_DELAYS[delay_idx]
+                    import datetime as _dt
+                    next_dt = _dt.datetime.fromisoformat(now.replace('Z', '+00:00')) + _dt.timedelta(seconds=delay)
+                    next_retry = next_dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE webhook_deliveries SET attempts=?, last_status=?, last_error=?, "
+                        "next_retry_at=? WHERE id=?",
+                        (attempts, status or 0, error, next_retry, row['id']),
+                    )
+        return delivered
+
+    def list_deliveries(self, org: str, webhook_id: str | None = None, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            if webhook_id:
+                rows = conn.execute(
+                    "SELECT id, webhook_id, event_type, attempts, last_status, last_error, "
+                    "next_retry_at, delivered_at, created_at "
+                    "FROM webhook_deliveries WHERE organization_id=? AND webhook_id=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (org, webhook_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, webhook_id, event_type, attempts, last_status, last_error, "
+                    "next_retry_at, delivered_at, created_at "
+                    "FROM webhook_deliveries WHERE organization_id=? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (org, limit),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_storage_stats(self, org: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
@@ -4604,6 +4748,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except LookupError as err:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
             return
+        # Webhooks: GET /api/v1/webhooks
+        if path == "/api/v1/webhooks":
+            if not self._require_permission("adminPanel"): return
+            hooks = self.store.list_webhooks(self.organization_id)
+            self._json(HTTPStatus.OK, {"webhooks": hooks})
+            return
+        # Webhook deliveries: GET /api/v1/webhooks/:id/deliveries
+        if path.startswith("/api/v1/webhooks/") and len(parts) == 5 and parts[4] == "deliveries":
+            if not self._require_permission("adminPanel"): return
+            limit = min(int(self.query_params.get("limit", ["30"])[0]), 100)
+            deliveries = self.store.list_deliveries(self.organization_id, parts[3], limit)
+            self._json(HTTPStatus.OK, {"deliveries": deliveries})
+            return
         # AI status: GET /api/v1/ai/status
         if path == "/api/v1/ai/status":
             if not self._require_permission("adminPanel"): return
@@ -5265,6 +5422,43 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.store.reject_field_note(self.organization_id, draft_id)
             self._json(HTTPStatus.OK, {"ok": True})
             return
+        # Webhooks CRUD: POST /api/v1/webhooks
+        if path == "/api/v1/webhooks":
+            if not self._require_permission("adminPanel"): return
+            try:
+                body = json.loads(self.body)
+                name = str(body.get("name", "")).strip()[:100]
+                url = str(body.get("url", "")).strip()
+                secret_key = str(body.get("secret_key", "")).strip()
+                events = body.get("events", ["*"])
+                if not name or not url:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "name and url required"); return
+                if not url.startswith(("http://", "https://")):
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_url", "url must start with http(s)"); return
+                if not secret_key:
+                    secret_key = secrets.token_hex(32)
+                actor = self.session_context.get("user_id", "system")
+                result = self.store.create_webhook(self.organization_id, name, url, secret_key, events, actor)
+                self._json(HTTPStatus.CREATED, result)
+            except (ValueError, KeyError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_payload", str(err))
+            return
+        # Webhook delete: POST /api/v1/webhooks/:id/delete
+        if path.startswith("/api/v1/webhooks/") and parts[-1] == "delete":
+            if not self._require_permission("adminPanel"): return
+            self.store.delete_webhook(self.organization_id, parts[-2])
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
+        # Webhook toggle: POST /api/v1/webhooks/:id/toggle
+        if path.startswith("/api/v1/webhooks/") and parts[-1] == "toggle":
+            if not self._require_permission("adminPanel"): return
+            try:
+                body = json.loads(self.body)
+                self.store.toggle_webhook(self.organization_id, parts[-2], bool(body.get("enabled", True)))
+                self._json(HTTPStatus.OK, {"ok": True})
+            except Exception as err:
+                self._error(HTTPStatus.BAD_REQUEST, "toggle_error", str(err))
+            return
         # AI router config: POST /api/v1/ai/config
         if path == "/api/v1/ai/config":
             if not self._require_permission("adminPanel"): return
@@ -5894,9 +6088,14 @@ def main() -> None:
         LOGGER.info(json.dumps({"event": "agent_context_written", "path": "docs/AGENT_CONTEXT.json"}))
     except Exception as _e:
         LOGGER.warning(json.dumps({"event": "agent_context_write_failed", "error": str(_e)}))
+    # Start webhook delivery worker
+    _webhook_worker = WebhookDeliveryWorker(store)
+    _webhook_worker.start()
+
     server = FieldOSServer((args.host, args.port), store, agent_token)
 
     def stop(_signum: int, _frame: Any) -> None:
+        _webhook_worker.stop()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGINT, stop)

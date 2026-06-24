@@ -1665,6 +1665,118 @@ function setupFieldNote() {
   });
 }
 
+// ── Webhooks ──────────────────────────────────────────────────────────────
+async function hydrateWebhooks() {
+  const listEl = document.getElementById('webhooksList');
+  if (!listEl) return;
+  try {
+    const { webhooks = [] } = await apiFetch('/api/v1/webhooks');
+    if (!webhooks.length) {
+      listEl.innerHTML = '<p class="empty-copy">No webhooks configured.</p>';
+      return;
+    }
+    listEl.innerHTML = webhooks.map(w => {
+      const evts = Array.isArray(w.events) ? w.events.join(', ') : w.events;
+      const statusColor = w.enabled ? 'var(--accent)' : 'var(--text-secondary)';
+      return `<div class="detail-panel" style="padding:12px 14px;display:flex;gap:12px;align-items:center" data-wh-id="${w.id}">
+        <div style="flex:1;min-width:0">
+          <strong style="font-size:13px">${escapeHtml(w.name)}</strong>
+          <div style="font-size:11px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(w.url)}</div>
+          <div style="font-size:11px;margin-top:2px">Events: <code>${escapeHtml(evts)}</code></div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+          <span style="font-size:10px;font-weight:700;color:${statusColor}">${w.enabled ? '● ON' : '○ OFF'}</span>
+          <button class="button ghost wh-toggle-btn" data-id="${w.id}" data-enabled="${w.enabled}" style="font-size:11px;padding:3px 8px">${w.enabled ? 'Pause' : 'Enable'}</button>
+          <button class="button ghost wh-log-btn" data-id="${w.id}" style="font-size:11px;padding:3px 8px">Log</button>
+          <button class="button ghost wh-del-btn" data-id="${w.id}" style="font-size:11px;padding:3px 8px;color:#e05353">✕</button>
+        </div>
+      </div>`;
+    }).join('');
+    listEl.querySelectorAll('.wh-toggle-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const enabled = btn.dataset.enabled === '1' || btn.dataset.enabled === 'true';
+        await apiFetch(`/api/v1/webhooks/${btn.dataset.id}/toggle`, {
+          method: 'POST',
+          headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+          body: JSON.stringify({ enabled: !enabled }),
+        });
+        hydrateWebhooks();
+      });
+    });
+    listEl.querySelectorAll('.wh-del-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Delete this webhook?')) return;
+        await apiFetch(`/api/v1/webhooks/${btn.dataset.id}/delete`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}), body: '{}',
+        });
+        hydrateWebhooks();
+      });
+    });
+    listEl.querySelectorAll('.wh-log-btn').forEach(btn => {
+      btn.addEventListener('click', () => loadWebhookDeliveryLog(btn.dataset.id));
+    });
+  } catch(e) { listEl.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
+}
+
+async function loadWebhookDeliveryLog(webhookId) {
+  const section = document.getElementById('webhookDeliveryLog');
+  const logEl = document.getElementById('webhookDeliveryList');
+  if (!section || !logEl) return;
+  section.style.display = 'block';
+  try {
+    const { deliveries = [] } = await apiFetch(`/api/v1/webhooks/${webhookId}/deliveries?limit=30`);
+    if (!deliveries.length) { logEl.innerHTML = '<p class="empty-copy">No deliveries yet.</p>'; return; }
+    logEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:var(--text-secondary);text-align:left;border-bottom:1px solid var(--border)">
+        <th style="padding:5px 8px">Time</th><th style="padding:5px 8px">Event</th>
+        <th style="padding:5px 8px">Status</th><th style="padding:5px 8px">Attempts</th><th style="padding:5px 8px">Error</th>
+      </tr></thead>
+      <tbody>${deliveries.map(d => {
+        const dt = new Date(d.created_at).toLocaleString('en-GB',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+        const ok = d.delivered_at;
+        const statusColor = ok ? 'var(--accent)' : (d.next_retry_at ? '#e09800' : '#e05353');
+        const statusLabel = ok ? `✓ ${d.last_status}` : (d.next_retry_at ? `↻ retry` : `✕ ${d.last_status||0}`);
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:5px 8px;white-space:nowrap">${dt}</td>
+          <td style="padding:5px 8px">${escapeHtml(d.event_type)}</td>
+          <td style="padding:5px 8px;color:${statusColor};font-weight:700">${statusLabel}</td>
+          <td style="padding:5px 8px">${d.attempts}</td>
+          <td style="padding:5px 8px;color:#e05353">${d.last_error ? escapeHtml(d.last_error.slice(0,60)) : ''}</td>
+        </tr>`;
+      }).join('')}</tbody></table>`;
+  } catch(e) { logEl.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
+}
+
+function setupWebhooks() {
+  hydrateWebhooks();
+
+  document.getElementById('addWebhookBtn')?.addEventListener('click', () => {
+    document.getElementById('webhookForm')?.reset();
+    document.getElementById('webhookDialog')?.showModal();
+  });
+
+  document.getElementById('webhookForm')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const events = (document.getElementById('whEvents')?.value || '*')
+      .split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      await apiFetch('/api/v1/webhooks', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({
+          name: document.getElementById('whName')?.value,
+          url: document.getElementById('whUrl')?.value,
+          secret_key: document.getElementById('whSecret')?.value || '',
+          events,
+        }),
+      });
+      document.getElementById('webhookDialog')?.close();
+      toast('Webhook registered');
+      hydrateWebhooks();
+    } catch(e) { toast(`Error: ${e.message}`); }
+  });
+}
+
 // ── AI Agents ─────────────────────────────────────────────────────────────
 let _activeAgent = 'technical';
 
@@ -4905,6 +5017,7 @@ async function setup() {
   setupCodexDialog();
   setupTeam();
   setupFieldNote();
+  setupWebhooks();
   setupAiAgents();
   setupLangToggle();
   setupAiGateway();
