@@ -1614,17 +1614,238 @@ function setupTimeTracking() {
   });
 }
 
+// ── Digital Twin graph ─────────────────────────────────────────────────────
+
+const REL_COLOR = {
+  connects_to: '#4f8ef7', powers: '#e09800', feeds: '#2bb46a',
+  backs_up: '#a87aff', contains: '#30d7d7', links_to: '#8b8fa8', depends_on: '#ff657b',
+};
+const REL_LABEL = {
+  connects_to:'connects', powers:'powers', feeds:'feeds',
+  backs_up:'backs up', contains:'contains', links_to:'links', depends_on:'depends on',
+};
+
+function renderAssetGraph(container, assets, relationships) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 900, H = 500;
+  const R = 28; // node radius
+  const MIN_DIST = R * 2.4;
+  const SPRING_LEN = 180;
+  const REPULSION = 14000;
+
+  // Spiral initial layout
+  const nodes = assets.map((a, i) => {
+    const angle = i * 2.399963;
+    const r = 50 * Math.sqrt(i + 1);
+    return { id: a.id, a, x: W/2 + Math.cos(angle)*r, y: H/2 + Math.sin(angle)*r, vx:0, vy:0 };
+  });
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+
+  const edges = relationships.map(r => ({
+    from: r.from_asset_id, to: r.to_asset_id,
+    type: r.relation_type || 'connects_to', label: r.label || '',
+  })).filter(e => nodeMap.has(e.from) && nodeMap.has(e.to));
+
+  // Force layout
+  for (let iter = 0; iter < 200; iter++) {
+    const alpha = Math.pow(1 - iter / 200, 1.6);
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i+1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const dx = b.x-a.x, dy = b.y-a.y;
+        const d2 = dx*dx+dy*dy||0.01, dist = Math.sqrt(d2);
+        const rep = (REPULSION/d2)*alpha + (dist<MIN_DIST?(MIN_DIST-dist)*3:0);
+        const fx=(dx/dist)*rep, fy=(dy/dist)*rep;
+        a.vx-=fx; a.vy-=fy; b.vx+=fx; b.vy+=fy;
+      }
+    }
+    edges.forEach(e => {
+      const a=nodeMap.get(e.from), b=nodeMap.get(e.to); if(!a||!b) return;
+      const dx=b.x-a.x, dy=b.y-a.y, dist=Math.sqrt(dx*dx+dy*dy)||1;
+      const f=(dist-SPRING_LEN)*0.04*alpha;
+      const fx=(dx/dist)*f, fy=(dy/dist)*f;
+      a.vx+=fx; a.vy+=fy; b.vx-=fx; b.vy-=fy;
+    });
+    nodes.forEach(n => {
+      n.vx+=(W/2-n.x)*0.004*alpha; n.vy+=(H/2-n.y)*0.004*alpha;
+      n.vx*=0.78; n.vy*=0.78; n.x+=n.vx; n.y+=n.vy;
+    });
+  }
+
+  container.innerHTML = '';
+
+  // Legend
+  const legend = document.createElement('div');
+  legend.style.cssText='display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;font-size:11px';
+  legend.innerHTML = Object.entries(REL_LABEL).map(([k,v])=>
+    `<span style="display:flex;align-items:center;gap:4px">
+      <span style="width:20px;height:2px;background:${REL_COLOR[k]||'#555'};display:inline-block"></span>
+      <span style="color:var(--text-secondary)">${v}</span>
+    </span>`).join('');
+  container.appendChild(legend);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'graph-canvas graph-canvas--interactive';
+  wrap.style.cssText = 'height:480px;border-radius:10px;';
+  container.appendChild(wrap);
+
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('width','100%'); svg.setAttribute('height','100%');
+  svg.style.cssText='display:block;cursor:grab;user-select:none;touch-action:none;';
+  wrap.appendChild(svg);
+
+  // Arrowhead defs
+  const defs = document.createElementNS(NS, 'defs');
+  Object.entries(REL_COLOR).forEach(([type, color]) => {
+    const m = document.createElementNS(NS, 'marker');
+    m.setAttribute('id',`dtarr-${type}`); m.setAttribute('markerWidth','7'); m.setAttribute('markerHeight','5');
+    m.setAttribute('refX','6'); m.setAttribute('refY','2.5'); m.setAttribute('orient','auto');
+    const p = document.createElementNS(NS, 'polygon');
+    p.setAttribute('points','0 0, 7 2.5, 0 5'); p.setAttribute('fill',color); p.setAttribute('opacity','0.8');
+    m.appendChild(p); defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  const root = document.createElementNS(NS, 'g');
+  svg.appendChild(root);
+  let tx=0, ty=0, scale=1;
+  const applyT = () => root.setAttribute('transform',`translate(${tx},${ty}) scale(${scale})`);
+  applyT();
+
+  // Draw edges
+  const edgeElems = edges.map(e => {
+    const color = REL_COLOR[e.type]||'#536078';
+    const g = document.createElementNS(NS,'g');
+
+    const line = document.createElementNS(NS,'line');
+    line.setAttribute('stroke',color); line.setAttribute('stroke-width','1.5');
+    line.setAttribute('stroke-opacity','0.7');
+    line.setAttribute('marker-end',`url(#dtarr-${e.type})`);
+    g.appendChild(line);
+
+    if (e.label) {
+      const txt = document.createElementNS(NS,'text');
+      txt.setAttribute('font-size','9'); txt.setAttribute('fill',color);
+      txt.setAttribute('text-anchor','middle'); txt.setAttribute('opacity','0.8');
+      txt.textContent = e.label.slice(0,18);
+      g.appendChild(txt);
+    }
+    root.insertBefore(g, root.firstChild);
+    return { g, line, label: e.label ? g.querySelector('text') : null, from: e.from, to: e.to };
+  });
+
+  const updateEdge = (elem) => {
+    const a=nodeMap.get(elem.from), b=nodeMap.get(elem.to); if(!a||!b) return;
+    // Shorten line to stop at node radius
+    const dx=b.x-a.x, dy=b.y-a.y, dist=Math.sqrt(dx*dx+dy*dy)||1;
+    const sx=a.x+(dx/dist)*R, sy=a.y+(dy/dist)*R;
+    const ex=b.x-(dx/dist)*(R+6), ey=b.y-(dy/dist)*(R+6);
+    elem.line.setAttribute('x1',sx); elem.line.setAttribute('y1',sy);
+    elem.line.setAttribute('x2',ex); elem.line.setAttribute('y2',ey);
+    if (elem.label) { elem.label.setAttribute('x',(sx+ex)/2); elem.label.setAttribute('y',(sy+ey)/2-3); }
+  };
+  edgeElems.forEach(updateEdge);
+
+  // Draw nodes
+  const ICON = ASSET_TYPE_ICON;
+  const nodeElems = nodes.map(n => {
+    const asset = n.a;
+    const statusColor = { planned:'#536078', installed:'#4f8ef7', active:'#2bb46a', faulty:'#e05353', decommissioned:'#778195' }[asset.status]||'#536078';
+    const g = document.createElementNS(NS,'g');
+    g.style.cursor='pointer';
+
+    const circle = document.createElementNS(NS,'circle');
+    circle.setAttribute('r',R); circle.setAttribute('fill','var(--surface)');
+    circle.setAttribute('stroke',statusColor); circle.setAttribute('stroke-width','2.5');
+    g.appendChild(circle);
+
+    const icon = document.createElementNS(NS,'text');
+    icon.setAttribute('text-anchor','middle'); icon.setAttribute('dominant-baseline','central');
+    icon.setAttribute('font-size','15'); icon.setAttribute('y','0');
+    icon.textContent = ICON[asset.asset_type]||'📦';
+    g.appendChild(icon);
+
+    const label = document.createElementNS(NS,'text');
+    label.setAttribute('text-anchor','middle'); label.setAttribute('y',R+13);
+    label.setAttribute('font-size','10'); label.setAttribute('fill','var(--text)');
+    label.textContent = asset.name.length>14?asset.name.slice(0,13)+'…':asset.name;
+    g.appendChild(label);
+
+    g.setAttribute('transform',`translate(${n.x},${n.y})`);
+    root.appendChild(g);
+
+    // Drag
+    let drag=null;
+    g.addEventListener('pointerdown', ev => {
+      ev.stopPropagation();
+      const svgRect = svg.getBoundingClientRect();
+      drag = { ox:ev.clientX, oy:ev.clientY, nx:n.x, ny:n.y };
+      g.setPointerCapture(ev.pointerId);
+      svg.style.cursor='grabbing';
+    });
+    g.addEventListener('pointermove', ev => {
+      if(!drag) return;
+      ev.stopPropagation();
+      n.x = drag.nx + (ev.clientX-drag.ox)/scale;
+      n.y = drag.ny + (ev.clientY-drag.oy)/scale;
+      g.setAttribute('transform',`translate(${n.x},${n.y})`);
+      edgeElems.filter(e=>e.from===n.id||e.to===n.id).forEach(updateEdge);
+    });
+    g.addEventListener('pointerup', () => { drag=null; svg.style.cursor='grab'; });
+
+    return g;
+  });
+
+  // Pan + zoom
+  let pan=null;
+  svg.addEventListener('pointerdown', ev=>{ if(ev.target===svg||ev.target===root){ pan={ox:ev.clientX-tx,oy:ev.clientY-ty}; svg.setPointerCapture(ev.pointerId); } });
+  svg.addEventListener('pointermove', ev=>{ if(!pan) return; tx=ev.clientX-pan.ox; ty=ev.clientY-pan.oy; applyT(); });
+  svg.addEventListener('pointerup', ()=>pan=null);
+  svg.addEventListener('wheel', ev=>{ ev.preventDefault(); const s=Math.max(0.3,Math.min(3,scale*(1-ev.deltaY/600))); scale=s; applyT(); }, {passive:false});
+}
+
 // ── Digital Twin ───────────────────────────────────────────────────────────
 const ASSET_STATUS_COLOR = { planned:'var(--text-secondary)', installed:'var(--accent)', active:'var(--accent-green,#2bb46a)', faulty:'#e05353', decommissioned:'var(--text-secondary)' };
 const ASSET_TYPE_ICON = { device:'🖥', panel:'📟', port:'🔌', cable:'🔗', circuit:'⚡', sensor:'📡', other:'📦' };
 
 async function hydrateDigitalTwin(projectId) {
-  const listEl = document.getElementById('assetsList');
+  const section = document.getElementById('projectDigitalTwinSection');
+  if (!section) return;
+  let listEl = document.getElementById('assetsList');
+  let graphEl = document.getElementById('assetGraph');
   if (!listEl) return;
   try {
     const resp = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/twin`, { headers: apiHeaders({ Accept: 'application/json' }) });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const { assets = [], relationships = [] } = await resp.json();
+
+    // Tab switcher — create once
+    if (!document.getElementById('twinTabList')) {
+      const tabs = document.createElement('div');
+      tabs.id = 'twinTabList';
+      tabs.style.cssText = 'display:flex;gap:4px;margin-bottom:12px';
+      tabs.innerHTML = `
+        <button class="button ghost" id="twinTabListBtn" style="font-size:12px;padding:4px 12px;font-weight:600">Список</button>
+        <button class="button ghost" id="twinTabGraphBtn" style="font-size:12px;padding:4px 12px">Граф</button>`;
+      listEl.parentElement.insertBefore(tabs, listEl);
+      // Create graph container
+      const graphDiv = document.createElement('div');
+      graphDiv.id = 'assetGraph';
+      graphDiv.style.display = 'none';
+      listEl.parentElement.appendChild(graphDiv);
+      graphEl = graphDiv;
+      const setTab = (tab) => {
+        const isGraph = tab === 'graph';
+        listEl.style.display = isGraph ? 'none' : '';
+        graphEl.style.display = isGraph ? '' : 'none';
+        document.getElementById('twinTabListBtn').style.fontWeight = isGraph ? '' : '700';
+        document.getElementById('twinTabGraphBtn').style.fontWeight = isGraph ? '700' : '';
+        if (isGraph) { renderAssetGraph(graphEl, assets, relationships); }
+      };
+      document.getElementById('twinTabListBtn').addEventListener('click', () => setTab('list'));
+      document.getElementById('twinTabGraphBtn').addEventListener('click', () => setTab('graph'));
+    }
+
     if (!assets.length) {
       listEl.innerHTML = '<p class="empty-copy">Оборудование не добавлено. Нажмите «＋ Оборудование».</p>';
       return;
@@ -1640,7 +1861,7 @@ async function hydrateDigitalTwin(projectId) {
       const color = ASSET_STATUS_COLOR[a.status] || 'var(--text-secondary)';
       const rels = relCount[a.id] || 0;
       const attrs = typeof a.attributes === 'object' ? Object.entries(a.attributes).map(([k,v]) => `${k}: ${v}`).join(' · ') : '';
-      return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:13px 16px;display:flex;align-items:center;gap:12px" data-asset-id="${a.id}">
+      return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:13px 16px;display:flex;align-items:center;gap:12px">
         <span style="font-size:22px;width:32px;text-align:center">${icon}</span>
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:8px">
