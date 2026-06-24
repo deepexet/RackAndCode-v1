@@ -1854,6 +1854,93 @@ class WorkspaceStore:
             "periodDays": days,
         }
 
+    # ── Object Storage ───────────────────────────────────────────────────────
+
+    @property
+    def _objects_dir(self) -> Path:
+        d = self.db_path.parent / "objects"
+        d.mkdir(exist_ok=True)
+        return d
+
+    def _org_quota_bytes(self) -> int:
+        return 500 * 1024 * 1024  # 500 MB default
+
+    def list_objects(self, org: str, project_id: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if project_id:
+                rows = conn.execute(
+                    "SELECT id,name,mime_type,size_bytes,project_id,created_by,created_at FROM objects "
+                    "WHERE organization_id=? AND project_id=? ORDER BY created_at DESC",
+                    (org, project_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id,name,mime_type,size_bytes,project_id,created_by,created_at FROM objects "
+                    "WHERE organization_id=? ORDER BY created_at DESC LIMIT 200",
+                    (org,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def store_object(self, org: str, project_id: str | None, name: str,
+                     mime_type: str, data: bytes, created_by: str) -> dict[str, Any]:
+        # Quota check
+        with self._connect() as conn:
+            used = conn.execute(
+                "SELECT COALESCE(SUM(size_bytes),0) as s FROM objects WHERE organization_id=?", (org,)
+            ).fetchone()["s"]
+        if used + len(data) > self._org_quota_bytes():
+            raise ValueError(f"Storage quota exceeded ({used // (1024*1024)} MB used)")
+
+        obj_id = str(uuid.uuid4())
+        ext = Path(name).suffix[:10] or ""
+        rel_path = f"{org}/{obj_id}{ext}"
+        abs_path = self._objects_dir / rel_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_bytes(data)
+
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO objects (id,organization_id,project_id,name,mime_type,size_bytes,storage_path,created_by,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (obj_id, org, project_id, name, mime_type, len(data), rel_path, created_by, now, now),
+            )
+        return {"id": obj_id, "name": name, "mimeType": mime_type, "sizeBytes": len(data), "createdAt": now}
+
+    def get_object(self, org: str, obj_id: str) -> tuple[dict[str, Any], bytes] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM objects WHERE id=? AND organization_id=?", (obj_id, org)
+            ).fetchone()
+        if not row:
+            return None
+        path = self._objects_dir / row["storage_path"]
+        if not path.exists():
+            return None
+        return dict(row), path.read_bytes()
+
+    def delete_object(self, org: str, obj_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT storage_path FROM objects WHERE id=? AND organization_id=?", (obj_id, org)
+            ).fetchone()
+            if not row:
+                return False
+            conn.execute("DELETE FROM objects WHERE id=? AND organization_id=?", (obj_id, org))
+        try:
+            (self._objects_dir / row["storage_path"]).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+
+    def get_storage_stats(self, org: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as count, COALESCE(SUM(size_bytes),0) as total FROM objects WHERE organization_id=?",
+                (org,),
+            ).fetchone()
+        return {"count": row["count"], "totalBytes": row["total"], "quotaBytes": self._org_quota_bytes()}
+
 
 class AIGateway:
     """Provider-agnostic AI request router with token logging and budget checks."""
@@ -2189,6 +2276,31 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 except LookupError as error:
                     self._error(HTTPStatus.NOT_FOUND, "project_not_found", str(error))
                 return
+            if len(parts) == 5 and parts[4] == "objects":
+                objects = self.store.list_objects(self.organization_id, parts[3])
+                stats = self.store.get_storage_stats(self.organization_id)
+                self._json(HTTPStatus.OK, {"objects": objects, "stats": stats})
+                return
+        # Object download / delete
+        if path.startswith("/api/v1/objects/"):
+            obj_id = path[len("/api/v1/objects/"):]
+            if not obj_id:
+                self._error(HTTPStatus.BAD_REQUEST, "missing_id", "Object ID required"); return
+            if not self._require_permission("projectRead"): return
+            result = self.store.get_object(self.organization_id, obj_id)
+            if not result:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Object not found"); return
+            meta, data = result
+            self.send_response(HTTPStatus.OK)
+            self._security_headers()
+            self.send_header("Content-Type", meta["mime_type"])
+            self.send_header("Content-Length", str(len(data)))
+            safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in meta["name"])
+            self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path in {"/api/workspace", "/api/v1/workspace"}:
             if not self._require_permission("developmentWorkspace"):
                 return
@@ -2412,6 +2524,32 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED,self.store.record_compute_node(self.organization_id,parts[4],payload))
             except (ValueError,json.JSONDecodeError) as error:
                 self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        # Object upload: POST /api/v1/projects/:id/objects — raw binary body
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "objects":
+            if not self._require_permission("projectManage"): return
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if size <= 0 or size > 50 * 1024 * 1024:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_size", "File must be 1 byte – 50 MB"); return
+                raw_name = self.headers.get("X-File-Name", "upload")
+                file_name = "".join(c if c.isalnum() or c in "-_. " else "_" for c in raw_name)[:200] or "upload"
+                mime_type = self.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
+                data = self.rfile.read(size)
+                created_by = (self.session_context or {}).get("userId", "local-admin")
+                obj = self.store.store_object(self.organization_id, parts[3], file_name, mime_type, data, created_by)
+                self._json(HTTPStatus.CREATED, {"object": obj})
+            except ValueError as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        # Object delete: POST /api/v1/objects/:id/delete
+        if path.startswith("/api/v1/objects/") and parts[-1] == "delete":
+            if not self._require_permission("projectManage"): return
+            obj_id = parts[-2]
+            if self.store.delete_object(self.organization_id, obj_id):
+                self._json(HTTPStatus.OK, {"ok": True})
+            else:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Object not found")
             return
         if path != "/api/v1/projects" and not path.startswith("/api/v1/projects/"):
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found")

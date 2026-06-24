@@ -1231,11 +1231,95 @@ function renderProjectDetail() {
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div></section>
     <section class="detail-grid"><article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">LOCATIONS</p><h2>Структура объекта</h2></div><button class="text-button" data-add-location>Добавить</button></div><div class="location-cards">${project.locations.length ? project.locations.map(location => {const parent=project.locations.find(value=>value.id===location.parentLocationId);return `<button type="button" data-open-location="${location.id}" style="--location-depth:${location.depth||0}"><span>${escapeHtml(location.code)}</span><strong>${escapeHtml(location.name)}</strong><small>${parent?`${escapeHtml(parent.name)} → `:''}${escapeHtml(location.kind)}${location.suiteTotal !== null ? ` · ${location.suiteTotal} suites` : ''}${location.audioDetails ? ` · ${location.audioDetails.speakerCount || 0} speakers` : ''}</small></button>`;}).join('') : '<p class="empty-copy">Добавьте этажи или зоны, чтобы техник мог фиксировать прогресс.</p>'}</div></article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
-    <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div><button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button></div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>`;
+    <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">DAILY LOG · AUTO</p><h2>Последние изменения</h2></div><button class="button primary" type="button" data-daily-update>＋ Добавить пояснение</button></div><div class="daily-feed">${dailyLog.length ? dailyLog.slice(0,20).map(entry => `<article><div class="daily-date"><strong>${escapeHtml(entry.workDate)}</strong><span class="daily-status ${entry.status}">${escapeHtml(entry.status.replaceAll('_',' '))}</span></div><div class="daily-main"><span>${escapeHtml(entry.context)}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.detail)}</p></div><div class="daily-result">${entry.percent !== null ? `<strong>${entry.percent}%</strong>` : '<strong class="auto-mark">AUTO</strong>'}${entry.quantity !== null ? `<small>${entry.quantity} шт.</small>` : ''}${entry.editableId ? `<button class="text-button" data-edit-daily="${entry.editableId}">Редактировать</button>` : '<small>Из журнала изменений</small>'}</div></article>`).join('') : '<p class="empty-copy">Изменения проекта автоматически появятся здесь.</p>'}</div></section>
+    <section class="detail-section" id="projectObjectsSection"><div class="detail-section-title"><div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Файлы проекта</h2></div><label class="button ghost" style="cursor:pointer">＋ Загрузить<input type="file" id="objectFileInput" multiple style="display:none"></label></div><div id="objectsDropZone" class="objects-drop-zone">Перетащите файлы сюда или нажмите «Загрузить»</div><div id="objectsGrid" class="objects-grid"><p class="empty-copy">Загрузка…</p></div><p id="objectsStorageInfo" style="font-size:11px;color:#445060;margin-top:8px"></p></section>`;
   container.querySelectorAll('[data-add-location]').forEach(button => button.addEventListener('click', () => openLocationDialog(project)));
   container.querySelectorAll('[data-daily-update]').forEach(button => button.addEventListener('click', () => openDailyDialog(project)));
   container.querySelectorAll('[data-edit-daily]').forEach(button => button.addEventListener('click', () => openDailyDialog(project, project.dailyUpdates.find(value => value.id === button.dataset.editDaily))));
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
+  setupProjectObjects(project.id);
+  hydrateProjectObjects(project.id);
+}
+
+// ── Object Storage ──────────────────────────────────────────────────────────
+
+const MIME_ICONS = {
+  'image/': '🖼', 'video/': '🎬', 'audio/': '🔊', 'application/pdf': '📄',
+  'application/zip': '📦', 'application/x-zip': '📦',
+  'text/': '📝', 'application/json': '{}',
+};
+
+function mimeIcon(mime) {
+  for (const [prefix, icon] of Object.entries(MIME_ICONS)) {
+    if (mime.startsWith(prefix)) return icon;
+  }
+  return '📎';
+}
+
+function fmtBytes(b) {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function hydrateProjectObjects(projectId) {
+  const grid = document.getElementById('objectsGrid');
+  const info = document.getElementById('objectsStorageInfo');
+  if (!grid) return;
+  try {
+    const resp = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/objects`);
+    const { objects, stats } = await resp.json();
+    if (info) info.textContent = `${stats.count} файлов · ${fmtBytes(stats.totalBytes)} из ${fmtBytes(stats.quotaBytes)}`;
+    if (!objects.length) { grid.innerHTML = '<p class="empty-copy">Нет файлов. Загрузите первый.</p>'; return; }
+    grid.innerHTML = objects.map(o => `
+      <div class="object-card" data-obj-id="${o.id}">
+        <div class="object-icon">${mimeIcon(o.mime_type)}</div>
+        <div class="object-info">
+          <strong title="${escapeHtml(o.name)}">${escapeHtml(o.name)}</strong>
+          <small>${fmtBytes(o.size_bytes)} · ${(o.created_at || '').slice(0,10)}</small>
+        </div>
+        <div class="object-actions">
+          <a class="button ghost" href="/api/v1/objects/${o.id}" download="${escapeHtml(o.name)}" style="padding:4px 8px;font-size:12px">↓</a>
+          <button class="button ghost obj-delete-btn" data-id="${o.id}" type="button" style="padding:4px 8px;font-size:12px">✕</button>
+        </div>
+      </div>`).join('');
+    grid.querySelectorAll('.obj-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить файл?')) return;
+        await apiFetch(`/api/v1/objects/${btn.dataset.id}/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        hydrateProjectObjects(projectId);
+      });
+    });
+  } catch (e) { grid.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+async function uploadFiles(projectId, files) {
+  const zone = document.getElementById('objectsDropZone');
+  for (const file of files) {
+    if (zone) zone.textContent = `Загрузка ${file.name}…`;
+    try {
+      const buf = await file.arrayBuffer();
+      const resp = await apiFetch(`/api/v1/projects/${encodeURIComponent(projectId)}/objects`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-File-Name': file.name, 'Content-Length': buf.byteLength },
+        body: buf,
+      });
+      if (!resp.ok) { const e = await resp.json(); toast(e.error?.message || 'Upload failed'); }
+    } catch (err) { toast(err.message); }
+  }
+  if (zone) zone.textContent = 'Перетащите файлы сюда или нажмите «Загрузить»';
+  hydrateProjectObjects(projectId);
+}
+
+function setupProjectObjects(projectId) {
+  const input = document.getElementById('objectFileInput');
+  const zone = document.getElementById('objectsDropZone');
+  if (input) input.addEventListener('change', () => { if (input.files.length) uploadFiles(projectId, [...input.files]); input.value = ''; });
+  if (zone) {
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('drag-over'); uploadFiles(projectId, [...e.dataTransfer.files]); });
+  }
 }
 
 function localDateKey(value) {
