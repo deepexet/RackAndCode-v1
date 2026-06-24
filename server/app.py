@@ -117,6 +117,64 @@ def _verify_password(password: str, stored: str) -> bool:
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
+
+# ── Secrets encryption (HMAC-SHA256 counter-mode stream cipher, stdlib only) ──
+
+def _load_or_create_master_key(key_path: Path) -> bytes:
+    """Load master key from file or generate a new one (chmod 600)."""
+    if key_path.exists():
+        data = key_path.read_bytes()
+        if len(data) == 32:
+            return data
+    key = secrets.token_bytes(32)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_bytes(key)
+    key_path.chmod(0o600)
+    return key
+
+def _derive_key(master: bytes, context: str) -> bytes:
+    """Derive a 32-byte purpose-specific key via HKDF-like HMAC expand."""
+    return hmac.new(master, context.encode(), "sha256").digest()
+
+def _hmac_ctr(key: bytes, nonce: bytes, data: bytes) -> bytes:
+    """XOR data with HMAC-SHA256 keystream (CTR mode using HMAC as PRF)."""
+    result = bytearray(len(data))
+    offset = 0
+    block = 0
+    while offset < len(data):
+        ks_block = hmac.new(key, nonce + block.to_bytes(4, "big"), "sha256").digest()
+        for b in ks_block:
+            if offset >= len(data):
+                break
+            result[offset] = data[offset] ^ b
+            offset += 1
+        block += 1
+    return bytes(result)
+
+def encrypt_secret(master: bytes, name: str, plaintext: str) -> str:
+    """Return hex(nonce):hex(ciphertext):hex(mac) — encrypt-then-MAC."""
+    enc_key = _derive_key(master, f"enc:{name}")
+    mac_key = _derive_key(master, f"mac:{name}")
+    nonce = secrets.token_bytes(16)
+    ct = _hmac_ctr(enc_key, nonce, plaintext.encode())
+    mac = hmac.new(mac_key, nonce + ct, "sha256").digest()
+    return f"{nonce.hex()}:{ct.hex()}:{mac.hex()}"
+
+def decrypt_secret(master: bytes, name: str, stored: str) -> str | None:
+    """Verify MAC then decrypt; returns None on tamper."""
+    try:
+        nonce_hex, ct_hex, mac_hex = stored.split(":")
+        nonce, ct = bytes.fromhex(nonce_hex), bytes.fromhex(ct_hex)
+        mac_key = _derive_key(master, f"mac:{name}")
+        expected = hmac.new(mac_key, nonce + ct, "sha256").digest()
+        if not hmac.compare_digest(expected, bytes.fromhex(mac_hex)):
+            return None
+        enc_key = _derive_key(master, f"enc:{name}")
+        return _hmac_ctr(enc_key, nonce, ct).decode()
+    except Exception:
+        return None
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -158,6 +216,7 @@ class WorkspaceStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self.migration_result = MigrationRunner(db_path, MIGRATIONS_DIR).apply()
+        self._master_key = _load_or_create_master_key(db_path.parent / ".master_key")
         self._seal_legacy_audit_events()
 
     @contextmanager
@@ -1447,6 +1506,61 @@ class WorkspaceStore:
         with self._connect() as connection:
             connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
 
+    # ── Secrets Vault ────────────────────────────────────────────────────────
+
+    def list_secrets(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, name, description, category, created_at, updated_at, created_by FROM secrets_vault ORDER BY category, name"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_secret(self, name: str, value: str, description: str, category: str, created_by: str) -> dict[str, Any]:
+        if not name or not value:
+            raise ValueError("name and value are required")
+        encrypted = encrypt_secret(self._master_key, name, value)
+        now = utc_now()
+        secret_id = str(uuid.uuid4())
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO secrets_vault (id, name, description, category, encrypted, created_at, updated_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (secret_id, name, description, category, encrypted, now, now, created_by),
+            )
+        return {"id": secret_id, "name": name, "description": description, "category": category, "createdAt": now}
+
+    def get_secret_value(self, secret_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT name, encrypted FROM secrets_vault WHERE id = ?", (secret_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return decrypt_secret(self._master_key, row["name"], row["encrypted"])
+
+    def update_secret(self, secret_id: str, value: str | None, description: str | None) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT name FROM secrets_vault WHERE id = ?", (secret_id,)
+            ).fetchone()
+            if not row:
+                return False
+            updates: list[str] = ["updated_at = ?"]
+            params: list[Any] = [utc_now()]
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+            if value is not None:
+                updates.append("encrypted = ?")
+                params.append(encrypt_secret(self._master_key, row["name"], value))
+            params.append(secret_id)
+            connection.execute(f"UPDATE secrets_vault SET {', '.join(updates)} WHERE id = ?", params)
+        return True
+
+    def delete_secret(self, secret_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM secrets_vault WHERE id = ?", (secret_id,))
+        return cursor.rowcount > 0
+
 
 class RevisionConflict(Exception):
     def __init__(self, current_revision: int):
@@ -1599,6 +1713,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"customFields":self.store.list_custom_field_definitions(self.organization_id)})
             return
+        if path == "/api/v1/admin/secrets":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, {"secrets": self.store.list_secrets()})
+            return
+        if path.startswith("/api/v1/admin/secrets/") and path.endswith("/reveal"):
+            if not self._require_permission("adminPanel"): return
+            secret_id = path.split("/")[-2]
+            value = self.store.get_secret_value(secret_id)
+            if value is None:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Secret not found or integrity check failed")
+                return
+            self._json(HTTPStatus.OK, {"value": value})
+            return
         if path == "/api/v1/development-agent/status":
             if not self._require_organization(): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"agent":self.store.get_development_agent_status(self.organization_id)})
@@ -1728,6 +1855,28 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 if not isinstance(payload,dict): raise ValueError("JSON object expected")
                 self._json(HTTPStatus.CREATED,{"organizationId":self.organization_id,"customField":self.store.save_custom_field_definition(self.organization_id,payload)})
             except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        if path == "/api/v1/admin/secrets":
+            if not self._require_permission("adminPanel"): return
+            try:
+                body = self._read_json()
+                name = str(body.get("name", "")).strip()
+                value = str(body.get("value", "")).strip()
+                description = str(body.get("description", "")).strip()
+                category = str(body.get("category", "api_key")).strip()
+                created_by = (self.session_context or {}).get("userId", "local-admin")
+                secret = self.store.create_secret(name, value, description, category, created_by)
+                self._json(HTTPStatus.CREATED, {"secret": secret})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/admin/secrets/") and parts[-1] == "delete":
+            if not self._require_permission("adminPanel"): return
+            secret_id = parts[-2]
+            if self.store.delete_secret(secret_id):
+                self._json(HTTPStatus.OK, {"ok": True})
+            else:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Secret not found")
             return
         if path=="/api/v1/admin/git-sync":
             if not self._require_permission("adminPanel"): return

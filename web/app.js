@@ -409,7 +409,7 @@ function renderRoute() {
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -480,6 +480,114 @@ async function submitGitSyncSettings(event){event.preventDefault();const button=
 function renderPlatformSettings(unavailable=false){const form=$('#platformSettingsForm'),status=$('#platformSettingsStatus');if(!form||!status)return;if(unavailable){status.textContent='Unavailable';status.className='git-sync-status error';return;}const settings=platformSettings||{};$('#platformLanguage').value=settings.defaultLanguage||'en';$('#platformTimezone').value=settings.timezone||'America/Halifax';$('#platformRoleMode').value=settings.roleMode||'planned';$('#platformTelemetryMode').value=settings.telemetryMode||'standard';$('#platformLogRetention').value=settings.logRetentionDays||365;status.textContent=settings.updatedAt?'Configured':'Default';status.className=`git-sync-status ${settings.updatedAt?'configured':'not_configured'}`;}
 
 async function hydratePlatformSettings(){try{const response=await fetch('/api/v1/admin/platform-settings',{headers:apiHeaders()});if(!response.ok)throw new Error('platform settings unavailable');const payload=await response.json();platformSettings=payload.settings;renderPlatformSettings();}catch{renderPlatformSettings(true);}}
+
+// ── Secrets Vault ──────────────────────────────────────────────────────────
+
+const CATEGORY_LABELS = { api_key: 'API Key', token: 'Token', credential: 'Credential', other: 'Other' };
+
+async function hydrateSecretsVault() {
+  const el = document.getElementById('secretsList');
+  if (!el) return;
+  try {
+    const resp = await apiFetch('/api/v1/admin/secrets');
+    const { secrets } = await resp.json();
+    if (!secrets.length) {
+      el.innerHTML = '<p class="empty-copy">Нет сохранённых секретов. Нажмите «＋ Добавить секрет».</p>';
+      return;
+    }
+    el.innerHTML = secrets.map(s => `
+      <div class="secret-card" data-id="${s.id}">
+        <div class="secret-meta">
+          <span class="secret-category">${CATEGORY_LABELS[s.category] || s.category}</span>
+          <strong>${escapeHtml(s.name)}</strong>
+          ${s.description ? `<span class="secret-desc">${escapeHtml(s.description)}</span>` : ''}
+        </div>
+        <div class="secret-value-row">
+          <code class="secret-value-masked" id="sv-${s.id}">••••••••••••</code>
+          <button class="button ghost secret-reveal-btn" data-id="${s.id}" type="button" title="Показать значение">👁</button>
+          <button class="button ghost secret-copy-btn" data-id="${s.id}" type="button" title="Скопировать">⎘</button>
+          <button class="button ghost secret-delete-btn" data-id="${s.id}" type="button" title="Удалить">✕</button>
+        </div>
+        <small style="color:#556070">${new Date(s.created_at).toLocaleDateString('ru')}</small>
+      </div>`).join('');
+  } catch (e) {
+    el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`;
+  }
+}
+
+async function revealSecret(id) {
+  const el = document.getElementById(`sv-${id}`);
+  if (!el) return;
+  if (el.dataset.revealed === '1') { el.textContent = '••••••••••••'; el.dataset.revealed = ''; return; }
+  try {
+    const resp = await apiFetch(`/api/v1/admin/secrets/${id}/reveal`);
+    const { value } = await resp.json();
+    el.textContent = value;
+    el.dataset.revealed = '1';
+    setTimeout(() => { el.textContent = '••••••••••••'; el.dataset.revealed = ''; }, 15000);
+  } catch (e) { toast(e.message); }
+}
+
+async function copySecret(id) {
+  try {
+    const resp = await apiFetch(`/api/v1/admin/secrets/${id}/reveal`);
+    const { value } = await resp.json();
+    await navigator.clipboard.writeText(value);
+    toast('Скопировано в буфер');
+  } catch (e) { toast(e.message); }
+}
+
+async function deleteSecret(id) {
+  if (!confirm('Удалить секрет? Это необратимо.')) return;
+  try {
+    const resp = await apiFetch(`/api/v1/admin/secrets/${id}/delete`, { method: 'POST', headers: {'Content-Type':'application/json'}, body:'{}' });
+    if (!resp.ok) throw new Error('Delete failed');
+    toast('Секрет удалён');
+    hydrateSecretsVault();
+  } catch (e) { toast(e.message); }
+}
+
+function setupSecretsVault() {
+  const addBtn = document.getElementById('addSecretButton');
+  const dialog = document.getElementById('secretDialog');
+  const form = document.getElementById('secretForm');
+  const cancelBtn = document.getElementById('cancelSecretButton');
+  if (!addBtn || !dialog) return;
+
+  addBtn.addEventListener('click', () => { form?.reset(); dialog.showModal(); });
+  cancelBtn?.addEventListener('click', () => dialog.close());
+  form?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true;
+    try {
+      const resp = await apiFetch('/api/v1/admin/secrets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: document.getElementById('secretName').value.trim(),
+          value: document.getElementById('secretValue').value,
+          description: document.getElementById('secretDescription').value.trim(),
+          category: document.getElementById('secretCategory').value,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error?.message || 'Failed to save');
+      dialog.close();
+      toast(`Секрет «${data.secret.name}» сохранён`);
+      hydrateSecretsVault();
+    } catch (err) { toast(err.message); }
+    finally { btn.disabled = false; }
+  });
+
+  document.getElementById('secretsList')?.addEventListener('click', e => {
+    const id = e.target.dataset.id;
+    if (!id) return;
+    if (e.target.classList.contains('secret-reveal-btn')) revealSecret(id);
+    if (e.target.classList.contains('secret-copy-btn')) copySecret(id);
+    if (e.target.classList.contains('secret-delete-btn')) deleteSecret(id);
+  });
+}
 
 async function submitPlatformSettings(event){event.preventDefault();const button=event.currentTarget.querySelector('[type="submit"]');button.disabled=true;try{const response=await fetch('/api/v1/admin/platform-settings',{method:'POST',headers:apiHeaders({'Content-Type':'application/json'}),body:JSON.stringify({defaultLanguage:$('#platformLanguage').value,timezone:$('#platformTimezone').value.trim(),roleMode:$('#platformRoleMode').value,telemetryMode:$('#platformTelemetryMode').value,logRetentionDays:Number($('#platformLogRetention').value)})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message||'Platform settings failed');platformSettings=payload.settings;renderPlatformSettings();toast('Platform settings saved');}catch(error){toast(error.message);}finally{button.disabled=false;}}
 
@@ -901,6 +1009,21 @@ function renderBoard() {
   $('#board')?.classList.toggle('hidden', !isKanban);
   $('#taskGraph')?.classList.toggle('hidden', !isGraph);
   document.querySelectorAll('[data-task-view]').forEach(b => b.classList.toggle('active', b.dataset.taskView === taskViewMode));
+
+  // Search count badge
+  const q = $('#searchInput')?.value.trim();
+  const countEl = document.getElementById('searchCount');
+  if (countEl) {
+    if (q) {
+      const n = filteredTasks().length;
+      countEl.textContent = n;
+      countEl.title = `${n} задач найдено`;
+      countEl.classList.toggle('hidden', false);
+    } else {
+      countEl.textContent = '';
+      countEl.classList.toggle('hidden', true);
+    }
+  }
 
   if (isKanban) {
     const tasks = filteredTasks();
@@ -1469,6 +1592,7 @@ async function setup() {
     showLoginModal();
   }
 
+  setupSecretsVault();
   applyRolePolicy();
   renderRoute();
   render();
