@@ -410,7 +410,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -481,6 +481,245 @@ async function submitGitSyncSettings(event){event.preventDefault();const button=
 function renderPlatformSettings(unavailable=false){const form=$('#platformSettingsForm'),status=$('#platformSettingsStatus');if(!form||!status)return;if(unavailable){status.textContent='Unavailable';status.className='git-sync-status error';return;}const settings=platformSettings||{};$('#platformLanguage').value=settings.defaultLanguage||'en';$('#platformTimezone').value=settings.timezone||'America/Halifax';$('#platformRoleMode').value=settings.roleMode||'planned';$('#platformTelemetryMode').value=settings.telemetryMode||'standard';$('#platformLogRetention').value=settings.logRetentionDays||365;status.textContent=settings.updatedAt?'Configured':'Default';status.className=`git-sync-status ${settings.updatedAt?'configured':'not_configured'}`;}
 
 async function hydratePlatformSettings(){try{const response=await fetch('/api/v1/admin/platform-settings',{headers:apiHeaders()});if(!response.ok)throw new Error('platform settings unavailable');const payload=await response.json();platformSettings=payload.settings;renderPlatformSettings();}catch{renderPlatformSettings(true);}}
+
+// ── Platform Guide (self-documenting) ─────────────────────────────────────
+
+const AREA_LABELS = {
+  foundation: 'Foundation', platform: 'Platform', field: 'Field Ops',
+  integration: 'Integration', ai: 'AI', analytics: 'Analytics', security: 'Security',
+};
+const STATUS_CONFIG = {
+  done:     { label: 'Реализовано', color: '#3dd68c' },
+  progress: { label: 'В работе',   color: '#f5c842' },
+  review:   { label: 'Ревью',      color: '#4a7fd4' },
+  testing:  { label: 'Тестинг',    color: '#a87aff' },
+  ready:    { label: 'Готово к старту', color: '#62a8ff' },
+  blocked:  { label: 'Заблокировано',  color: '#e05353' },
+  backlog:  { label: 'Запланировано',  color: '#556070' },
+  ideas:    { label: 'Идеи',       color: '#445060' },
+};
+
+let _featureDocsData = [];
+
+async function hydrateFeatureDocs() {
+  const list = document.getElementById('featureDocsList');
+  if (!list) return;
+  list.innerHTML = '<p class="empty-copy">Загрузка…</p>';
+  try {
+    const resp = await apiFetch('/api/v1/admin/feature-docs');
+    const { features } = await resp.json();
+    _featureDocsData = features;
+    renderFeatureDocs();
+  } catch (e) {
+    list.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`;
+  }
+}
+
+function renderFeatureDocs() {
+  const list = document.getElementById('featureDocsList');
+  if (!list) return;
+  const q = (document.getElementById('featureDocsSearch')?.value || '').toLowerCase().trim();
+  const filterStatus = document.getElementById('featureDocsFilter')?.value || 'all';
+
+  const IMPLEMENTED = new Set(['done', 'testing', 'review']);
+  const IN_PROGRESS  = new Set(['progress', 'ready', 'blocked']);
+
+  let items = _featureDocsData.filter(f => {
+    if (filterStatus === 'done'     && !IMPLEMENTED.has(f.status)) return false;
+    if (filterStatus === 'progress' && !IN_PROGRESS.has(f.status))  return false;
+    if (filterStatus === 'planned'  && !['backlog','ideas'].includes(f.status)) return false;
+    if (q && !`${f.id} ${f.title} ${f.description} ${f.area}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  if (!items.length) {
+    list.innerHTML = '<p class="empty-copy">Ничего не найдено.</p>';
+    return;
+  }
+
+  // Group by status bucket
+  const groups = [
+    { key: 'done',     label: 'Реализовано',      color: '#3dd68c', statuses: IMPLEMENTED },
+    { key: 'progress', label: 'В работе',          color: '#f5c842', statuses: IN_PROGRESS },
+    { key: 'planned',  label: 'Запланировано',     color: '#556070', statuses: new Set(['backlog','ideas']) },
+  ];
+
+  let html = '';
+  for (const g of groups) {
+    const groupItems = items.filter(f => g.statuses.has(f.status));
+    if (!groupItems.length) continue;
+    html += `<div class="fd-group">
+      <div class="fd-group-header">
+        <span class="fd-group-dot" style="background:${g.color}"></span>
+        <strong>${g.label}</strong>
+        <span class="fd-group-count">${groupItems.length}</span>
+      </div>
+      <div class="fd-group-items">
+        ${groupItems.map(f => renderFeatureCard(f)).join('')}
+      </div>
+    </div>`;
+  }
+  list.innerHTML = html;
+
+  // Wire up expand / generate / edit buttons
+  list.querySelectorAll('.fd-card').forEach(card => {
+    const id = card.dataset.id;
+    card.querySelector('.fd-toggle')?.addEventListener('click', () => {
+      card.classList.toggle('fd-expanded');
+    });
+    card.querySelector('.fd-generate-btn')?.addEventListener('click', e => {
+      e.stopPropagation();
+      generateFeatureGuide(id, card);
+    });
+    card.querySelector('.fd-edit-btn')?.addEventListener('click', e => {
+      e.stopPropagation();
+      openGuideEditor(id, card);
+    });
+  });
+}
+
+function renderFeatureCard(f) {
+  const sc = STATUS_CONFIG[f.status] || STATUS_CONFIG.backlog;
+  const areaLabel = AREA_LABELS[f.area] || f.area;
+  const hasGuide = !!f.guide;
+  const guideAge = f.guideUpdatedAt
+    ? new Date(f.guideUpdatedAt).toLocaleDateString('ru', { day:'numeric', month:'short' })
+    : null;
+
+  return `<article class="fd-card" data-id="${escapeHtml(f.id)}">
+    <div class="fd-card-head fd-toggle">
+      <div class="fd-card-left">
+        <span class="fd-status-dot" style="background:${sc.color}" title="${sc.label}"></span>
+        <div>
+          <div class="fd-card-title">${escapeHtml(f.title)}</div>
+          <div class="fd-card-meta">
+            <code>${escapeHtml(f.id)}</code>
+            ${areaLabel ? `<span>${escapeHtml(areaLabel)}</span>` : ''}
+            ${f.priority ? `<span class="fd-priority fd-priority-${f.priority}">${f.priority}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="fd-card-actions">
+        ${hasGuide
+          ? `<span class="fd-guide-badge" title="Обновлено ${guideAge || ''}">📖 Гид</span>`
+          : `<span class="fd-no-guide">Нет гида</span>`}
+        <button class="fd-generate-btn button ghost" type="button" title="${hasGuide ? 'Перегенерировать' : 'Сгенерировать гид AI'}">⚡</button>
+        ${hasGuide ? `<button class="fd-edit-btn button ghost" type="button" title="Редактировать вручную">✎</button>` : ''}
+        <span class="fd-chevron">›</span>
+      </div>
+    </div>
+    <div class="fd-card-body">
+      ${f.description ? `<p class="fd-desc">${escapeHtml(f.description)}</p>` : ''}
+      ${hasGuide
+        ? `<div class="fd-guide-content fd-markdown">${renderMarkdown(f.guide)}</div>
+           <small class="fd-guide-meta">Сгенерировано: ${f.guideGeneratedBy || 'manual'} · ${guideAge}</small>`
+        : `<p class="fd-no-guide-msg">Гид не создан. Нажмите ⚡ чтобы сгенерировать через AI.</p>`}
+      <div class="fd-guide-editor" style="display:none">
+        <textarea class="fd-guide-textarea" rows="10" placeholder="Markdown…"></textarea>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="button primary fd-save-guide-btn" type="button">Сохранить</button>
+          <button class="button ghost fd-cancel-edit-btn" type="button">Отмена</button>
+        </div>
+      </div>
+    </div>
+  </article>`;
+}
+
+function renderMarkdown(text) {
+  // Minimal markdown: headers, bold, numbered lists, bullets
+  return text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/^## (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^### (.+)$/gm, '<h5>$1</h5>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^(\d+)\. (.+)$/gm, '<li>$2</li>')
+    .replace(/^[-·] (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, s => `<ol>${s}</ol>`)
+    .replace(/\n\n+/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+}
+
+async function generateFeatureGuide(taskId, card) {
+  const btn = card.querySelector('.fd-generate-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const resp = await apiFetch('/api/v1/admin/feature-docs/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error?.message || 'Generation failed');
+    toast(`Гид для ${taskId} готов`);
+    // Update local data and re-render
+    const f = _featureDocsData.find(x => x.id === taskId);
+    if (f) { f.guide = data.guide; f.guideGeneratedBy = 'claude'; f.guideUpdatedAt = new Date().toISOString(); }
+    renderFeatureDocs();
+  } catch (e) {
+    toast(e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '⚡'; }
+  }
+}
+
+function openGuideEditor(taskId, card) {
+  const f = _featureDocsData.find(x => x.id === taskId);
+  const editor = card.querySelector('.fd-guide-editor');
+  const textarea = card.querySelector('.fd-guide-textarea');
+  const guideContent = card.querySelector('.fd-guide-content');
+  if (!editor || !textarea) return;
+  textarea.value = f?.guide || '';
+  editor.style.display = 'block';
+  if (guideContent) guideContent.style.display = 'none';
+  textarea.focus();
+
+  card.querySelector('.fd-save-guide-btn')?.addEventListener('click', async () => {
+    const content = textarea.value.trim();
+    if (!content) return;
+    try {
+      const resp = await apiFetch('/api/v1/admin/feature-docs/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId, content }),
+      });
+      if (!resp.ok) throw new Error('Save failed');
+      const f2 = _featureDocsData.find(x => x.id === taskId);
+      if (f2) { f2.guide = content; f2.guideGeneratedBy = 'manual'; f2.guideUpdatedAt = new Date().toISOString(); }
+      toast('Гид сохранён');
+      renderFeatureDocs();
+    } catch (e) { toast(e.message); }
+  }, { once: true });
+
+  card.querySelector('.fd-cancel-edit-btn')?.addEventListener('click', () => {
+    editor.style.display = 'none';
+    if (guideContent) guideContent.style.display = '';
+  }, { once: true });
+}
+
+async function generateAllDocs() {
+  const btn = document.getElementById('generateAllDocsButton');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Генерирую…'; }
+  const withoutGuide = _featureDocsData.filter(f => !f.guide && ['done','progress','review','testing'].includes(f.status));
+  let count = 0;
+  for (const f of withoutGuide) {
+    try {
+      const resp = await apiFetch('/api/v1/admin/feature-docs/generate', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ taskId: f.id }),
+      });
+      const data = await resp.json();
+      if (resp.ok) { f.guide = data.guide; f.guideGeneratedBy = 'claude'; f.guideUpdatedAt = new Date().toISOString(); count++; }
+    } catch { /* continue */ }
+  }
+  toast(`Сгенерировано ${count} гидов`);
+  renderFeatureDocs();
+  if (btn) { btn.disabled = false; btn.textContent = '⚡ Авто-документация'; }
+}
+
+function setupFeatureDocs() {
+  document.getElementById('featureDocsSearch')?.addEventListener('input', renderFeatureDocs);
+  document.getElementById('featureDocsFilter')?.addEventListener('change', renderFeatureDocs);
+  document.getElementById('generateAllDocsButton')?.addEventListener('click', generateAllDocs);
+}
 
 // ── Secrets Vault ──────────────────────────────────────────────────────────
 
@@ -1722,6 +1961,7 @@ async function setup() {
     showLoginModal();
   }
 
+  setupFeatureDocs();
   setupSecretsVault();
   applyRolePolicy();
   renderRoute();

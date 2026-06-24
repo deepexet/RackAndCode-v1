@@ -1617,6 +1617,86 @@ class WorkspaceStore:
             cursor = connection.execute("DELETE FROM secrets_vault WHERE id = ?", (secret_id,))
         return cursor.rowcount > 0
 
+    # ── Feature Guides (self-documenting platform) ───────────────────────────
+
+    def list_feature_docs(self) -> list[dict[str, Any]]:
+        """Return all tasks (done/progress/planned) joined with their guides."""
+        with self._connect() as connection:
+            guides = {
+                row["task_id"]: dict(row)
+                for row in connection.execute("SELECT * FROM feature_guides").fetchall()
+            }
+        ws = self.get()
+        tasks = ws.get("tasks", [])
+        result = []
+        for t in tasks:
+            g = guides.get(t["id"])
+            result.append({
+                "id": t["id"],
+                "title": t.get("title", ""),
+                "description": t.get("description", ""),
+                "status": t.get("status", "backlog"),
+                "area": t.get("area", ""),
+                "priority": t.get("priority", ""),
+                "type": t.get("type", "Feature"),
+                "guide": g["content"] if g else None,
+                "guideGeneratedBy": g["generated_by"] if g else None,
+                "guideUpdatedAt": g["updated_at"] if g else None,
+            })
+        return result
+
+    def save_feature_guide(self, task_id: str, content: str, generated_by: str = "manual", model: str | None = None) -> None:
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO feature_guides (task_id, content, generated_by, model, created_at, updated_at) VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(task_id) DO UPDATE SET content=excluded.content, generated_by=excluded.generated_by, model=excluded.model, updated_at=excluded.updated_at",
+                (task_id, content, generated_by, model, now, now),
+            )
+
+
+def _call_claude_for_guide(task_id: str, title: str, description: str, area: str, api_key: str) -> str:
+    """Call Claude Haiku to generate a user-facing feature guide."""
+    prompt = f"""You are writing a concise user guide for a feature in RackPilot — an AI-native field operations platform.
+
+Feature: {title}
+Area: {area}
+Description: {description}
+
+Write a guide in Russian with these exact sections (use markdown headers):
+## Что это
+One or two sentences: what this feature is.
+
+## Зачем это нужно
+One or two sentences: the business/technical motivation.
+
+## Как использовать
+Numbered steps or a short paragraph. Be concrete and specific to this feature.
+
+## Заметки
+Any requirements, caveats, or tips. If none, write "—".
+
+Be concise. Total length: 120–200 words. Do not mention the feature ID."""
+
+    body = json.dumps({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 400,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read())
+    return data["content"][0]["text"].strip()
+
 
 class RevisionConflict(Exception):
     def __init__(self, current_revision: int):
@@ -1777,6 +1857,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK, _build_platform_growth())
             return
+        if path == "/api/v1/admin/feature-docs":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, {"features": self.store.list_feature_docs()})
+            return
         if path.startswith("/api/v1/admin/secrets/") and path.endswith("/reveal"):
             if not self._require_permission("adminPanel"): return
             secret_id = path.split("/")[-2]
@@ -1915,6 +1999,44 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 if not isinstance(payload,dict): raise ValueError("JSON object expected")
                 self._json(HTTPStatus.CREATED,{"organizationId":self.organization_id,"customField":self.store.save_custom_field_definition(self.organization_id,payload)})
             except (ValueError,json.JSONDecodeError) as error: self._error(HTTPStatus.BAD_REQUEST,"invalid_request",str(error))
+            return
+        if path == "/api/v1/admin/feature-docs/generate":
+            if not self._require_permission("adminPanel"): return
+            try:
+                body = self._read_json()
+                task_id = str(body.get("taskId", "")).strip()
+                if not task_id:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_field", "taskId required"); return
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                if not api_key:
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "no_api_key", "ANTHROPIC_API_KEY not configured"); return
+                # Find task
+                ws = self.store.get()
+                task = next((t for t in ws.get("tasks", []) if t["id"] == task_id), None)
+                if not task:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", f"Task {task_id} not found"); return
+                guide = _call_claude_for_guide(
+                    task_id, task.get("title", ""), task.get("description", ""), task.get("area", ""), api_key
+                )
+                self.store.save_feature_guide(task_id, guide, generated_by="claude", model="claude-haiku-4-5-20251001")
+                self._json(HTTPStatus.OK, {"taskId": task_id, "guide": guide})
+            except (json.JSONDecodeError, ValueError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            except Exception as err:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "generation_failed", str(err))
+            return
+        if path == "/api/v1/admin/feature-docs/save":
+            if not self._require_permission("adminPanel"): return
+            try:
+                body = self._read_json()
+                task_id = str(body.get("taskId", "")).strip()
+                content = str(body.get("content", "")).strip()
+                if not task_id or not content:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "taskId and content required"); return
+                self.store.save_feature_guide(task_id, content, generated_by="manual")
+                self._json(HTTPStatus.OK, {"ok": True})
+            except (json.JSONDecodeError, ValueError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         if path == "/api/v1/admin/secrets":
             if not self._require_permission("adminPanel"): return
