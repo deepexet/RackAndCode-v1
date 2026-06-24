@@ -1869,13 +1869,13 @@ class WorkspaceStore:
         with self._connect() as conn:
             if project_id:
                 rows = conn.execute(
-                    "SELECT id,name,mime_type,size_bytes,project_id,created_by,created_at FROM objects "
+                    "SELECT id,name,mime_type,size_bytes,scan_result,safe_preview,project_id,created_by,created_at FROM objects "
                     "WHERE organization_id=? AND project_id=? ORDER BY created_at DESC",
                     (org, project_id),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT id,name,mime_type,size_bytes,project_id,created_by,created_at FROM objects "
+                    "SELECT id,name,mime_type,size_bytes,scan_result,safe_preview,project_id,created_by,created_at FROM objects "
                     "WHERE organization_id=? ORDER BY created_at DESC LIMIT 200",
                     (org,),
                 ).fetchall()
@@ -1883,6 +1883,9 @@ class WorkspaceStore:
 
     def store_object(self, org: str, project_id: str | None, name: str,
                      mime_type: str, data: bytes, created_by: str) -> dict[str, Any]:
+        # Security scan — raises ValueError for blocked content
+        scan_result, safe_preview = scan_file(name, mime_type, data)
+
         # Quota check
         with self._connect() as conn:
             used = conn.execute(
@@ -1901,11 +1904,12 @@ class WorkspaceStore:
         now = utc_now()
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO objects (id,organization_id,project_id,name,mime_type,size_bytes,storage_path,created_by,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (obj_id, org, project_id, name, mime_type, len(data), rel_path, created_by, now, now),
+                "INSERT INTO objects (id,organization_id,project_id,name,mime_type,size_bytes,storage_path,scan_result,safe_preview,created_by,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (obj_id, org, project_id, name, mime_type, len(data), rel_path, scan_result, 1 if safe_preview else 0, created_by, now, now),
             )
-        return {"id": obj_id, "name": name, "mimeType": mime_type, "sizeBytes": len(data), "createdAt": now}
+        return {"id": obj_id, "name": name, "mimeType": mime_type, "sizeBytes": len(data),
+                "scanResult": scan_result, "safePreview": safe_preview, "createdAt": now}
 
     def get_object(self, org: str, obj_id: str) -> tuple[dict[str, Any], bytes] | None:
         with self._connect() as conn:
@@ -2033,6 +2037,118 @@ class WorkspaceStore:
                 "SELECT * FROM audit_log WHERE organization_id=? ORDER BY created_at DESC LIMIT ?", (org, limit)
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ── File Security Scanner ─────────────────────────────────────────────────────
+
+# Extension blocklist: never store executables or scripts
+_BLOCKED_EXTENSIONS: frozenset[str] = frozenset({
+    ".exe", ".bat", ".cmd", ".com", ".scr", ".pif",  # Windows executables
+    ".sh", ".bash", ".zsh", ".fish", ".csh",          # Unix scripts
+    ".ps1", ".psm1", ".psd1",                          # PowerShell
+    ".py", ".rb", ".pl", ".php", ".lua",               # Interpreted scripts
+    ".js", ".mjs", ".vbs", ".wsf",                     # Web/Windows scripts
+    ".jar", ".war", ".ear",                            # Java archives (runnable)
+    ".dll", ".so", ".dylib",                           # Shared libraries
+    ".elf",                                             # Linux binary
+    ".dmg", ".pkg",                                    # macOS installers
+    ".msi", ".inf",                                    # Windows installers
+})
+
+# MIME allowlist
+_ALLOWED_MIMES: frozenset[str] = frozenset({
+    "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
+    "image/bmp", "image/tiff",
+    "application/pdf",
+    "text/plain", "text/csv", "text/markdown", "text/html",
+    "application/json", "application/xml", "text/xml",
+    "application/zip", "application/gzip", "application/x-tar",
+    "application/x-7z-compressed", "application/x-rar-compressed",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "video/mp4", "video/webm", "video/ogg", "video/quicktime",
+    "audio/mpeg", "audio/wav", "audio/ogg", "audio/flac",
+    "application/octet-stream",
+})
+
+# MIME types that are safe to render inline (no download required)
+_PREVIEW_SAFE: frozenset[str] = frozenset({
+    "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
+    "application/pdf", "text/plain", "text/csv",
+})
+
+# Magic byte signatures: (offset, bytes) → canonical mime
+_MAGIC: list[tuple[int, bytes, str]] = [
+    (0, b"\xff\xd8\xff", "image/jpeg"),
+    (0, b"\x89PNG\r\n\x1a\n", "image/png"),
+    (0, b"GIF87a", "image/gif"),
+    (0, b"GIF89a", "image/gif"),
+    (0, b"RIFF", "image/webp"),           # further check bytes 8-11 == WEBP
+    (0, b"%PDF", "application/pdf"),
+    (0, b"PK\x03\x04", "application/zip"),
+    (0, b"PK\x05\x06", "application/zip"),
+    (0, b"\x1f\x8b", "application/gzip"),
+    (0, b"BZh", "application/x-bzip2"),
+    (0, b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "application/msword"),
+    (0, b"MZ", "application/x-dosexec"),   # Windows PE — always block
+    (0, b"\x7fELF", "application/x-elf"),  # Linux ELF — always block
+    (0, b"#!", "text/x-script"),            # shebang — always block
+]
+
+
+def _detect_mime_from_magic(data: bytes) -> str | None:
+    head = data[:16]
+    for offset, sig, mime in _MAGIC:
+        if head[offset:offset + len(sig)] == sig:
+            if mime == "image/webp" and len(data) >= 12 and data[8:12] == b"WEBP":
+                return "image/webp"
+            if mime == "image/webp":
+                continue  # RIFF but not WEBP
+            return mime
+    return None
+
+
+def scan_file(name: str, mime_type: str, data: bytes) -> tuple[str, bool]:
+    """
+    Returns (scan_result, safe_preview).
+    scan_result: 'clean' | 'quarantine' | 'blocked'
+    Raises ValueError for always-blocked content.
+    """
+    ext = Path(name).suffix.lower()
+
+    # Hard block: dangerous extensions
+    if ext in _BLOCKED_EXTENSIONS:
+        raise ValueError(f"File type '{ext}' is not permitted")
+
+    detected = _detect_mime_from_magic(data)
+
+    # Hard block: executable magic bytes
+    if detected in {"application/x-dosexec", "application/x-elf", "text/x-script"}:
+        raise ValueError("Executable content detected — upload rejected")
+
+    # MIME type not in allowlist
+    claim = mime_type.split(";")[0].strip().lower()
+    if claim not in _ALLOWED_MIMES:
+        raise ValueError(f"MIME type '{claim}' is not permitted")
+
+    # Mismatch between claimed and detected MIME → quarantine (don't serve inline)
+    if detected and detected not in {claim, "application/octet-stream"}:
+        # Allow common aliases
+        aliases = {
+            ("application/zip", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            ("application/zip", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ("application/zip", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        }
+        if (detected, claim) not in aliases and (claim, detected) not in aliases:
+            safe_preview = False
+            return "quarantine", safe_preview
+
+    safe_preview = claim in _PREVIEW_SAFE
+    return "clean", safe_preview
 
 
 class AIGateway:
@@ -2393,12 +2509,15 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not result:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", "Object not found"); return
             meta, data = result
+            if meta.get("scan_result") == "quarantine":
+                self._error(HTTPStatus.FORBIDDEN, "quarantine", "File is quarantined — cannot be served"); return
             self.send_response(HTTPStatus.OK)
             self._security_headers()
             self.send_header("Content-Type", meta["mime_type"])
             self.send_header("Content-Length", str(len(data)))
             safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in meta["name"])
-            self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+            disposition = "inline" if meta.get("safe_preview") else "attachment"
+            self.send_header("Content-Disposition", f'{disposition}; filename="{safe_name}"')
             self.send_header("Cache-Control", "private, max-age=3600")
             self.end_headers()
             self.wfile.write(data)

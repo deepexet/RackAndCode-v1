@@ -1343,18 +1343,22 @@ async function hydrateProjectObjects(projectId) {
     const { objects, stats } = await resp.json();
     if (info) info.textContent = `${stats.count} файлов · ${fmtBytes(stats.totalBytes)} из ${fmtBytes(stats.quotaBytes)}`;
     if (!objects.length) { grid.innerHTML = '<p class="empty-copy">Нет файлов. Загрузите первый.</p>'; return; }
-    grid.innerHTML = objects.map(o => `
-      <div class="object-card" data-obj-id="${o.id}">
+    grid.innerHTML = objects.map(o => {
+      const quarantine = o.scan_result === 'quarantine';
+      const scanBadge = quarantine ? '<span style="font-size:10px;color:#f59e0b;background:rgba(245,158,11,.1);border-radius:4px;padding:2px 5px">⚠ Карантин</span>' : '';
+      return `<div class="object-card${quarantine ? ' quarantine' : ''}" data-obj-id="${o.id}">
         <div class="object-icon">${mimeIcon(o.mime_type)}</div>
         <div class="object-info">
           <strong title="${escapeHtml(o.name)}">${escapeHtml(o.name)}</strong>
           <small>${fmtBytes(o.size_bytes)} · ${(o.created_at || '').slice(0,10)}</small>
+          ${scanBadge}
         </div>
         <div class="object-actions">
-          <a class="button ghost" href="/api/v1/objects/${o.id}" download="${escapeHtml(o.name)}" style="padding:4px 8px;font-size:12px">↓</a>
+          ${!quarantine ? `<a class="button ghost" href="/api/v1/objects/${o.id}" download="${escapeHtml(o.name)}" style="padding:4px 8px;font-size:12px">↓</a>` : ''}
           <button class="button ghost obj-delete-btn" data-id="${o.id}" type="button" style="padding:4px 8px;font-size:12px">✕</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
     grid.querySelectorAll('.obj-delete-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         if (!confirm('Удалить файл?')) return;
