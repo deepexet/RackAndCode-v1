@@ -18,7 +18,7 @@
       </div>
       <form id="loginForm" style="display:flex;flex-direction:column;gap:12px">
         <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:#778195">Email
-          <input id="loginEmail" type="email" autocomplete="email" placeholder="admin@local.fieldos" style="background:#0b1018;border:1px solid #2b3443;border-radius:7px;padding:10px 12px;color:#dde4f0;font-size:14px;outline:none">
+          <input id="loginEmail" type="email" autocomplete="email" placeholder="admin@local.rackpilot" style="background:#0b1018;border:1px solid #2b3443;border-radius:7px;padding:10px 12px;color:#dde4f0;font-size:14px;outline:none">
         </label>
         <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:#778195">Password
           <input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••" style="background:#0b1018;border:1px solid #2b3443;border-radius:7px;padding:10px 12px;color:#dde4f0;font-size:14px;outline:none">
@@ -26,7 +26,7 @@
         <p id="loginError" style="color:#e05353;font-size:12px;display:none;margin:0"></p>
         <button type="submit" style="margin-top:4px;padding:11px;background:#4a7fd4;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">Войти</button>
       </form>
-      <p style="text-align:center;font-size:11px;color:#556070;margin-top:16px">Пароль напечатан в логе сервера при первом запуске</p>
+      <p style="text-align:center;font-size:11px;color:#556070;margin-top:16px">Email: <code style="color:#778195">admin@local.rackpilot</code> — пароль в логе сервера</p>
     </div>
   </div>
 
@@ -47,6 +47,7 @@
         <button class="button ghost" id="exportButton" type="button" data-permission="developmentWorkspace">Экспорт задач</button>
         <label class="button ghost file-button" data-permission="developmentWorkspace">Импорт задач<input id="importInput" type="file" accept="application/json"></label>
         <button class="button primary" id="addTaskButton" type="button" data-permission="developmentWorkspace">＋ Новая задача</button>
+        <button class="button ghost" id="logoutButton" type="button" title="Выйти" style="padding:6px 10px">⏻</button>
       </div>
     </div>
   </header>

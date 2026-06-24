@@ -130,6 +130,16 @@ function hideLoginModal() {
   if (modal) modal.style.display = 'none';
 }
 
+async function apiFetch(url, opts = {}) {
+  const resp = await fetch(url, { ...opts, headers: { ...apiHeaders(), ...(opts.headers || {}) } });
+  if (resp.status === 401) {
+    setSession(null);
+    showLoginModal();
+    throw new Error('Session expired. Please log in again.');
+  }
+  return resp;
+}
+
 function persist(message, mutation = {}) {
   if (message) {
     state.audit.unshift({ at: new Date().toISOString(), text: message });
@@ -1447,9 +1457,17 @@ async function setup() {
     });
   }
 
-  // Show login if no session
+  // Logout button
+  const logoutBtn = document.getElementById('logoutButton');
+  if (logoutBtn) logoutBtn.addEventListener('click', () => logout());
+
+  // Restore role from session, or show login
   const session = getSession();
-  if (!session?.token) showLoginModal();
+  if (session?.token) {
+    if (session.role) setCurrentRole(session.role);
+  } else {
+    showLoginModal();
+  }
 
   applyRolePolicy();
   renderRoute();
