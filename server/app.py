@@ -45,11 +45,13 @@ ALLOWED_PROJECT_STATUSES = {"planned", "active", "on_hold", "completed", "cancel
 ALLOWED_BUILDING_STATUSES = {"planned", "active", "on_hold", "completed"}
 DEFAULT_ORGANIZATION_ID = "local-dev"
 ROLE_POLICIES = {
-    "Technician": {"projectRead", "fieldProgress"},
-    "Supervisor": {"projectRead", "fieldProgress", "projectManage", "logsRead"},
+    "Technician":     {"projectRead", "fieldProgress"},
+    "Supervisor":     {"projectRead", "fieldProgress", "projectManage", "logsRead"},
     "ProjectManager": {"projectRead", "fieldProgress", "projectManage", "logsRead", "developmentWorkspace"},
-    "Administrator": {"projectRead", "fieldProgress", "projectManage", "logsRead", "apiMonitor", "adminPanel", "developmentWorkspace"},
+    "Administrator":  {"projectRead", "fieldProgress", "projectManage", "logsRead", "apiMonitor", "adminPanel", "developmentWorkspace", "secretsManage", "agentContext"},
 }
+# Permissions that require a real Bearer session — dev-mode header not accepted
+SESSION_REQUIRED_PERMISSIONS = frozenset({"secretsManage", "agentContext"})
 TASK_PROGRESS = {"ideas": 0, "backlog": 0, "ready": 10, "progress": 50, "blocked": 25, "review": 75, "testing": 90, "done": 100}
 UNIT_PROGRESS = {"not_started": 0, "ongoing": 50, "blocked": 25, "complete": 100}
 WORK_ITEM_TRANSITIONS = {
@@ -1993,7 +1995,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"customFields":self.store.list_custom_field_definitions(self.organization_id)})
             return
         if path == "/api/v1/admin/secrets":
-            if not self._require_permission("adminPanel"): return
+            if not self._require_permission("secretsManage"): return
             self._json(HTTPStatus.OK, {"secrets": self.store.list_secrets()})
             return
         if path == "/api/v1/admin/platform-growth":
@@ -2005,14 +2007,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"features": self.store.list_feature_docs()})
             return
         if path == "/api/v1/agent/context":
-            if not self._require_permission("adminPanel"): return
+            if not self._require_permission("agentContext"): return
             ctx = _build_agent_context(self.store)
             repo = Path(__file__).parent.parent
             threading.Thread(target=_write_agent_context_file, args=(ctx, repo), daemon=True).start()
             self._json(HTTPStatus.OK, ctx)
             return
         if path.startswith("/api/v1/admin/secrets/") and path.endswith("/reveal"):
-            if not self._require_permission("adminPanel"): return
+            if not self._require_permission("secretsManage"): return
             secret_id = path.split("/")[-2]
             value = self.store.get_secret_value(secret_id)
             if value is None:
@@ -2189,7 +2191,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         if path == "/api/v1/admin/secrets":
-            if not self._require_permission("adminPanel"): return
+            if not self._require_permission("secretsManage"): return
             try:
                 body = self._read_json()
                 name = str(body.get("name", "")).strip()
@@ -2203,7 +2205,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         if path.startswith("/api/v1/admin/secrets/") and parts[-1] == "delete":
-            if not self._require_permission("adminPanel"): return
+            if not self._require_permission("secretsManage"): return
             secret_id = parts[-2]
             if self.store.delete_secret(secret_id):
                 self._json(HTTPStatus.OK, {"ok": True})
@@ -2425,9 +2427,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.organization_id = organization if 0 < len(organization) <= 64 and all(character.isalnum() or character in "-_" for character in organization) else ""
             self.current_role = normalize_role(self.headers.get("X-RackPilot-Role"))
 
+    @property
+    def _is_authenticated_session(self) -> bool:
+        """True only when request is backed by a valid Bearer session (not dev-mode header)."""
+        return self.session_context is not None
+
     def _require_organization(self) -> bool:
         if not self.organization_id or not self.store.organization_exists(self.organization_id):
             self._error(HTTPStatus.NOT_FOUND, "organization_not_found", "Organization does not exist or is inactive")
+            return False
+        # Cross-org guard: session org must match request org
+        if self.session_context and self.session_context["organizationId"] != self.organization_id:
+            self._error(HTTPStatus.FORBIDDEN, "org_mismatch", "Session organization does not match request organization")
             return False
         return True
 
@@ -2436,6 +2447,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             return False
         if not role_can(getattr(self, "current_role", "Administrator"), permission):
             self._error(HTTPStatus.FORBIDDEN, "forbidden", f"Role {self.current_role} cannot perform {permission}", {"role": self.current_role, "permission": permission})
+            return False
+        # Certain permissions require a real session (no dev-mode fallback)
+        if permission in SESSION_REQUIRED_PERMISSIONS and not self._is_authenticated_session:
+            self._error(HTTPStatus.UNAUTHORIZED, "session_required", f"Permission '{permission}' requires a Bearer session — dev-mode header not accepted")
             return False
         return True
 

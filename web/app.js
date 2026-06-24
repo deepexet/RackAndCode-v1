@@ -72,8 +72,18 @@ function routeAllowed(route) { return rolePolicy().routes.includes(route); }
 
 function applyRolePolicy() {
   document.body.dataset.role = currentRole;
+  const session = getSession();
+  // Show/hide dev-mode badge
+  const devBadge = document.getElementById('devModeBadge');
+  if (devBadge) devBadge.style.display = session?.token ? 'none' : 'flex';
+  // Sync role switcher
   const switcher = $('#roleSwitcher');
-  if (switcher) switcher.value = currentRole;
+  if (switcher) {
+    switcher.value = currentRole;
+    // Dim role switcher when session controls role
+    switcher.style.opacity = session?.token ? '0.5' : '1';
+    switcher.title = session?.token ? 'Роль определяется сессией' : 'Dev-mode: выберите роль';
+  }
   document.querySelectorAll('[data-route-link]').forEach(link => {
     const allowed = routeAllowed(link.dataset.routeLink);
     link.classList.toggle('role-hidden', !allowed);
