@@ -420,7 +420,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs()]); renderAITeam(); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway()]); renderAITeam(); }
 }
 
 function formatMemory(bytes){return `${(Number(bytes||0)/1073741824).toFixed(1)} GB`;}
@@ -795,6 +795,163 @@ async function deleteSecret(id) {
     toast('Секрет удалён');
     hydrateSecretsVault();
   } catch (e) { toast(e.message); }
+}
+
+// ── AI Gateway ─────────────────────────────────────────────────────────────
+
+const PROVIDER_LABELS = { anthropic: 'Anthropic', openai: 'OpenAI', ollama: 'Ollama', custom: 'Custom' };
+
+async function hydrateAIGateway() {
+  await Promise.all([hydrateAIProviders(), hydrateAIUsage()]);
+}
+
+async function hydrateAIProviders() {
+  const el = document.getElementById('aiProvidersList');
+  if (!el) return;
+  try {
+    const resp = await apiFetch('/api/v1/admin/ai-gateway/providers');
+    const { providers } = await resp.json();
+    if (!providers.length) {
+      el.innerHTML = '<p class="empty-copy">Нет настроенных провайдеров — используется ключ из переменной окружения.</p>';
+      return;
+    }
+    el.innerHTML = `<div class="ai-providers-list">${providers.map(p => `
+      <div class="ai-provider-card" data-id="${p.id}">
+        <div>
+          <strong>${escapeHtml(p.name)}</strong>
+          <small style="color:#778195;margin-left:8px">${PROVIDER_LABELS[p.provider] || p.provider} · ${escapeHtml(p.model)}</small>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="fd-guide-badge" style="${p.enabled ? '' : 'color:#556070;background:rgba(85,96,112,.1)'}">
+            ${p.enabled ? '● Активен' : '○ Отключён'}
+          </span>
+          <small style="color:#556070">Приоритет ${p.priority}</small>
+          <button class="button ghost provider-delete-btn" data-id="${p.id}" type="button" style="padding:4px 8px">✕</button>
+        </div>
+      </div>`).join('')}</div>`;
+    el.querySelectorAll('.provider-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить провайдер?')) return;
+        await apiFetch(`/api/v1/admin/ai-gateway/providers/${btn.dataset.id}/delete`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+        hydrateAIProviders();
+      });
+    });
+  } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+async function hydrateAIUsage() {
+  const el = document.getElementById('aiUsageChart');
+  if (!el) return;
+  try {
+    const resp = await apiFetch('/api/v1/admin/ai-gateway/usage?days=30');
+    const data = await resp.json();
+    renderAIUsage(data, el);
+  } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+}
+
+function renderAIUsage(data, el) {
+  const { byPurpose, daily, monthlyLimit } = data;
+  const totalTokens = byPurpose.reduce((s, r) => s + (r.tokens || 0), 0);
+  const totalReqs = byPurpose.reduce((s, r) => s + (r.requests || 0), 0);
+
+  const usageBar = monthlyLimit
+    ? `<div style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:#778195;margin-bottom:5px">
+          <span>Использовано за месяц</span>
+          <span><strong style="color:#dde4f0">${totalTokens.toLocaleString()}</strong> / ${monthlyLimit.toLocaleString()} токенов</span>
+        </div>
+        <div style="height:4px;background:#1a2535;border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(100, totalTokens/monthlyLimit*100).toFixed(1)}%;background:#4a7fd4;border-radius:4px"></div>
+        </div>
+      </div>` : '';
+
+  const purposeRows = byPurpose.length
+    ? byPurpose.map(r => `<tr>
+        <td style="padding:5px 8px;color:#b8c5d6;font-size:12px">${escapeHtml(r.purpose)}</td>
+        <td style="padding:5px 8px;color:#dde4f0;font-size:12px;text-align:right">${r.requests}</td>
+        <td style="padding:5px 8px;color:#4a7fd4;font-size:12px;text-align:right">${(r.tokens||0).toLocaleString()}</td>
+        <td style="padding:5px 8px;color:#778195;font-size:11px">${r.model}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" style="padding:12px 8px;color:#556070;font-size:12px">Нет данных за последние 30 дней</td></tr>';
+
+  // Mini daily bar chart
+  const maxD = Math.max(...(daily.map(d => d.tokens || 0)), 1);
+  const bars = daily.map(d => {
+    const h = Math.max(3, Math.round((d.tokens / maxD) * 40));
+    const dt = d.day?.slice(5) || '';
+    return `<div title="${dt}: ${(d.tokens||0).toLocaleString()} токенов, ${d.requests} запросов" style="display:flex;flex-direction:column;align-items:center;gap:3px;cursor:default">
+      <div style="width:10px;height:${h}px;background:#4a7fd4;border-radius:2px;opacity:0.8"></div>
+      <span style="font-size:8px;color:#445060;writing-mode:vertical-rl;transform:rotate(180deg)">${dt}</span>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    ${usageBar}
+    <div style="display:flex;gap:20px;margin-bottom:14px">
+      <div><strong style="font-size:18px;color:#dde4f0">${totalTokens.toLocaleString()}</strong><div style="font-size:10px;color:#556070;text-transform:uppercase;letter-spacing:.06em">токенов / 30д</div></div>
+      <div><strong style="font-size:18px;color:#dde4f0">${totalReqs}</strong><div style="font-size:10px;color:#556070;text-transform:uppercase;letter-spacing:.06em">запросов</div></div>
+    </div>
+    ${daily.length ? `<div style="display:flex;align-items:flex-end;gap:3px;height:60px;margin-bottom:16px;padding:0 2px">${bars}</div>` : ''}
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="padding:4px 8px;text-align:left;font-size:10px;color:#556070;text-transform:uppercase;letter-spacing:.06em">Назначение</th>
+        <th style="padding:4px 8px;text-align:right;font-size:10px;color:#556070;text-transform:uppercase;letter-spacing:.06em">Запросы</th>
+        <th style="padding:4px 8px;text-align:right;font-size:10px;color:#556070;text-transform:uppercase;letter-spacing:.06em">Токены</th>
+        <th style="padding:4px 8px;font-size:10px;color:#556070;text-transform:uppercase;letter-spacing:.06em">Модель</th>
+      </tr></thead>
+      <tbody>${purposeRows}</tbody>
+    </table>`;
+}
+
+function setupAIGateway() {
+  const addBtn = document.getElementById('addProviderButton');
+  const dialog = document.getElementById('providerDialog');
+  const form = document.getElementById('providerForm');
+  const cancelBtn = document.getElementById('cancelProviderButton');
+  if (!addBtn || !dialog) return;
+
+  addBtn.addEventListener('click', async () => {
+    form?.reset();
+    document.getElementById('providerIdField').value = '';
+    // Populate secrets dropdown
+    const sel = document.getElementById('providerSecretId');
+    if (sel) {
+      try {
+        const r = await apiFetch('/api/v1/admin/secrets');
+        const { secrets } = await r.json();
+        sel.innerHTML = '<option value="">— из переменной окружения —</option>' +
+          secrets.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
+      } catch { /* ok */ }
+    }
+    dialog.showModal();
+  });
+  cancelBtn?.addEventListener('click', () => dialog.close());
+
+  form?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true;
+    try {
+      const payload = {
+        id: document.getElementById('providerIdField').value || undefined,
+        name: document.getElementById('providerName').value.trim(),
+        provider: document.getElementById('providerType').value,
+        model: document.getElementById('providerModel').value.trim(),
+        priority: parseInt(document.getElementById('providerPriority').value) || 0,
+        base_url: document.getElementById('providerBaseUrl').value.trim() || null,
+        secret_id: document.getElementById('providerSecretId').value || null,
+        enabled: true,
+      };
+      const resp = await apiFetch('/api/v1/admin/ai-gateway/providers', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error((await resp.json()).error?.message || 'Failed');
+      dialog.close();
+      toast('Провайдер сохранён');
+      hydrateAIProviders();
+    } catch (err) { toast(err.message); }
+    finally { btn.disabled = false; }
+  });
 }
 
 function setupSecretsVault() {
@@ -1971,6 +2128,7 @@ async function setup() {
     showLoginModal();
   }
 
+  setupAIGateway();
   setupFeatureDocs();
   setupSecretsVault();
   applyRolePolicy();

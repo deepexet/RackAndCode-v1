@@ -154,6 +154,31 @@
       <div class="admin-summary" id="computeSummary"></div>
       <div class="compute-grid" id="computeNodes"><article class="compute-card project-loading">Ожидание первого Compute Agent…</article></div>
       <section class="detail-section compute-help"><p class="eyebrow">ENROLLMENT</p><h2>Подключение Mac</h2><p>Agent работает только после ручного запуска. Возможность выполнять вычисления дополнительно требует флага <code>--compute-enabled</code> и разрешения переключателем администратора.</p><pre>python3 scripts/mac_agent.py --server http://192.168.8.138:4173 --name "M1 Pro" --compute-enabled</pre></section>
+      <section class="detail-section" id="aiGatewaySection">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">AI GATEWAY</p><h2>Провайдеры и использование</h2></div>
+          <button class="button primary" id="addProviderButton" type="button">＋ Провайдер</button>
+        </div>
+        <p style="color:#778195;font-size:13px;margin-bottom:14px">Единая точка всех AI-запросов платформы. Логирование токенов, бюджеты, смена провайдера без изменения кода.</p>
+        <div id="aiProvidersList" style="margin-bottom:18px"></div>
+        <div id="aiUsageChart"></div>
+        <dialog id="providerDialog">
+          <form id="providerForm" method="dialog">
+            <h3 style="margin:0 0 18px">AI Провайдер</h3>
+            <input type="hidden" id="providerIdField">
+            <div class="form-grid">
+              <label>Название<input id="providerName" type="text" required placeholder="Claude Haiku" maxlength="80"></label>
+              <label>Тип<select id="providerType"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option><option value="ollama">Ollama (local)</option></select></label>
+              <label>Модель<input id="providerModel" type="text" required placeholder="claude-haiku-4-5-20251001" maxlength="100"></label>
+              <label>Приоритет<input id="providerPriority" type="number" value="0" min="0" max="99"></label>
+              <label style="grid-column:1/-1">Base URL <small style="color:#778195">(необязательно, для Ollama: http://localhost:11434)</small><input id="providerBaseUrl" type="url" placeholder="https://api.anthropic.com"></label>
+              <label style="grid-column:1/-1">Secret (API Key)<select id="providerSecretId"><option value="">— из переменной окружения —</option></select></label>
+            </div>
+            <div class="dialog-actions"><span></span><button class="button ghost" type="button" id="cancelProviderButton">Отмена</button><button class="button primary" type="submit">Сохранить</button></div>
+          </form>
+        </dialog>
+      </section>
+
       <section class="detail-section" id="aiTeamSection"><div class="detail-section-title"><div><p class="eyebrow">AI TEAM</p><h2>Команда агентов</h2></div><span class="git-sync-status">Концепция</span></div><p style="color:#778195;font-size:13px;margin-bottom:14px">Специализированные агенты на базе Claude. Каждый работает в своём контексте, общаются через очередь событий. Реализация — следующий этап.</p><div class="ai-team-grid" id="aiTeamGrid"></div></section>
       <section class="detail-section" id="secretsVaultSection">
         <div class="detail-section-title">

@@ -1799,48 +1799,179 @@ class WorkspaceStore:
                 (task_id, content, generated_by, model, now, now),
             )
 
+    # ── AI Gateway store helpers ─────────────────────────────────────────────
 
-def _call_claude_for_guide(task_id: str, title: str, description: str, area: str, api_key: str) -> str:
-    """Call Claude Haiku to generate a user-facing feature guide."""
-    prompt = f"""You are writing a concise user guide for a feature in RackPilot — an AI-native field operations platform.
+    def list_ai_providers(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id,name,provider,model,enabled,priority,base_url,secret_id,config,created_at FROM ai_providers ORDER BY priority DESC").fetchall()
+        return [dict(r) for r in rows]
 
-Feature: {title}
-Area: {area}
-Description: {description}
+    def save_ai_provider(self, data: dict) -> dict[str, Any]:
+        now = utc_now()
+        pid = data.get("id") or str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO ai_providers (id,name,provider,base_url,secret_id,model,enabled,priority,config,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "name=excluded.name,provider=excluded.provider,base_url=excluded.base_url,"
+                "secret_id=excluded.secret_id,model=excluded.model,enabled=excluded.enabled,"
+                "priority=excluded.priority,config=excluded.config,updated_at=excluded.updated_at",
+                (pid, data["name"], data["provider"], data.get("base_url"),
+                 data.get("secret_id"), data["model"], int(data.get("enabled", 1)),
+                 int(data.get("priority", 0)), json.dumps(data.get("config", {})), now, now),
+            )
+        return {"id": pid}
 
-Write a guide in Russian with these exact sections (use markdown headers):
-## Что это
-One or two sentences: what this feature is.
+    def delete_ai_provider(self, pid: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM ai_providers WHERE id=?", (pid,))
+        return cur.rowcount > 0
 
-## Зачем это нужно
-One or two sentences: the business/technical motivation.
+    def get_ai_usage(self, org: str, days: int = 30) -> dict[str, Any]:
+        since = datetime.fromtimestamp(time.time() - days * 86400, tz=timezone.utc).isoformat()
+        with self._connect() as conn:
+            totals = conn.execute(
+                "SELECT purpose, model, COUNT(*) as requests, SUM(total_tokens) as tokens, "
+                "SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) as errors, "
+                "AVG(latency_ms) as avg_latency "
+                "FROM ai_requests WHERE organization_id=? AND created_at>=? "
+                "GROUP BY purpose, model ORDER BY tokens DESC",
+                (org, since),
+            ).fetchall()
+            daily = conn.execute(
+                "SELECT substr(created_at,1,10) as day, SUM(total_tokens) as tokens, COUNT(*) as requests "
+                "FROM ai_requests WHERE organization_id=? AND created_at>=? "
+                "GROUP BY day ORDER BY day",
+                (org, since),
+            ).fetchall()
+            budget = conn.execute(
+                "SELECT monthly_limit FROM ai_budgets WHERE organization_id=? AND purpose='*'", (org,)
+            ).fetchone()
+        return {
+            "byPurpose": [dict(r) for r in totals],
+            "daily": [dict(r) for r in daily],
+            "monthlyLimit": budget["monthly_limit"] if budget else None,
+            "periodDays": days,
+        }
 
-## Как использовать
-Numbered steps or a short paragraph. Be concrete and specific to this feature.
 
-## Заметки
-Any requirements, caveats, or tips. If none, write "—".
+class AIGateway:
+    """Provider-agnostic AI request router with token logging and budget checks."""
 
-Be concise. Total length: 120–200 words. Do not mention the feature ID."""
+    def __init__(self, store: "WorkspaceStore"):
+        self.store = store
 
-    body = json.dumps({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 400,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode()
+    def _get_api_key(self, provider_row: Any) -> str | None:
+        if provider_row["secret_id"]:
+            value = self.store.get_secret_value(provider_row["secret_id"])
+            if value:
+                return value
+        env_map = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+        env_key = env_map.get(provider_row["provider"], "")
+        return os.environ.get(env_key) if env_key else None
+
+    def _log_request(self, provider_id: str | None, org: str, user: str | None,
+                     purpose: str, model: str, prompt_t: int, compl_t: int,
+                     latency: int | None, status: str, error: str | None = None) -> None:
+        with self.store._connect() as conn:
+            conn.execute(
+                "INSERT INTO ai_requests (id,provider_id,organization_id,user_id,purpose,model,"
+                "prompt_tokens,completion_tokens,total_tokens,latency_ms,status,error,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (str(uuid.uuid4()), provider_id, org, user, purpose, model,
+                 prompt_t, compl_t, prompt_t + compl_t, latency, status, error, utc_now()),
+            )
+
+    def _check_budget(self, org: str, purpose: str, estimated_tokens: int) -> tuple[bool, str]:
+        month_start = datetime.now(timezone.utc).strftime("%Y-%m-01T00:00:00+00:00")
+        with self.store._connect() as conn:
+            budget = conn.execute(
+                "SELECT monthly_limit FROM ai_budgets "
+                "WHERE organization_id=? AND (purpose=? OR purpose='*') "
+                "ORDER BY purpose DESC LIMIT 1",
+                (org, purpose),
+            ).fetchone()
+            if not budget:
+                return True, "no_budget_set"
+            used = conn.execute(
+                "SELECT COALESCE(SUM(total_tokens),0) as s FROM ai_requests "
+                "WHERE organization_id=? AND created_at>=?",
+                (org, month_start),
+            ).fetchone()["s"]
+        if used + estimated_tokens > budget["monthly_limit"]:
+            return False, f"monthly_budget_exceeded ({used}/{budget['monthly_limit']} tokens)"
+        return True, "ok"
+
+    def call(self, *, purpose: str, messages: list[dict], org: str,
+             user: str | None = None, model: str | None = None,
+             max_tokens: int = 500) -> dict[str, Any]:
+        t0 = time.perf_counter()
+        with self.store._connect() as conn:
+            prow = conn.execute(
+                "SELECT * FROM ai_providers WHERE enabled=1 ORDER BY priority DESC LIMIT 1"
+            ).fetchone()
+
+        use_model = model or (prow["model"] if prow else "claude-haiku-4-5-20251001")
+        provider = prow["provider"] if prow else "anthropic"
+        api_key = (self._get_api_key(prow) if prow else None) or os.environ.get("ANTHROPIC_API_KEY", "")
+
+        if not api_key:
+            raise ValueError("No API key available for AI gateway")
+
+        est_tokens = sum(len(m.get("content", "")) for m in messages) // 4 + max_tokens
+        allowed, reason = self._check_budget(org, purpose, est_tokens)
+        if not allowed:
+            self._log_request(prow["id"] if prow else None, org, user, purpose, use_model, 0, 0, None, "blocked", reason)
+            raise ValueError(f"AI request blocked: {reason}")
+
+        pid = prow["id"] if prow else None
+        try:
+            if provider == "anthropic":
+                result = _anthropic_chat(api_key, use_model, messages, max_tokens)
+            else:
+                raise ValueError(f"Provider '{provider}' not yet supported")
+            latency = int((time.perf_counter() - t0) * 1000)
+            self._log_request(pid, org, user, purpose, use_model, result["prompt_tokens"], result["completion_tokens"], latency, "ok")
+            return result
+        except Exception as err:
+            latency = int((time.perf_counter() - t0) * 1000)
+            self._log_request(pid, org, user, purpose, use_model, 0, 0, latency, "error", str(err)[:500])
+            raise
+
+
+def _anthropic_chat(api_key: str, model: str, messages: list[dict], max_tokens: int) -> dict[str, Any]:
+    body = json.dumps({"model": model, "max_tokens": max_tokens, "messages": messages}).encode()
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages",
         data=body,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
-    return data["content"][0]["text"].strip()
+    usage = data.get("usage", {})
+    return {
+        "text": data["content"][0]["text"].strip(),
+        "model": data.get("model", model),
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+    }
+
+
+def _call_claude_for_guide(task_id: str, title: str, description: str, area: str, api_key: str) -> str:
+    """Generate a user-facing feature guide via _anthropic_chat (goes through gateway logging)."""
+    prompt = (
+        f"You are writing a concise user guide for a feature in RackPilot — an AI-native field operations platform.\n\n"
+        f"Feature: {title}\nArea: {area}\nDescription: {description}\n\n"
+        f"Write a guide in Russian with these exact sections (use markdown headers):\n"
+        f"## Что это\nOne or two sentences: what this feature is.\n\n"
+        f"## Зачем это нужно\nOne or two sentences: the business/technical motivation.\n\n"
+        f"## Как использовать\nNumbered steps or a short paragraph. Be concrete and specific to this feature.\n\n"
+        f"## Заметки\nAny requirements, caveats, or tips. If none, write \"—\".\n\n"
+        f"Be concise. Total length: 120–200 words. Do not mention the feature ID."
+    )
+    result = _anthropic_chat(api_key, "claude-haiku-4-5-20251001", [{"role": "user", "content": prompt}], 400)
+    return result["text"]
 
 
 class RevisionConflict(Exception):
@@ -2005,6 +2136,15 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/admin/feature-docs":
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK, {"features": self.store.list_feature_docs()})
+            return
+        if path == "/api/v1/admin/ai-gateway/providers":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, {"providers": self.store.list_ai_providers()})
+            return
+        if path == "/api/v1/admin/ai-gateway/usage":
+            if not self._require_permission("adminPanel"): return
+            days = int(self.query_params.get("days", ["30"])[0])
+            self._json(HTTPStatus.OK, self.store.get_ai_usage(self.organization_id, min(days, 365)))
             return
         if path == "/api/v1/agent/context":
             if not self._require_permission("agentContext"): return
@@ -2189,6 +2329,23 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True})
             except (json.JSONDecodeError, ValueError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path == "/api/v1/admin/ai-gateway/providers":
+            if not self._require_permission("adminPanel"): return
+            try:
+                data = self._read_json()
+                result = self.store.save_ai_provider(data)
+                self._json(HTTPStatus.OK, result)
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/admin/ai-gateway/providers/") and parts[-1] == "delete":
+            if not self._require_permission("adminPanel"): return
+            pid = parts[-2]
+            if self.store.delete_ai_provider(pid):
+                self._json(HTTPStatus.OK, {"ok": True})
+            else:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Provider not found")
             return
         if path == "/api/v1/admin/secrets":
             if not self._require_permission("secretsManage"): return
@@ -2411,6 +2568,8 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self.request_started_at = time.perf_counter()
         candidate = self.headers.get("X-Request-ID", "")
         self.request_id = candidate if 0 < len(candidate) <= 64 and all(character.isalnum() or character in "-_." for character in candidate) else str(uuid.uuid4())
+        parsed_url = urlparse(self.path)
+        self.query_params = parse_qs(parsed_url.query)
         self.session_context: dict[str, Any] | None = None
         # Try Bearer session first
         auth_header = self.headers.get("Authorization", "")
@@ -2660,6 +2819,7 @@ class FieldOSServer(ThreadingHTTPServer):
         self.store = store
         self.agent_token = agent_token
         self.api_metrics = ApiMetricsRecorder()
+        self.ai_gateway = AIGateway(store)
 
 
 def main() -> None:
