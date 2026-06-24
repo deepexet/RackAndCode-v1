@@ -4,6 +4,7 @@ const STORAGE_KEY = 'rackpilot.workspace.v1';
 const LEGACY_STORAGE_KEYS = ['fieldos.workspace.v1'];
 const UNIT_OUTBOX_KEY = 'rackpilot.unit-outbox.v1';
 const LEGACY_UNIT_OUTBOX_KEYS = ['fieldos.unit-outbox.v1'];
+const WRITE_OUTBOX_KEY = 'rackpilot.write-outbox.v1';
 const ROLE_KEY = 'rackpilot.role-preview.v1';
 const ORGANIZATION_ID = 'local-dev';
 const state = loadState();
@@ -20,6 +21,92 @@ let localChangeVersion = 0;
 let _taskDataVersion = 0; // bumped on every tasks mutation — invalidates filteredTasks cache
 let _fcKey = null, _fcBase = null; // filteredTasks memo
 let _workspaceETag = null; // ETag from last workspace GET — enables 304 Not Modified
+
+// ── Write Outbox (generalised offline queue) ──────────────────────────────
+// Each entry: {id, method, url, headers, body, type, label, queuedAt, retries}
+let _writeOutbox = _loadWriteOutbox();
+let _writeOutboxFlushing = false;
+
+function _loadWriteOutbox() {
+  try { return JSON.parse(localStorage.getItem(WRITE_OUTBOX_KEY) || '[]'); } catch { return []; }
+}
+function _saveWriteOutbox() {
+  localStorage.setItem(WRITE_OUTBOX_KEY, JSON.stringify(_writeOutbox));
+  _updateOfflineBanner();
+}
+function _enqueueWrite(method, url, headers, body, type, label) {
+  _writeOutbox.push({ id: crypto.randomUUID(), method, url, headers, body, type, label,
+    queuedAt: new Date().toISOString(), retries: 0 });
+  _saveWriteOutbox();
+}
+async function _flushWriteOutbox() {
+  if (_writeOutboxFlushing || !navigator.onLine || !_writeOutbox.length) return;
+  _writeOutboxFlushing = true;
+  let flushed = 0;
+  while (_writeOutbox.length && navigator.onLine) {
+    const entry = _writeOutbox[0];
+    try {
+      const resp = await fetch(entry.url, {
+        method: entry.method,
+        headers: { ...entry.headers, ...apiHeaders() },
+        body: entry.body ?? undefined,
+      });
+      if (resp.ok || resp.status === 409) {
+        _writeOutbox.shift();
+        flushed++;
+        if (resp.status === 409) toast(`Конфликт при синхронизации: ${entry.label} — сервер принял свои данные`);
+      } else {
+        entry.retries = (entry.retries || 0) + 1;
+        if (entry.retries >= 5) { _writeOutbox.shift(); flushed++; toast(`Не удалось синхронизировать: ${entry.label}`); }
+        break;
+      }
+    } catch { break; }
+  }
+  _saveWriteOutbox();
+  _writeOutboxFlushing = false;
+  if (flushed > 0) {
+    await Promise.all([hydrateFromServer(), hydrateProjects()]);
+  }
+}
+
+// Wrap critical API calls for offline queueing.
+// Returns true if the request was queued (caller should show offline feedback).
+async function apiFetchOrQueue(url, opts, label) {
+  if (navigator.onLine) return null; // let caller do normal apiFetch
+  const body = opts?.body ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : null;
+  const headers = { 'Content-Type': 'application/json', ...(opts?.headers || {}) };
+  _enqueueWrite(opts?.method || 'POST', url, headers, body, 'mutation', label || url);
+  return 'queued';
+}
+
+function _updateOfflineBanner() {
+  const banner = document.getElementById('offlineBanner');
+  const countEl = document.getElementById('offlinePendingCount');
+  if (!banner) return;
+  const isOffline = !navigator.onLine;
+  const unitLen = typeof unitOutbox !== 'undefined' ? (unitOutbox?.length || 0) : 0;
+  const total = _writeOutbox.length + unitLen;
+  banner.style.display = isOffline ? 'flex' : 'none';
+  if (countEl) countEl.textContent = total > 0 ? `${total} в очереди` : '';
+  document.body.style.paddingTop = isOffline ? '41px' : '';
+  // Metrics card
+  const card = document.getElementById('syncMetricCard');
+  const metric = document.getElementById('metricPending');
+  if (card) card.style.display = total > 0 || isOffline ? '' : 'none';
+  if (metric) metric.textContent = total;
+}
+
+function _onNetworkOnline() {
+  _updateOfflineBanner();
+  setSyncState('saving');
+  Promise.all([_flushWriteOutbox(), flushUnitOutbox()]).then(() => {
+    syncToServer();
+  });
+}
+function _onNetworkOffline() {
+  setSyncState('offline');
+  _updateOfflineBanner();
+}
 
 function debounce(fn, ms) {
   let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
@@ -204,9 +291,13 @@ function persist(message, mutation = {}) {
 
 function setSyncState(mode) {
   const indicator = $('#saveState');
+  if (!indicator) return;
   indicator.classList.toggle('saving', mode === 'saving');
   indicator.classList.toggle('offline', mode === 'offline');
-  indicator.lastChild.textContent = mode === 'offline' ? ' Сохранено офлайн' : mode === 'saving' ? ' Синхронизация…' : ' Синхронизировано';
+  const pendingTotal = _writeOutbox.length + (unitOutbox?.length || 0);
+  const offlineLabel = pendingTotal > 0 ? ` Офлайн (${pendingTotal})` : ' Сохранено офлайн';
+  indicator.lastChild.textContent = mode === 'offline' ? offlineLabel : mode === 'saving' ? ' Синхронизация…' : ' Синхронизировано';
+  _updateOfflineBanner();
 }
 
 async function syncToServer() {
@@ -1761,11 +1852,30 @@ async function submitDailyUpdate(event) {
     issueDescription:$('#dailyHasIssue').checked ? $('#dailyIssueDescription').value.trim() : '', issueSeverity:$('#dailyIssueSeverity').value
   };
   if (entryId) payload.expectedVersion=Number($('#dailyEntryVersion').value);
+  const projectId = $('#dailyProjectId').value;
+  const path = `/api/v1/projects/${encodeURIComponent(projectId)}/daily-updates${entryId ? `/${encodeURIComponent(entryId)}` : ''}`;
   try {
-    const path=`/api/v1/projects/${encodeURIComponent($('#dailyProjectId').value)}/daily-updates${entryId ? `/${encodeURIComponent(entryId)}` : ''}`;
+    if (!navigator.onLine) {
+      _enqueueWrite(entryId ? 'PATCH' : 'POST', path,
+        {'Content-Type':'application/json'}, JSON.stringify(payload),
+        'daily_update', `Daily update ${payload.workDate}`);
+      $('#dailyUpdateDialog').close();
+      toast('Офлайн — отчет добавлен в очередь синхронизации');
+      return;
+    }
     if (entryId) await apiPatch(path,payload); else await apiPost(path,payload);
     $('#dailyUpdateDialog').close(); await hydrateProjects(); toast(entryId ? 'Обновление изменено' : 'Отчет сохранен');
-  } catch(error) { toast(error.code === 'version_conflict' ? 'Отчет уже изменен другим пользователем' : error.message); } finally { button.disabled=false; }
+  } catch(error) {
+    if (!navigator.onLine) {
+      _enqueueWrite(entryId ? 'PATCH' : 'POST', path,
+        {'Content-Type':'application/json'}, JSON.stringify(payload),
+        'daily_update', `Daily update ${payload.workDate}`);
+      $('#dailyUpdateDialog').close();
+      toast('Потеря соединения — отчет сохранён локально');
+    } else {
+      toast(error.code === 'version_conflict' ? 'Отчет уже изменен другим пользователем' : error.message);
+    }
+  } finally { button.disabled=false; }
 }
 
 function renderMetrics() {
@@ -2341,8 +2451,9 @@ async function setup() {
   ['logSourceFilter','logProjectFilter','logEntityFilter'].forEach(id => $(`#${id}`).addEventListener('change', hydrateLogs));
   $('#refreshLogsButton').addEventListener('click', hydrateLogs);
   $('#refreshApiMetricsButton').addEventListener('click', hydrateApiMetrics);
-  window.addEventListener('online', () => { syncToServer(); flushUnitOutbox(); });
-  window.addEventListener('offline', () => setSyncState('offline'));
+  window.addEventListener('online', _onNetworkOnline);
+  window.addEventListener('offline', _onNetworkOffline);
+  _updateOfflineBanner();
   window.addEventListener('hashchange', renderRoute);
 
   // Login form
@@ -2451,6 +2562,10 @@ async function setup() {
   setInterval(()=>{ if(document.body.dataset.route==='api' && !document.hidden) hydrateApiMetrics(); }, 8000);
   // Agent status: 15s interval, skip when tab is hidden
   setInterval(()=>{ if(!document.hidden) hydrateAgentStatus(); }, 15000);
+  // Flush write outbox every 30s if online
+  setInterval(()=>{ if(navigator.onLine && _writeOutbox.length) _flushWriteOutbox(); }, 30000);
+  // Initial banner state
+  _updateOfflineBanner();
 }
 
 setup();

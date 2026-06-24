@@ -37,6 +37,12 @@
     </div>
   </div>
 
+  <!-- Offline ribbon — shown by JS when navigator.onLine = false -->
+  <div id="offlineBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:10000;background:#1a0e00;border-bottom:1px solid #f59e0b;padding:8px 16px;font-size:12px;color:#f59e0b;align-items:center;gap:8px;justify-content:center">
+    <span>⚡</span> <strong>Офлайн</strong> — изменения сохраняются локально и будут синхронизированы при восстановлении соединения.
+    <span id="offlinePendingCount" style="background:rgba(245,158,11,.15);border-radius:4px;padding:1px 6px;margin-left:4px"></span>
+  </div>
+
   <div class="ambient ambient-a"></div>
   <div class="ambient ambient-b"></div>
 
@@ -79,6 +85,7 @@
       <article><span>В работе</span><strong id="metricActive">0</strong><small>активный поток</small></article>
       <article><span>Завершено</span><strong id="metricDone">0</strong><small id="metricDoneNote">0% delivery</small></article>
       <article><span>Блокировки</span><strong id="metricBlocked">0</strong><small id="metricBlockedNote">требуют внимания</small></article>
+      <article id="syncMetricCard" style="display:none"><span>В очереди</span><strong id="metricPending">0</strong><small>ожидают синхронизации</small></article>
     </section>
 
     <section class="section roadmap-section">

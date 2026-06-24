@@ -301,3 +301,8 @@ dialog { width:min(570px,92vw); padding:0; border:1px solid #30394a; border-radi
 .privacy-row { background:#0a1020; border:1px solid #1a2535; border-radius:10px; padding:12px 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
 .audit-row { display:flex; align-items:center; gap:10px; padding:6px 10px; border-radius:6px; font-size:12px; flex-wrap:wrap; }
 .audit-row:nth-child(odd) { background:rgba(10,16,32,.5); }
+
+/* ── Offline sync ───────────────────────────────────────────────────────── */
+#offlineBanner { font-weight:500; }
+#offlineBanner strong { color:#fbbf24; }
+body[style*="padding-top"] .topbar { top:41px; }
