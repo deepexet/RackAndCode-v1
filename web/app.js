@@ -95,8 +95,39 @@ function setCurrentRole(role) {
   toast(`Role preview: ${ROLE_POLICIES[currentRole].label}`);
 }
 
+const SESSION_STORAGE_KEY = 'rackpilot.session.v1';
+
+function getSession() {
+  try { return JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY)); } catch { return null; }
+}
+function setSession(s) {
+  if (s) localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(s));
+  else localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
 function apiHeaders(extra = {}) {
-  return { ...extra, 'X-Organization-ID': ORGANIZATION_ID, 'X-RackPilot-Role': currentRole };
+  const session = getSession();
+  const headers = { ...extra, 'X-Organization-ID': ORGANIZATION_ID, 'X-RackPilot-Role': currentRole };
+  if (session?.token) headers['Authorization'] = `Bearer ${session.token}`;
+  return headers;
+}
+
+async function logout() {
+  const session = getSession();
+  if (session?.token) {
+    await fetch('/api/v1/auth/logout', { method: 'POST', headers: apiHeaders() }).catch(() => {});
+  }
+  setSession(null);
+  showLoginModal();
+}
+
+function showLoginModal() {
+  const modal = document.getElementById('loginModal');
+  if (modal) modal.style.display = 'flex';
+}
+function hideLoginModal() {
+  const modal = document.getElementById('loginModal');
+  if (modal) modal.style.display = 'none';
 }
 
 function persist(message, mutation = {}) {
@@ -1383,6 +1414,43 @@ async function setup() {
   window.addEventListener('online', () => { syncToServer(); flushUnitOutbox(); });
   window.addEventListener('offline', () => setSyncState('offline'));
   window.addEventListener('hashchange', renderRoute);
+
+  // Login form
+  const loginForm = document.getElementById('loginForm');
+  if (loginForm) {
+    loginForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      const errEl = document.getElementById('loginError');
+      errEl.style.display = 'none';
+      const btn = loginForm.querySelector('button[type=submit]');
+      btn.disabled = true; btn.textContent = 'Вход...';
+      try {
+        const resp = await fetch('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error?.message || 'Неверный email или пароль');
+        setSession(data);
+        if (data.role) setCurrentRole(data.role);
+        hideLoginModal();
+        await Promise.all([hydrateFromServer(), hydrateProjects()]);
+      } catch (err) {
+        errEl.textContent = err.message;
+        errEl.style.display = 'block';
+      } finally {
+        btn.disabled = false; btn.textContent = 'Войти';
+      }
+    });
+  }
+
+  // Show login if no session
+  const session = getSession();
+  if (!session?.token) showLoginModal();
+
   applyRolePolicy();
   renderRoute();
   render();

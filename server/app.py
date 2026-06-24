@@ -97,6 +97,26 @@ def role_can(role: str, permission: str) -> bool:
     return permission in ROLE_POLICIES.get(normalize_role(role), ROLE_POLICIES["Administrator"])
 
 
+SESSION_TTL_SECONDS = 8 * 3600  # 8-hour sessions
+
+def _hash_password(password: str, salt: bytes | None = None) -> str:
+    if salt is None:
+        salt = secrets.token_bytes(16)
+    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+    return f"scrypt:{salt.hex()}:{dk.hex()}"
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        _, salt_hex, hash_hex = stored.split(":")
+        salt = bytes.fromhex(salt_hex)
+        dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    except Exception:
+        return False
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1338,6 +1358,95 @@ class WorkspaceStore:
         project = self.get_project(organization_id, project_id)
         return next(item for item in project["workItems"] if item["id"] == item_id)  # type: ignore[index]
 
+    # ── Auth / Session ──────────────────────────────────────────────────────
+
+    def ensure_initial_credentials(self) -> str | None:
+        """Generate a one-time password for local-admin if none exists. Returns it (print to log); None if already set."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM password_credentials WHERE user_id = 'local-admin'"
+            ).fetchone()
+            if row:
+                return None
+            password = secrets.token_urlsafe(12)
+            connection.execute(
+                "INSERT INTO password_credentials (user_id, password_hash, must_change, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+                ("local-admin", _hash_password(password), utc_now(), utc_now()),
+            )
+            return password
+
+    def login(self, email: str, password: str) -> dict[str, Any] | None:
+        """Validate email+password. On success create a session and return {token, user, role, expiresAt}."""
+        with self._connect() as connection:
+            user = connection.execute(
+                "SELECT u.id, u.display_name, m.organization_id, m.role "
+                "FROM users u JOIN memberships m ON m.user_id = u.id "
+                "WHERE u.email = ? AND m.status = 'active' LIMIT 1",
+                (email,),
+            ).fetchone()
+            if not user:
+                return None
+            cred = connection.execute(
+                "SELECT password_hash FROM password_credentials WHERE user_id = ?",
+                (user["id"],),
+            ).fetchone()
+            if not cred or not _verify_password(password, cred["password_hash"]):
+                return None
+            token = secrets.token_urlsafe(32)
+            token_hash = _hash_token(token)
+            now = utc_now()
+            expires = datetime.fromtimestamp(
+                time.time() + SESSION_TTL_SECONDS, tz=timezone.utc
+            ).isoformat()
+            connection.execute(
+                "INSERT INTO sessions (token_hash, user_id, organization_id, role, created_at, expires_at, last_seen_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (token_hash, user["id"], user["organization_id"], user["role"], now, expires, now),
+            )
+            return {
+                "token": token,
+                "user": {"id": user["id"], "displayName": user["display_name"], "email": email},
+                "organizationId": user["organization_id"],
+                "role": user["role"],
+                "expiresAt": expires,
+            }
+
+    def validate_session(self, token: str) -> dict[str, Any] | None:
+        """Return session context dict or None if expired/invalid."""
+        token_hash = _hash_token(token)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT s.user_id, s.organization_id, s.role, s.expires_at, u.email, u.display_name "
+                "FROM sessions s JOIN users u ON u.id = s.user_id "
+                "WHERE s.token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if not row:
+                return None
+            if row["expires_at"] < utc_now():
+                connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+                return None
+            # Slide expiry on activity
+            new_expires = datetime.fromtimestamp(
+                time.time() + SESSION_TTL_SECONDS, tz=timezone.utc
+            ).isoformat()
+            connection.execute(
+                "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?",
+                (utc_now(), new_expires, token_hash),
+            )
+            return {
+                "userId": row["user_id"],
+                "email": row["email"],
+                "displayName": row["display_name"],
+                "organizationId": row["organization_id"],
+                "role": row["role"],
+            }
+
+    def logout_session(self, token: str) -> None:
+        token_hash = _hash_token(token)
+        with self._connect() as connection:
+            connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
 
 class RevisionConflict(Exception):
     def __init__(self, current_revision: int):
@@ -1440,6 +1549,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path in {"/api/health", "/api/v1/health"}:
             self._json(HTTPStatus.OK, {"status": "ok", "service": "rackpilot-local", "apiVersion": "v1", "schemaVersion": self.store.migration_result.current_version, "time": utc_now()})
             return
+        if path == "/api/v1/auth/me":
+            if not self.session_context:
+                self._error(HTTPStatus.UNAUTHORIZED, "unauthenticated", "No active session")
+                return
+            self._json(HTTPStatus.OK, {"user": self.session_context})
+            return
         if path == "/api/v1/organizations":
             self._json(HTTPStatus.OK, {"organizations": self.store.list_organizations()})
             return
@@ -1527,7 +1642,29 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._serve_file(OPENAPI_PATH, "application/yaml; charset=utf-8")
             return
         if path == "/floorplan":
-            self._serve_file(WEB_ROOT / "floorplan.html", "text/html; charset=utf-8")
+            fp = WEB_ROOT / "floorplan.html"
+            if not fp.is_file():
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Resource not found")
+                return
+            data = fp.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            # Relaxed CSP for experimental page: allows inline styles/scripts and CDN
+            self.send_header("Content-Security-Policy",
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob:; "
+                "connect-src 'self' https://cdn.jsdelivr.net; "
+                "worker-src blob:; "
+                "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+            )
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
             return
         self._serve_static(path)
 
@@ -1567,6 +1704,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self._start_request()
         path = urlparse(self.path).path
         parts = path.strip("/").split("/")
+        if path == "/api/v1/auth/login":
+            self._handle_auth_login()
+            return
+        if path == "/api/v1/auth/logout":
+            self._handle_auth_logout()
+            return
         if path == "/api/v1/floorplan/analyze":
             self._handle_floorplan_analyze()
             return
@@ -1785,9 +1928,21 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self.request_started_at = time.perf_counter()
         candidate = self.headers.get("X-Request-ID", "")
         self.request_id = candidate if 0 < len(candidate) <= 64 and all(character.isalnum() or character in "-_." for character in candidate) else str(uuid.uuid4())
-        organization = self.headers.get("X-Organization-ID", DEFAULT_ORGANIZATION_ID)
-        self.organization_id = organization if 0 < len(organization) <= 64 and all(character.isalnum() or character in "-_" for character in organization) else ""
-        self.current_role = normalize_role(self.headers.get("X-RackPilot-Role"))
+        self.session_context: dict[str, Any] | None = None
+        # Try Bearer session first
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if token:
+                self.session_context = self.store.validate_session(token)
+        if self.session_context:
+            self.organization_id = self.session_context["organizationId"]
+            self.current_role = normalize_role(self.session_context["role"])
+        else:
+            # Dev-mode fallback: client-controlled headers (LAN only, no production use)
+            organization = self.headers.get("X-Organization-ID", DEFAULT_ORGANIZATION_ID)
+            self.organization_id = organization if 0 < len(organization) <= 64 and all(character.isalnum() or character in "-_" for character in organization) else ""
+            self.current_role = normalize_role(self.headers.get("X-RackPilot-Role"))
 
     def _require_organization(self) -> bool:
         if not self.organization_id or not self.store.organization_exists(self.organization_id):
@@ -1862,6 +2017,29 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _handle_auth_login(self) -> None:
+        try:
+            body = self._read_json()
+        except (json.JSONDecodeError, ValueError):
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_json", "Body must be JSON {email, password}")
+            return
+        email = str(body.get("email", "")).strip().lower()
+        password = str(body.get("password", ""))
+        if not email or not password:
+            self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "email and password are required")
+            return
+        result = self.store.login(email, password)
+        if not result:
+            self._error(HTTPStatus.UNAUTHORIZED, "invalid_credentials", "Invalid email or password")
+            return
+        self._json(HTTPStatus.OK, result)
+
+    def _handle_auth_logout(self) -> None:
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            self.store.logout_session(auth_header[7:].strip())
+        self._json(HTTPStatus.OK, {"ok": True})
+
     def _handle_floorplan_analyze(self) -> None:
         """Experimental: receive base64 floor-plan image, call Claude vision, return room JSON."""
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -1882,23 +2060,33 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if not image_b64:
             self._error(HTTPStatus.BAD_REQUEST, "missing_image", "Field 'image' (base64) is required")
             return
-        prompt = (
-            "Analyze this architectural floor plan image and extract the spatial layout.\n\n"
-            "Return ONLY valid JSON — no markdown fences, no explanation — with this exact structure:\n"
-            "{\n"
-            '  "building_type": "residential|commercial|industrial|mixed",\n'
-            '  "notes": "one-line description",\n'
-            '  "rooms": [\n'
-            '    {"id":"r1","name":"display name","type":"apartment|corridor|stairwell|elevator|lobby|bathroom|bedroom|office|storage|utility|parking|other","x":0,"y":0,"width":10,"height":10}\n'
-            "  ],\n"
-            '  "doors": [\n'
-            '    {"from_room":"r1","to_room":"r2","wall_side":"north|south|east|west","pos":0.5}\n'
-            "  ]\n"
-            "}\n\n"
-            "Coordinate system: (0,0) is top-left, x increases right, y increases down. "
-            "All values use a 0–100 scale covering the full floor plan area. "
-            "Estimate positions from visual proportions. Include ALL visible rooms and spaces."
-        )
+        prompt = """You are a precise architectural plan parser. Analyze this floor plan image carefully.
+
+STEP 1 — Measure the image bounds mentally: treat the entire floor plan drawing area as a 100×100 grid, (0,0) at top-left, x right, y down.
+
+STEP 2 — Identify every enclosed space (rooms, corridors, stairwells, elevators, shafts, bathrooms, apartments etc.). For EACH space:
+- Estimate its bounding rectangle as tightly as possible
+- x, y = top-left corner of that rectangle (0–100)
+- width, height = size of that rectangle (0–100)
+- Spaces must NOT overlap unless one physically contains another
+- Adjacent rooms share a wall edge: e.g. room A ends at x=30, room B starts at x=30
+
+STEP 3 — Identify door openings. For each door note which room it belongs to, which wall side (north=top, south=bottom, west=left, east=right), and the fractional position along that wall (0.0=start, 1.0=end).
+
+Return ONLY this JSON (no markdown, no text outside JSON):
+{
+  "building_type": "residential|commercial|industrial|mixed",
+  "notes": "brief description of what you see",
+  "image_aspect": 1.4,
+  "rooms": [
+    {"id":"r1","name":"exact label from plan or descriptive name","type":"apartment|corridor|stairwell|elevator|lobby|bathroom|bedroom|office|storage|utility|parking|balcony|other","x":5,"y":10,"width":20,"height":15}
+  ],
+  "doors": [
+    {"from_room":"r1","to_room":"r2_or_null","wall_side":"north|south|east|west","pos":0.5,"width_pct":0.12}
+  ]
+}
+
+Be precise. If the plan shows 10 apartments, return 10 apartment entries with accurate relative sizes and positions. Prefer accuracy over completeness — only include what you can place confidently."""
         payload = {
             "model": "claude-sonnet-4-6",
             "max_tokens": 4096,
@@ -1986,7 +2174,11 @@ def main() -> None:
     args = parser.parse_args()
 
     agent_token,agent_token_path=ensure_agent_token(args.db)
-    server = FieldOSServer((args.host, args.port), WorkspaceStore(args.db),agent_token)
+    store = WorkspaceStore(args.db)
+    initial_password = store.ensure_initial_credentials()
+    if initial_password:
+        LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.fieldos", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))
+    server = FieldOSServer((args.host, args.port), store, agent_token)
 
     def stop(_signum: int, _frame: Any) -> None:
         threading.Thread(target=server.shutdown, daemon=True).start()

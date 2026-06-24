@@ -9,6 +9,27 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Login modal — shown when no valid session -->
+  <div id="loginModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9999;align-items:center;justify-content:center;backdrop-filter:blur(4px)">
+    <div style="background:#0f1923;border:1px solid #2b3443;border-radius:16px;padding:32px 28px;width:340px;max-width:95vw">
+      <div style="text-align:center;margin-bottom:24px">
+        <strong style="font-size:20px;font-weight:800;color:#dde4f0">RackPilot</strong>
+        <small style="display:block;color:#778195;font-size:11px;margin-top:4px;text-transform:uppercase;letter-spacing:1px">by Valeronix</small>
+      </div>
+      <form id="loginForm" style="display:flex;flex-direction:column;gap:12px">
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:#778195">Email
+          <input id="loginEmail" type="email" autocomplete="email" placeholder="admin@local.fieldos" style="background:#0b1018;border:1px solid #2b3443;border-radius:7px;padding:10px 12px;color:#dde4f0;font-size:14px;outline:none">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:#778195">Password
+          <input id="loginPassword" type="password" autocomplete="current-password" placeholder="••••••••" style="background:#0b1018;border:1px solid #2b3443;border-radius:7px;padding:10px 12px;color:#dde4f0;font-size:14px;outline:none">
+        </label>
+        <p id="loginError" style="color:#e05353;font-size:12px;display:none;margin:0"></p>
+        <button type="submit" style="margin-top:4px;padding:11px;background:#4a7fd4;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer">Войти</button>
+      </form>
+      <p style="text-align:center;font-size:11px;color:#556070;margin-top:16px">Пароль напечатан в логе сервера при первом запуске</p>
+    </div>
+  </div>
+
   <div class="ambient ambient-a"></div>
   <div class="ambient ambient-b"></div>
 
