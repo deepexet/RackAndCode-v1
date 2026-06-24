@@ -2464,6 +2464,307 @@ class WorkspaceStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # -- Field note parsing ---------------------------------------------------
+
+    _NOTE_SYSTEM_PROMPT = """You are a field operations data extractor for a construction/AV installation management system.
+Extract structured change proposals from a free-form field note.
+
+Context will be provided as JSON with: project name, locations (id, code, name, kind), work_items (id, code, title, status).
+
+Return ONLY valid JSON (no markdown, no explanation) in this exact schema:
+{
+  "proposed_changes": [
+    {
+      "type": "work_item_progress",
+      "work_item_id": "<id or null>",
+      "work_item_code": "<matched code or null>",
+      "work_item_title": "<matched title or text fragment>",
+      "completion_percent": <0-100 or null>,
+      "new_status": "<open|in_progress|done|blocked or null>",
+      "notes": "<extracted note text>",
+      "confidence": <0.0-1.0>
+    },
+    {
+      "type": "location_progress",
+      "location_id": "<id or null>",
+      "location_code": "<matched code or null>",
+      "location_name": "<matched name or text fragment>",
+      "notes": "<what was done at this location>",
+      "completion_percent": <0-100 or null>,
+      "confidence": <0.0-1.0>
+    },
+    {
+      "type": "new_issue",
+      "title": "<short issue title>",
+      "description": "<detail>",
+      "severity": "<low|medium|high|critical>",
+      "location_id": "<id or null>",
+      "confidence": <0.0-1.0>
+    }
+  ],
+  "unrecognized": ["<text span that could not be mapped to any entity>"]
+}
+
+Rules:
+- Only include changes with confidence >= 0.5
+- Use the exact IDs from context when you can match an entity
+- "unrecognized" should list text fragments you cannot confidently map
+- If no changes found, return {"proposed_changes": [], "unrecognized": [<full text>]}
+"""
+
+    def _local_parse_note(
+        self,
+        raw_text: str,
+        work_items: list[dict],
+        locations: list[dict],
+    ) -> dict[str, Any]:
+        """Fallback regex-based extractor when no LLM is configured."""
+        import re as _re
+        changes = []
+        unrecognized = [raw_text]
+
+        pct_pattern = _re.compile(r'(\d{1,3})\s*%')
+        done_words = {'готов', 'завершён', 'завершен', 'сделан', 'done', 'complete', 'finished', '100%'}
+        issue_words = {'проблем', 'сломан', 'неисправ', 'error', 'broken', 'issue', 'fail'}
+
+        low = raw_text.lower()
+
+        # Match work items by code or title fragment
+        for wi in work_items:
+            code = (wi.get('code') or '').lower()
+            title = (wi.get('title') or '').lower()
+            if code and code in low or (len(title) > 4 and title[:12] in low):
+                pct = next((int(m.group(1)) for m in pct_pattern.finditer(raw_text)), None)
+                is_done = any(w in low for w in done_words)
+                changes.append({
+                    'type': 'work_item_progress',
+                    'work_item_id': wi.get('id'),
+                    'work_item_code': wi.get('code'),
+                    'work_item_title': wi.get('title'),
+                    'completion_percent': 100 if is_done else pct,
+                    'new_status': 'done' if is_done else ('in_progress' if pct else None),
+                    'notes': raw_text[:300],
+                    'confidence': 0.7,
+                })
+                unrecognized = []
+                break
+
+        # Match locations
+        for loc in locations:
+            code = (loc.get('code') or '').lower()
+            name = (loc.get('name') or '').lower()
+            if (code and code in low) or (len(name) > 3 and name in low):
+                changes.append({
+                    'type': 'location_progress',
+                    'location_id': loc.get('id'),
+                    'location_code': loc.get('code'),
+                    'location_name': loc.get('name'),
+                    'notes': raw_text[:300],
+                    'completion_percent': None,
+                    'confidence': 0.65,
+                })
+                unrecognized = []
+                break
+
+        # Detect issues
+        if any(w in low for w in issue_words):
+            changes.append({
+                'type': 'new_issue',
+                'title': raw_text[:80],
+                'description': raw_text[:400],
+                'severity': 'medium',
+                'location_id': None,
+                'confidence': 0.6,
+            })
+            unrecognized = []
+
+        return {
+            'proposed_changes': changes,
+            'unrecognized': unrecognized if not changes else [],
+        }
+
+    def parse_field_note(
+        self, org: str, project_id: str, author_id: str, raw_text: str
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            work_items = conn.execute(
+                "SELECT id, code, title, status FROM work_items "
+                "WHERE organization_id=? AND project_id=? LIMIT 80",
+                (org, project_id),
+            ).fetchall()
+            locations = conn.execute(
+                "SELECT id, code, name, kind FROM project_locations "
+                "WHERE organization_id=? AND project_id=? LIMIT 60",
+                (org, project_id),
+            ).fetchall()
+            project = conn.execute(
+                "SELECT name FROM projects WHERE organization_id=? AND id=?",
+                (org, project_id),
+            ).fetchone()
+
+        wi_list = [dict(r) for r in work_items]
+        loc_list = [dict(r) for r in locations]
+        proj_name = project["name"] if project else project_id
+
+        router = self.get_ai_router(org)
+        provider = router.provider
+        model = router.model
+        parsed: dict[str, Any] = {}
+
+        if router.available and provider != 'local':
+            context = json.dumps({
+                'project': proj_name,
+                'work_items': wi_list,
+                'locations': loc_list,
+            }, ensure_ascii=False)
+            prompt = f"Context:\n{context}\n\nField note:\n{raw_text}"
+            try:
+                result = router.invoke(prompt, system=self._NOTE_SYSTEM_PROMPT, max_tokens=1500)
+                text = result.get('text', '')
+                parsed = json.loads(text)
+                self.log_ai_invocation(
+                    org, author_id, 'parse_note',
+                    result.get('provider', provider), result.get('model', model),
+                    result.get('prompt_tokens', 0), result.get('completion_tokens', 0),
+                    result.get('latency_ms', 0), None,
+                )
+            except (json.JSONDecodeError, KeyError):
+                parsed = self._local_parse_note(raw_text, wi_list, loc_list)
+            except Exception as exc:
+                self.log_ai_invocation(org, author_id, 'parse_note', provider, model, 0, 0, 0, str(exc))
+                parsed = self._local_parse_note(raw_text, wi_list, loc_list)
+        else:
+            parsed = self._local_parse_note(raw_text, wi_list, loc_list)
+
+        draft_id = _uid()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO field_note_drafts(id, organization_id, project_id, author_id, "
+                "raw_text, proposed_changes, unrecognized, provider, model, status, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (draft_id, org, project_id, author_id, raw_text,
+                 json.dumps(parsed.get('proposed_changes', []), ensure_ascii=False),
+                 json.dumps(parsed.get('unrecognized', []), ensure_ascii=False),
+                 provider, model, 'pending', _now(), _now()),
+            )
+
+        return {
+            'draft_id': draft_id,
+            'proposed_changes': parsed.get('proposed_changes', []),
+            'unrecognized': parsed.get('unrecognized', []),
+            'provider': provider,
+            'model': model,
+        }
+
+    def apply_field_note(
+        self, org: str, draft_id: str, actor_id: str,
+        approved_changes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            draft = conn.execute(
+                "SELECT id, project_id, raw_text, status FROM field_note_drafts "
+                "WHERE organization_id=? AND id=?", (org, draft_id)
+            ).fetchone()
+            if not draft:
+                raise LookupError(f"draft {draft_id} not found")
+            if draft['status'] == 'applied':
+                raise ValueError("draft already applied")
+
+        project_id = draft['project_id']
+        raw_text = draft['raw_text']
+        applied: dict[str, int] = {'daily_updates': 0, 'work_items': 0, 'issues': 0}
+
+        with self._connect() as conn:
+            for change in approved_changes:
+                ctype = change.get('type')
+
+                if ctype == 'work_item_progress':
+                    wi_id = change.get('work_item_id')
+                    pct = change.get('completion_percent')
+                    new_status = change.get('new_status')
+                    if wi_id and (pct is not None or new_status):
+                        updates = []
+                        if new_status:
+                            updates.append(('status', new_status))
+                        if updates:
+                            conn.execute(
+                                "UPDATE work_items SET status=?, updated_at=? "
+                                "WHERE organization_id=? AND id=?",
+                                (new_status or 'in_progress', _now(), org, wi_id),
+                            )
+                        # Create daily update entry
+                        conn.execute(
+                            "INSERT INTO daily_updates(id, organization_id, project_id, "
+                            "work_date, member_id, notes, completion_percent, status, created_at) "
+                            "VALUES(?,?,?,?,?,?,?,?,?)",
+                            (_uid(), org, project_id, _now()[:10], actor_id,
+                             change.get('notes', raw_text[:300]),
+                             pct, new_status or 'in_progress', _now()),
+                        )
+                        applied['work_items'] += 1
+                        applied['daily_updates'] += 1
+
+                elif ctype == 'location_progress':
+                    notes = change.get('notes', raw_text[:300])
+                    pct = change.get('completion_percent')
+                    loc_id = change.get('location_id')
+                    conn.execute(
+                        "INSERT INTO daily_updates(id, organization_id, project_id, "
+                        "work_date, location_id, member_id, notes, completion_percent, status, created_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (_uid(), org, project_id, _now()[:10], loc_id, actor_id,
+                         notes, pct, 'in_progress', _now()),
+                    )
+                    applied['daily_updates'] += 1
+
+                elif ctype == 'new_issue':
+                    conn.execute(
+                        "INSERT INTO issues(id, organization_id, project_id, title, description, "
+                        "severity, status, location_id, created_at, updated_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (_uid(), org, project_id,
+                         change.get('title', 'Field note issue')[:200],
+                         change.get('description', '')[:1000],
+                         change.get('severity', 'medium'),
+                         'open', change.get('location_id'), _now(), _now()),
+                    )
+                    applied['issues'] += 1
+
+            conn.execute(
+                "UPDATE field_note_drafts SET status='applied', applied_at=?, updated_at=? "
+                "WHERE organization_id=? AND id=?",
+                (_now(), _now(), org, draft_id),
+            )
+            self._audit(conn, org, actor_id, 'field_note_applied',
+                        {'draft_id': draft_id, 'applied': applied})
+
+        return {'ok': True, 'draft_id': draft_id, 'applied': applied}
+
+    def reject_field_note(self, org: str, draft_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE field_note_drafts SET status='rejected', updated_at=? "
+                "WHERE organization_id=? AND id=?",
+                (_now(), org, draft_id),
+            )
+
+    def list_field_note_drafts(self, org: str, project_id: str, limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, author_id, raw_text, proposed_changes, unrecognized, "
+                "provider, model, status, applied_at, created_at "
+                "FROM field_note_drafts WHERE organization_id=? AND project_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (org, project_id, limit),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d['proposed_changes'] = json.loads(d['proposed_changes'])
+            d['unrecognized'] = json.loads(d['unrecognized'])
+            result.append(d)
+        return result
+
     def get_storage_stats(self, org: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute(
@@ -4091,6 +4392,16 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except LookupError as err:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
             return
+        # Field note drafts: GET /api/v1/projects/:id/notes
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "notes":
+            if not self._require_permission("projectRead"): return
+            try:
+                limit = min(int(self.query_params.get("limit", ["20"])[0]), 50)
+                drafts = self.store.list_field_note_drafts(self.organization_id, parts[3], limit)
+                self._json(HTTPStatus.OK, {"drafts": drafts})
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
         # AI status: GET /api/v1/ai/status
         if path == "/api/v1/ai/status":
             if not self._require_permission("adminPanel"): return
@@ -4679,6 +4990,43 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (LookupError, ValueError, json.JSONDecodeError) as err:
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
+            return
+        # Field note parse: POST /api/v1/ai/parse-note
+        if path == "/api/v1/ai/parse-note":
+            if not self._require_permission("fieldProgress"): return
+            try:
+                body = json.loads(self.body)
+                raw_text = str(body.get("text", "")).strip()[:3000]
+                project_id = str(body.get("project_id", ""))
+                if not raw_text or not project_id:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "text and project_id required"); return
+                actor = self.session_context.get("user_id", "unknown")
+                result = self.store.parse_field_note(self.organization_id, project_id, actor, raw_text)
+                self._json(HTTPStatus.OK, result)
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            except Exception as err:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "parse_error", str(err))
+            return
+        # Field note apply: POST /api/v1/ai/notes/:id/apply
+        if path.startswith("/api/v1/ai/notes/") and parts[-1] == "apply":
+            if not self._require_permission("fieldProgress"): return
+            draft_id = parts[-2]
+            try:
+                body = json.loads(self.body)
+                approved = body.get("approved_changes", [])
+                actor = self.session_context.get("user_id", "unknown")
+                result = self.store.apply_field_note(self.organization_id, draft_id, actor, approved)
+                self._json(HTTPStatus.OK, result)
+            except (LookupError, ValueError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "apply_error", str(err))
+            return
+        # Field note reject: POST /api/v1/ai/notes/:id/reject
+        if path.startswith("/api/v1/ai/notes/") and parts[-1] == "reject":
+            if not self._require_permission("fieldProgress"): return
+            draft_id = parts[-2]
+            self.store.reject_field_note(self.organization_id, draft_id)
+            self._json(HTTPStatus.OK, {"ok": True})
             return
         # AI router config: POST /api/v1/ai/config
         if path == "/api/v1/ai/config":

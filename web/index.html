@@ -769,6 +769,33 @@
     <form><div class="dialog-head"><div><p class="eyebrow">JOBBER UPDATE</p><h2>Отчет по выполненным работам</h2></div><button class="icon-button" type="button" data-close-dialog="jobberReportDialog" aria-label="Закрыть">×</button></div><label>Дата<input id="jobberReportDate" type="date"></label><label>Готовый текст<textarea id="jobberReportText" rows="12" readonly></textarea></label><div class="dialog-actions"><span></span><button class="button ghost" type="button" data-close-dialog="jobberReportDialog">Закрыть</button><button class="button primary" id="copyJobberReport" type="button">Копировать</button></div></form>
   </dialog>
 
+  <!-- Field note AI parse preview -->
+  <dialog id="fieldNoteDialog" style="max-width:600px;width:100%">
+    <div class="dialog-head">
+      <div><p class="eyebrow">AI FIELD NOTE</p><h2>Parse &amp; approve changes</h2></div>
+      <button class="icon-button" type="button" id="closeFieldNoteDialog" aria-label="Close">×</button>
+    </div>
+    <div style="margin-top:12px">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--text-secondary)">
+        Free-form note
+        <textarea id="fieldNoteText" rows="4" maxlength="3000"
+          placeholder="e.g. Installed rack in server room, completed cable tray on floor 2, 3 cameras mounted in lobby…"
+          style="padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;resize:vertical"></textarea>
+      </label>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <button class="button primary" id="parseNoteBtn" type="button">▶ Parse with AI</button>
+        <span id="parseNoteStatus" style="font-size:12px;color:var(--text-secondary)"></span>
+      </div>
+    </div>
+    <div id="fieldNotePreview" style="margin-top:16px"></div>
+    <div id="fieldNoteActions" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="button ghost" id="rejectNoteBtn" type="button">✕ Reject all</button>
+        <button class="button primary" id="applyNoteBtn" type="button">✓ Apply approved</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- Project data import preview -->
   <dialog id="projectImportDialog" style="max-width:540px;width:100%">
     <div class="dialog-head">

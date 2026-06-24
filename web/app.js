@@ -1499,6 +1499,172 @@ function setupAIApprovals() {
   if (filter) filter.addEventListener('change', () => hydrateAIApprovals(filter.value));
 }
 
+// ── AI Field Note Parsing ─────────────────────────────────────────────────
+let _fieldNoteDraftId = null;
+let _fieldNoteProjectId = null;
+
+const CHANGE_TYPE_LABEL = {
+  work_item_progress: '📋 Work item',
+  location_progress:  '📍 Location',
+  new_issue:          '⚠ New issue',
+};
+const SEVERITY_COLOR = { low: '#778195', medium: '#e09800', high: '#e05353', critical: '#b00' };
+
+function _renderChangePreview(changes, unrecognized) {
+  if (!changes.length && !unrecognized.length) {
+    return '<p class="empty-copy">No changes detected. Try rephrasing the note.</p>';
+  }
+
+  const changesHtml = changes.map((c, i) => {
+    const typeLabel = CHANGE_TYPE_LABEL[c.type] || c.type;
+    const conf = Math.round((c.confidence || 0) * 100);
+    const confColor = conf >= 80 ? 'var(--accent)' : conf >= 60 ? '#e09800' : '#e05353';
+
+    let detail = '';
+    if (c.type === 'work_item_progress') {
+      detail = [
+        c.work_item_code ? `<strong>${escapeHtml(c.work_item_code)}</strong>` : '',
+        c.work_item_title ? escapeHtml(c.work_item_title) : '',
+        c.completion_percent != null ? `→ ${c.completion_percent}%` : '',
+        c.new_status ? `<span style="text-transform:uppercase;font-size:10px;font-weight:700;color:var(--accent)">${c.new_status}</span>` : '',
+      ].filter(Boolean).join(' ');
+    } else if (c.type === 'location_progress') {
+      detail = [
+        c.location_code ? `<strong>${escapeHtml(c.location_code)}</strong>` : '',
+        c.location_name ? escapeHtml(c.location_name) : '',
+        c.notes ? `— ${escapeHtml(c.notes.slice(0, 80))}` : '',
+      ].filter(Boolean).join(' ');
+    } else if (c.type === 'new_issue') {
+      detail = `<span style="color:${SEVERITY_COLOR[c.severity]||'#e05353'}">[${c.severity}]</span> ${escapeHtml(c.title)}`;
+    }
+
+    return `<label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--surface)">
+      <input type="checkbox" class="note-change-chk" data-index="${i}" checked style="margin-top:3px;flex-shrink:0">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:2px">
+          <span style="font-size:11px;font-weight:700;color:var(--text-secondary)">${typeLabel}</span>
+          <span style="font-size:10px;font-weight:700;color:${confColor}">${conf}% conf.</span>
+        </div>
+        <div style="font-size:13px">${detail}</div>
+        ${c.notes && c.type !== 'location_progress' ? `<div style="font-size:11px;color:var(--text-secondary);margin-top:3px">${escapeHtml(c.notes.slice(0,100))}</div>` : ''}
+      </div>
+    </label>`;
+  }).join('');
+
+  const unrecoHtml = unrecognized.length
+    ? `<div style="margin-top:10px;padding:8px 12px;border-radius:8px;background:rgba(224,152,0,.08);border:1px solid rgba(224,152,0,.25)">
+        <p style="font-size:11px;font-weight:700;color:#e09800;margin:0 0 4px">UNRECOGNIZED</p>
+        ${unrecognized.map(s => `<p style="font-size:12px;color:var(--text-secondary);margin:2px 0">${escapeHtml(s)}</p>`).join('')}
+       </div>`
+    : '';
+
+  return `<div style="display:flex;flex-direction:column;gap:6px">${changesHtml}</div>${unrecoHtml}`;
+}
+
+function openFieldNoteDialog(projectId) {
+  _fieldNoteProjectId = projectId;
+  _fieldNoteDraftId = null;
+  const dlg = document.getElementById('fieldNoteDialog');
+  const textarea = document.getElementById('fieldNoteText');
+  const preview = document.getElementById('fieldNotePreview');
+  const actions = document.getElementById('fieldNoteActions');
+  const status = document.getElementById('parseNoteStatus');
+  if (!dlg) return;
+  if (textarea) textarea.value = '';
+  if (preview) preview.innerHTML = '';
+  if (actions) actions.style.display = 'none';
+  if (status) status.textContent = '';
+  dlg.showModal();
+  textarea?.focus();
+}
+
+function setupFieldNote() {
+  document.getElementById('closeFieldNoteDialog')?.addEventListener('click', () => {
+    document.getElementById('fieldNoteDialog')?.close();
+  });
+
+  document.getElementById('parseNoteBtn')?.addEventListener('click', async () => {
+    const text = document.getElementById('fieldNoteText')?.value?.trim();
+    if (!text) return;
+    const statusEl = document.getElementById('parseNoteStatus');
+    const previewEl = document.getElementById('fieldNotePreview');
+    const actionsEl = document.getElementById('fieldNoteActions');
+    const btn = document.getElementById('parseNoteBtn');
+    btn.disabled = true;
+    if (statusEl) statusEl.textContent = 'Parsing…';
+    if (previewEl) previewEl.innerHTML = '';
+    if (actionsEl) actionsEl.style.display = 'none';
+    try {
+      const result = await apiFetch('/api/v1/ai/parse-note', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ text, project_id: _fieldNoteProjectId }),
+      });
+      _fieldNoteDraftId = result.draft_id;
+      const changes = result.proposed_changes || [];
+      // Store on dialog element for apply handler
+      const dlg = document.getElementById('fieldNoteDialog');
+      if (dlg) dlg._parsedChanges = changes;
+      if (previewEl) previewEl.innerHTML = _renderChangePreview(changes, result.unrecognized || []);
+      if (actionsEl && changes.length > 0) actionsEl.style.display = 'block';
+      if (statusEl) {
+        statusEl.textContent = result.provider === 'local'
+          ? `Local parser · ${result.proposed_changes?.length || 0} changes`
+          : `${result.provider} ${result.model} · ${result.proposed_changes?.length || 0} changes`;
+      }
+    } catch (e) {
+      if (previewEl) previewEl.innerHTML = `<p style="color:#e05353">${e.message}</p>`;
+      if (statusEl) statusEl.textContent = '';
+    }
+    btn.disabled = false;
+  });
+
+  document.getElementById('applyNoteBtn')?.addEventListener('click', async () => {
+    if (!_fieldNoteDraftId) return;
+    // Collect only checked changes
+    const checks = document.querySelectorAll('.note-change-chk');
+    const previewEl = document.getElementById('fieldNotePreview');
+    // We need to reconstruct approved changes from stored parse result
+    // Use checkboxes to filter
+    const allChanges = Array.from(previewEl?.querySelectorAll('[data-index]') || [])
+      .map(el => parseInt(el.dataset.index));
+    const checkedIndices = new Set(
+      Array.from(checks).filter(c => c.checked).map(c => parseInt(c.dataset.index))
+    );
+    // Re-read changes from a stored parse context — we need the full list
+    // The simplest approach: store changes on the dialog element
+    const stored = document.getElementById('fieldNoteDialog')?._parsedChanges || [];
+    const approved = stored.filter((_, i) => checkedIndices.has(i));
+
+    const btn = document.getElementById('applyNoteBtn');
+    btn.disabled = true;
+    try {
+      const result = await apiFetch(`/api/v1/ai/notes/${_fieldNoteDraftId}/apply`, {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: JSON.stringify({ approved_changes: approved }),
+      });
+      document.getElementById('fieldNoteDialog')?.close();
+      const ap = result.applied || {};
+      toast(`Applied: ${ap.daily_updates||0} updates, ${ap.work_items||0} work items, ${ap.issues||0} issues`);
+      hydrateProjects();
+    } catch (e) { toast(`Error: ${e.message}`); }
+    btn.disabled = false;
+  });
+
+  document.getElementById('rejectNoteBtn')?.addEventListener('click', async () => {
+    if (!_fieldNoteDraftId) return;
+    try {
+      await apiFetch(`/api/v1/ai/notes/${_fieldNoteDraftId}/reject`, {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+        body: '{}',
+      });
+    } catch { /* silent */ }
+    document.getElementById('fieldNoteDialog')?.close();
+  });
+}
+
 // ── Language toggle ───────────────────────────────────────────────────────
 function _updateLangBtn() {
   const btn = document.getElementById('langToggleBtn');
@@ -3200,7 +3366,7 @@ function renderProjectDetail() {
   const openIssues = project.issues.filter(value => value.status !== 'resolved');
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
-  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ Экспорт</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}<button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ Экспорт</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis"><article><span>Общий прогресс</span><strong>${project.progress}%</strong></article><article><span>Сегодня обновлено</span><strong>${updatesToday.length}</strong></article><article><span>Открытые проблемы</span><strong>${openIssues.length}</strong></article><article><span>Локации</span><strong>${project.locations.length}</strong></article></section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div></section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
@@ -3240,6 +3406,7 @@ function renderProjectDetail() {
   container.querySelectorAll('[data-edit-daily]').forEach(button => button.addEventListener('click', () => openDailyDialog(project, project.dailyUpdates.find(value => value.id === button.dataset.editDaily))));
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
 
+  container.querySelector('#smartNoteBtn')?.addEventListener('click', () => openFieldNoteDialog(project.id));
   container.querySelector('#exportProjectBtn')?.addEventListener('click', () => exportProjectData(project.id, project.name));
   container.querySelector('#importProjectInput')?.addEventListener('change', e => {
     if (e.target.files[0]) openProjectImportPreview(e.target.files[0]);
@@ -4628,6 +4795,7 @@ async function setup() {
   setupAIApprovals();
   setupCodexDialog();
   setupTeam();
+  setupFieldNote();
   setupLangToggle();
   setupAiGateway();
   setupTimeTracking();
