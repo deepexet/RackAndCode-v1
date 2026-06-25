@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "062")
+        self.assertEqual(first.current_version, "063")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -1013,6 +1013,31 @@ class WorkspaceStoreTests(unittest.TestCase):
         movements = pending["suggested_movements"]
         self.assertEqual(len(movements), 1)
         self.assertEqual(movements[0]["sku_code_guess"], "ITEM-X")
+
+
+
+    def test_email_inbox_create_and_list(self):
+        inbox = self.store.create_email_inbox(DEFAULT_ORGANIZATION_ID, {
+            "name": "Supplier Mail", "host": "imap.example.com",
+            "username": "warehouse@example.com", "password": "",
+            "folder": "INBOX", "filterSubject": "delivery", "pollInterval": 15,
+        })
+        self.assertEqual(inbox["name"], "Supplier Mail")
+        self.assertEqual(inbox["host"], "imap.example.com")
+        inboxes = self.store.list_email_inboxes(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(inboxes), 1)
+
+    def test_email_inbox_delete(self):
+        inbox = self.store.create_email_inbox(DEFAULT_ORGANIZATION_ID, {
+            "name": "Test Inbox", "host": "imap.test.com", "username": "u@test.com",
+        })
+        self.store.delete_email_inbox(DEFAULT_ORGANIZATION_ID, inbox["id"])
+        self.assertEqual(self.store.list_email_inboxes(DEFAULT_ORGANIZATION_ID), [])
+
+    def test_email_poll_all_due_no_inboxes(self):
+        # With no inboxes configured, returns empty list
+        results = self.store.poll_all_due_inboxes(DEFAULT_ORGANIZATION_ID, ai_gateway=None)
+        self.assertEqual(results, [])
 
 
     def test_issue_list_by_project(self):

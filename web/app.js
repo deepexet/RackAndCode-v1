@@ -641,7 +641,7 @@ function renderRoute() {
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
   if (route === 'inventory') { hydrateInventory(); }
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -5766,6 +5766,31 @@ async function setup() {
   $('#newProjectButton').addEventListener('click', () => { $('#projectForm').reset(); populateProjectWorkTypeScope(); $('#projectDialog').showModal(); requestAnimationFrame(() => $('#projectCode').focus()); });
   document.getElementById('fromTemplateButton')?.addEventListener('click', openCreateFromTemplate);
   document.getElementById('refreshSessionsBtn')?.addEventListener('click', hydrateSessionsAdmin);
+  document.getElementById('addEmailInboxBtn')?.addEventListener('click', async () => {
+    const name = prompt('Название инбокса (например: "Поставщик А"):');
+    if (!name?.trim()) return;
+    const host = prompt('IMAP хост (например: imap.gmail.com):');
+    if (!host?.trim()) return;
+    const username = prompt('Email адрес / логин:');
+    if (!username?.trim()) return;
+    const password = prompt('Пароль (будет сохранён в хранилище секретов):');
+    const folder = prompt('Папка IMAP:', 'INBOX') || 'INBOX';
+    const filterSubject = prompt('Фильтр по теме (оставьте пустым чтобы получать все):') || '';
+    const pollInterval = parseInt(prompt('Интервал опроса (минут):', '15') || '15', 10);
+    try {
+      const r = await apiFetch('/api/v1/admin/email-inboxes', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({
+          name: name.trim(), host: host.trim(), username: username.trim(),
+          password: password || '', folder, filterSubject,
+          pollInterval: isNaN(pollInterval) ? 15 : pollInterval,
+          port: 993, useSsl: true,
+        }),
+      });
+      if (!r.ok) { toast(`Ошибка: ${(await r.json()).error?.message||r.status}`); return; }
+      toast('Инбокс добавлен'); hydrateEmailInboxes();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
   document.getElementById('saveOrgSettingsBtn')?.addEventListener('click', async () => {
     const el = id => document.getElementById(id);
     const payload = {
@@ -6314,6 +6339,98 @@ function _bindInventoryEvents() {
       _quickMovement(_invSelectedWarehouse, found.id, found.name);
     } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
+}
+
+async function hydrateEmailInboxes() {
+  const list = document.getElementById('emailInboxList');
+  if (!list) return;
+  try {
+    const r = await apiFetch('/api/v1/admin/email-inboxes');
+    const { inboxes = [] } = await r.json();
+    if (!inboxes.length) {
+      list.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет настроенных инбоксов.</p>';
+      return;
+    }
+    list.innerHTML = inboxes.map(inbox => `
+      <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+          <div>
+            <strong style="font-size:14px">${escapeHtml(inbox.name)}</strong>
+            <p style="font-size:12px;color:var(--text-muted);margin:4px 0 0">
+              ${escapeHtml(inbox.username)}@${escapeHtml(inbox.host)}:${inbox.port}
+              · папка: <code>${escapeHtml(inbox.folder)}</code>
+              ${inbox.filter_subject ? `· фильтр: "${escapeHtml(inbox.filter_subject)}"` : ''}
+              · каждые ${inbox.poll_interval} мин
+            </p>
+            ${inbox.last_polled_at ? `<p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">Последний опрос: ${inbox.last_polled_at.slice(0,16).replace('T',' ')}</p>` : ''}
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button type="button" class="button ghost" style="font-size:11px" data-inbox-poll="${inbox.id}">▶ Опросить</button>
+            <button type="button" class="button ghost" style="font-size:11px" data-inbox-log="${inbox.id}">📋 Лог</button>
+            <button type="button" class="text-button danger" style="font-size:11px" data-inbox-delete="${inbox.id}">✕</button>
+          </div>
+        </div>
+        <div class="inbox-log" id="inboxLog_${inbox.id}" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px"></div>
+      </div>`).join('');
+
+    list.querySelectorAll('[data-inbox-poll]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true; btn.textContent = '…';
+        try {
+          const r2 = await apiFetch(`/api/v1/admin/email-inboxes/${btn.dataset.inboxPoll}/poll`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+          });
+          const res = await r2.json();
+          if (!r2.ok) { toast(`Ошибка: ${res.error?.message||r2.status}`); return; }
+          toast(`Опрошено: ${res.fetched} писем, разобрано: ${res.parsed}${res.errors?.length ? `, ошибок: ${res.errors.length}` : ''}`);
+          hydrateEmailInboxes();
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+        finally { btn.disabled = false; btn.textContent = '▶ Опросить'; }
+      });
+    });
+
+    list.querySelectorAll('[data-inbox-log]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const logDiv = document.getElementById(`inboxLog_${btn.dataset.inboxLog}`);
+        if (!logDiv) return;
+        logDiv.style.display = logDiv.style.display === 'none' ? '' : 'none';
+        if (logDiv.style.display === 'none') return;
+        logDiv.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+        try {
+          const r2 = await apiFetch(`/api/v1/admin/email-inboxes/${btn.dataset.inboxLog}/log`);
+          const { log = [] } = await r2.json();
+          if (!log.length) { logDiv.innerHTML = '<p class="empty-copy" style="font-size:12px">Нет обработанных писем.</p>'; return; }
+          logDiv.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead><tr style="color:var(--text-muted)">
+              <th style="padding:4px 6px;text-align:left">Дата</th>
+              <th style="padding:4px 6px;text-align:left">От</th>
+              <th style="padding:4px 6px;text-align:left">Тема</th>
+              <th style="padding:4px 6px;text-align:left">Статус</th>
+            </tr></thead>
+            <tbody>${log.map(e => `<tr style="border-top:1px solid var(--border)">
+              <td style="padding:4px 6px;color:var(--text-muted)">${(e.created_at||'').slice(0,16).replace('T',' ')}</td>
+              <td style="padding:4px 6px">${escapeHtml((e.sender||'').slice(0,40))}</td>
+              <td style="padding:4px 6px">${escapeHtml((e.subject||'').slice(0,60))}</td>
+              <td style="padding:4px 6px">${e.pending_id ? '✓ разобрано' : e.status}</td>
+            </tr>`).join('')}</tbody>
+          </table>`;
+        } catch { logDiv.innerHTML = '<p class="empty-copy" style="font-size:12px">Ошибка.</p>'; }
+      });
+    });
+
+    list.querySelectorAll('[data-inbox-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить инбокс? Сохранённый пароль тоже будет удалён.')) return;
+        try {
+          const r2 = await apiFetch(`/api/v1/admin/email-inboxes/${btn.dataset.inboxDelete}/delete`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+          });
+          if (!r2.ok) { toast('Ошибка удаления'); return; }
+          toast('Инбокс удалён'); hydrateEmailInboxes();
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+  } catch { list.innerHTML = '<p class="empty-copy" style="font-size:13px">Недоступно.</p>'; }
 }
 
 async function hydrateOrgSettings() {

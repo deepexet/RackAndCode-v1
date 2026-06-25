@@ -3693,6 +3693,261 @@ Rules:
             "criticalIssues": critical_issues,
         }
 
+    # ── Email Inbox (IMAP inventory parsing) ─────────────────────────────────
+
+    def list_email_inboxes(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id,name,host,port,use_ssl,username,folder,filter_subject,filter_sender,"
+                "target_warehouse_id,enabled,poll_interval,last_polled_at,last_uid,created_at "
+                "FROM email_inbox_configs WHERE organization_id=? ORDER BY name",
+                (org,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_email_inbox(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name","")).strip()
+        host = str(payload.get("host","")).strip()
+        username = str(payload.get("username","")).strip()
+        if not name or not host or not username:
+            raise ValueError("name, host, and username are required")
+        # Store password in secrets vault if provided
+        password = payload.get("password","")
+        secret_id = None
+        if password:
+            secret_id = self.store_secret(
+                org, f"email-inbox-{name}-password",
+                f"IMAP password for {username}@{host}",
+                str(password), "email",
+            )["id"]
+        iid = str(uuid.uuid4()); now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO email_inbox_configs (id,organization_id,name,host,port,use_ssl,username,"
+                "password_secret_id,folder,filter_subject,filter_sender,target_warehouse_id,"
+                "enabled,poll_interval,last_uid,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,0,?,?)",
+                (iid, org, name, host,
+                 int(payload.get("port", 993)),
+                 1 if payload.get("useSsl", True) else 0,
+                 username, secret_id,
+                 str(payload.get("folder","INBOX")),
+                 str(payload.get("filterSubject",""))[:200],
+                 str(payload.get("filterSender",""))[:200],
+                 payload.get("targetWarehouseId"),
+                 int(payload.get("pollInterval", 15)),
+                 now, now),
+            )
+            row = conn.execute(
+                "SELECT id,name,host,port,use_ssl,username,folder,filter_subject,filter_sender,"
+                "target_warehouse_id,enabled,poll_interval,last_polled_at,last_uid,created_at "
+                "FROM email_inbox_configs WHERE id=?", (iid,)
+            ).fetchone()
+        return dict(row)
+
+    def delete_email_inbox(self, org: str, inbox_id: str) -> None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT password_secret_id FROM email_inbox_configs WHERE id=? AND organization_id=?",
+                (inbox_id, org),
+            ).fetchone()
+            if not row: raise LookupError("Inbox not found")
+            conn.execute("DELETE FROM email_inbox_configs WHERE id=?", (inbox_id,))
+            # Clean up associated secret
+            if row["password_secret_id"]:
+                conn.execute("DELETE FROM secrets WHERE id=? AND organization_id=?",
+                             (row["password_secret_id"], org))
+
+    def list_email_processed(self, org: str, inbox_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM email_processed WHERE organization_id=? AND inbox_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (org, inbox_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def poll_email_inbox(self, org: str, inbox_id: str,
+                          ai_gateway: Any | None = None) -> dict[str, Any]:
+        """Connect to IMAP, fetch new messages, parse for inventory movements."""
+        import imaplib, email as _email
+        from email.header import decode_header as _decode_header
+
+        with self._connect() as conn:
+            cfg = conn.execute(
+                "SELECT * FROM email_inbox_configs WHERE id=? AND organization_id=? AND enabled=1",
+                (inbox_id, org),
+            ).fetchone()
+        if not cfg:
+            raise LookupError("Inbox not found or disabled")
+
+        # Resolve password from secrets vault — NEVER logged
+        password = ""
+        if cfg["password_secret_id"]:
+            password = self.get_secret_value(cfg["password_secret_id"]) or ""
+
+        def _decode_str(value: Any) -> str:
+            if value is None: return ""
+            parts = _decode_header(str(value))
+            result = []
+            for chunk, enc in parts:
+                if isinstance(chunk, bytes):
+                    try: result.append(chunk.decode(enc or "utf-8", errors="replace"))
+                    except Exception: result.append(chunk.decode("latin-1", errors="replace"))
+                else:
+                    result.append(str(chunk))
+            return " ".join(result)
+
+        def _extract_text(msg: Any) -> str:
+            """Extract plaintext body from email."""
+            if msg.is_multipart():
+                parts = []
+                for part in msg.walk():
+                    ct = part.get_content_type()
+                    if ct == "text/plain":
+                        charset = part.get_content_charset() or "utf-8"
+                        try: parts.append(part.get_payload(decode=True).decode(charset, errors="replace"))
+                        except Exception: pass
+                return "\n".join(parts)
+            charset = msg.get_content_charset() or "utf-8"
+            try: return msg.get_payload(decode=True).decode(charset, errors="replace")
+            except Exception: return ""
+
+        stats = {"fetched": 0, "skipped": 0, "parsed": 0, "errors": []}
+        now = utc_now()
+
+        try:
+            # Connect IMAP
+            if cfg["use_ssl"]:
+                conn_imap = imaplib.IMAP4_SSL(cfg["host"], cfg["port"])
+            else:
+                conn_imap = imaplib.IMAP4(cfg["host"], cfg["port"])
+
+            try:
+                conn_imap.login(cfg["username"], password)
+                conn_imap.select(cfg["folder"] or "INBOX", readonly=False)
+
+                # Search for UNSEEN messages
+                search_criteria = "UNSEEN"
+                if cfg["filter_sender"]:
+                    search_criteria = f'UNSEEN FROM "{cfg["filter_sender"]}"'
+                _, data = conn_imap.search(None, search_criteria)
+                msg_nums = data[0].split() if data[0] else []
+
+                for num in msg_nums[-50:]:  # process at most 50 per poll
+                    try:
+                        _, msg_data = conn_imap.fetch(num, "(RFC822)")
+                        raw = msg_data[0][1] if msg_data and msg_data[0] else None
+                        if not raw: continue
+
+                        msg = _email.message_from_bytes(raw)
+                        message_id = msg.get("Message-ID","") or f"no-id-{num.decode()}"
+                        subject = _decode_str(msg.get("Subject",""))
+                        sender = _decode_str(msg.get("From",""))
+
+                        # Skip if subject filter doesn't match
+                        if cfg["filter_subject"] and cfg["filter_subject"].lower() not in subject.lower():
+                            stats["skipped"] += 1
+                            conn_imap.store(num, "+FLAGS", "\\Seen")
+                            continue
+
+                        # Skip already processed
+                        with self._connect() as db:
+                            already = db.execute(
+                                "SELECT 1 FROM email_processed WHERE inbox_id=? AND message_id=?",
+                                (inbox_id, message_id),
+                            ).fetchone()
+                        if already:
+                            stats["skipped"] += 1
+                            continue
+
+                        stats["fetched"] += 1
+                        body = _extract_text(msg)
+                        note_text = f"Subject: {subject}\nFrom: {sender}\n\n{body[:3000]}"
+
+                        pending_id = None
+                        if ai_gateway:
+                            try:
+                                system_prompt = self.build_inventory_ai_prompt(org, cfg["target_warehouse_id"])
+                                ai_response = ai_gateway.complete(
+                                    f"{system_prompt}\n\nEmail content:\n{note_text}",
+                                    max_tokens=512,
+                                ) or ""
+                                pending = self.create_inventory_pending_from_ai(
+                                    org, note_text, ai_response, cfg["target_warehouse_id"]
+                                )
+                                pending_id = pending["id"]
+                                stats["parsed"] += 1
+                            except Exception as e:
+                                stats["errors"].append(f"AI parse failed: {e}")
+                        else:
+                            # No AI — create pending with raw text, no suggestions
+                            pending = self.create_inventory_pending(
+                                org, "email", note_text, [],
+                                ai_confidence=None, source_ref=message_id,
+                            )
+                            pending_id = pending["id"]
+
+                        # Mark email as seen + log
+                        conn_imap.store(num, "+FLAGS", "\\Seen")
+                        eid = str(uuid.uuid4())
+                        with self._connect() as db:
+                            db.execute(
+                                "INSERT OR IGNORE INTO email_processed "
+                                "(id,organization_id,inbox_id,message_id,subject,sender,pending_id,status,created_at) "
+                                "VALUES (?,?,?,?,?,?,?,?,?)",
+                                (eid, org, inbox_id, message_id,
+                                 subject[:300], sender[:300], pending_id, "processed", now),
+                            )
+                    except Exception as e:
+                        stats["errors"].append(str(e)[:200])
+
+                conn_imap.logout()
+            except imaplib.IMAP4.error as e:
+                raise ValueError(f"IMAP auth/connection error: {e}")
+        except Exception as e:
+            raise ValueError(f"Email poll failed: {e}")
+
+        # Update last_polled_at
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE email_inbox_configs SET last_polled_at=?,updated_at=? WHERE id=?",
+                (now, now, inbox_id),
+            )
+
+        return {
+            "inboxId": inbox_id, "polledAt": now,
+            "fetched": stats["fetched"], "skipped": stats["skipped"],
+            "parsed": stats["parsed"], "errors": stats["errors"],
+        }
+
+    def poll_all_due_inboxes(self, org: str, ai_gateway: Any | None = None) -> list[dict[str, Any]]:
+        """Called by maintenance loop — polls inboxes where next poll time has passed."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, poll_interval, last_polled_at FROM email_inbox_configs "
+                "WHERE organization_id=? AND enabled=1",
+                (org,),
+            ).fetchall()
+        results = []
+        now_ts = time.time()
+        for row in rows:
+            last = row["last_polled_at"]
+            interval_sec = int(row["poll_interval"]) * 60
+            if last:
+                try:
+                    last_ts = datetime.fromisoformat(last).timestamp()
+                    if now_ts - last_ts < interval_sec:
+                        continue
+                except Exception:
+                    pass
+            try:
+                result = self.poll_email_inbox(org, row["id"], ai_gateway)
+                results.append(result)
+            except Exception as e:
+                results.append({"inboxId": row["id"], "error": str(e)})
+        return results
+
     # ── Inventory Management ──────────────────────────────────────────────────
 
     # Warehouses
@@ -6897,6 +7152,16 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             result = self.store.sweep_overdue_items(self.organization_id)
             self._json(HTTPStatus.OK, result)
             return
+        # Email inboxes: GET /api/v1/admin/email-inboxes  and  /:id/log
+        if path == "/api/v1/admin/email-inboxes":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, {"inboxes": self.store.list_email_inboxes(self.organization_id)})
+            return
+        if len(parts) == 7 and parts[3] == "admin" and parts[4] == "email-inboxes" and parts[6] == "log":
+            if not self._require_permission("adminPanel"): return
+            log = self.store.list_email_processed(self.organization_id, parts[5])
+            self._json(HTTPStatus.OK, {"log": log})
+            return
         # Inventory: GET /api/v1/inventory/warehouses|skus|stock|movements|pending
         if len(parts) >= 4 and parts[3] == "inventory":
             if not self._require_permission("projectRead"): return
@@ -7664,6 +7929,34 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
+        # Email inbox POST routes
+        if path == "/api/v1/admin/email-inboxes":
+            if not self._require_permission("adminPanel"): return
+            try:
+                inbox = self.store.create_email_inbox(self.organization_id, self._read_json())
+                self._json(HTTPStatus.CREATED, {"inbox": inbox})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if len(parts) == 7 and parts[3] == "admin" and parts[4] == "email-inboxes":
+            if not self._require_permission("adminPanel"): return
+            inbox_id = parts[5]; action = parts[6]
+            if action == "delete":
+                try:
+                    self.store.delete_email_inbox(self.organization_id, inbox_id)
+                    self._json(HTTPStatus.OK, {"deleted": True})
+                except LookupError as err:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+                return
+            if action == "poll":
+                try:
+                    ai = getattr(self.server, "ai_gateway", None)
+                    result = self.store.poll_email_inbox(self.organization_id, inbox_id, ai)
+                    self._json(HTTPStatus.OK, result)
+                except (LookupError, ValueError) as err:
+                    status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_GATEWAY
+                    self._error(status, "poll_error", str(err))
+                return
         # Inventory POST routes
         if len(parts) >= 4 and parts[3] == "inventory":
             org = self.organization_id
@@ -8972,20 +9265,40 @@ def main() -> None:
             except Exception as _e:
                 LOGGER.warning(json.dumps({"event": "webhook_flush_error", "error": str(_e)}))
 
-    def _maintenance_loop(s: WorkspaceStore) -> None:
+    def _maintenance_loop(s: WorkspaceStore, srv: Any) -> None:
         import time as _time
         while True:
             _time.sleep(3600)  # hourly
             try:
                 with s._connect() as _conn:
                     _orgs = [r["id"] for r in _conn.execute("SELECT id FROM organizations").fetchall()]
+                _ai = getattr(srv, "ai_gateway", None)
                 for _oid in _orgs:
                     s.sweep_overdue_items(_oid)
                     s.run_due_scheduled_reports(_oid)
+                    s.poll_all_due_inboxes(_oid, _ai)
             except Exception as _e:
                 LOGGER.warning(json.dumps({"event": "maintenance_loop_error", "error": str(_e)}))
+
+    def _email_poll_loop(s: WorkspaceStore, srv: Any) -> None:
+        """Shorter poll loop for email (every 5 min) — only if any inbox is configured."""
+        import time as _time
+        while True:
+            _time.sleep(300)
+            try:
+                with s._connect() as _conn:
+                    _orgs = [r["id"] for r in _conn.execute(
+                        "SELECT DISTINCT organization_id as id FROM email_inbox_configs WHERE enabled=1"
+                    ).fetchall()]
+                _ai = getattr(srv, "ai_gateway", None)
+                for _oid in _orgs:
+                    s.poll_all_due_inboxes(_oid, _ai)
+            except Exception as _e:
+                LOGGER.warning(json.dumps({"event": "email_poll_error", "error": str(_e)}))
+
     threading.Thread(target=_webhook_flush_loop, args=(store,), daemon=True, name="webhook-flush").start()
-    threading.Thread(target=_maintenance_loop, args=(store,), daemon=True, name="maintenance").start()
+    threading.Thread(target=_maintenance_loop, args=(store, server), daemon=True, name="maintenance").start()
+    threading.Thread(target=_email_poll_loop, args=(store, server), daemon=True, name="email-poll").start()
     initial_password = store.ensure_initial_credentials()
     if initial_password:
         LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.rackpilot", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))
