@@ -5717,6 +5717,71 @@ Rules:
 
     # ── Notifications ────────────────────────────────────────────────────────
 
+    def generate_system_alerts(self, org: str) -> dict[str, Any]:
+        """Generate notifications for actionable system events. Deduplicates by checking recent alerts."""
+        now = utc_now(); today = now[:10]; generated = []
+        window_start = now[:10] + "T00:00:00"  # today only
+        with self._connect() as conn:
+            # Skip if already generated alerts today
+            recent = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE organization_id=? AND type='system_alert' AND created_at>=?",
+                (org, window_start)
+            ).fetchone()[0]
+            if recent > 0:
+                return {"generated": 0, "message": "Alerts already generated today"}
+
+            # Low stock items
+            low = conn.execute(
+                "SELECT sk.name, sk.sku_code, s.quantity, s.min_quantity, w.name as wh_name "
+                "FROM inventory_stock s JOIN inventory_skus sk ON sk.id=s.sku_id "
+                "JOIN warehouses w ON w.id=s.warehouse_id "
+                "WHERE s.organization_id=? AND s.min_quantity IS NOT NULL AND s.quantity<=s.min_quantity AND sk.active=1",
+                (org,)
+            ).fetchall()
+            for item in low[:10]:
+                title = f"⚠ Низкий запас: {item['sku_code']} — {item['name']}"
+                body = f"Остаток {item['quantity']} / мин {item['min_quantity']} @ {item['wh_name']}"
+                conn.execute(
+                    "INSERT INTO notifications (id,organization_id,user_id,type,title,body,entity_type,entity_id,project_id,read,created_at) "
+                    "VALUES (?,?,NULL,'system_alert',?,?,NULL,NULL,NULL,0,?)",
+                    (str(uuid.uuid4()), org, title, body, now)
+                )
+                generated.append(title)
+
+            # Overdue milestones
+            overdue_ms = conn.execute(
+                "SELECT m.name, p.name as project_name, p.id as project_id, m.id as ms_id "
+                "FROM milestones m JOIN projects p ON p.id=m.project_id AND p.organization_id=m.organization_id "
+                "WHERE m.organization_id=? AND m.status!='achieved' AND m.target_date < ?",
+                (org, today)
+            ).fetchall()
+            for ms in overdue_ms[:5]:
+                title = f"📍 Просрочена веха: {ms['name']} ({ms['project_name']})"
+                conn.execute(
+                    "INSERT INTO notifications (id,organization_id,user_id,type,title,body,entity_type,entity_id,project_id,read,created_at) "
+                    "VALUES (?,?,NULL,'system_alert',?,?,?,?,?,0,?)",
+                    (str(uuid.uuid4()), org, title, "", "milestone", ms["ms_id"], ms["project_id"], now)
+                )
+                generated.append(title)
+
+            # Overdue work items (limit to 5)
+            overdue_wi = conn.execute(
+                "SELECT wi.title, p.name as project_name, p.id as project_id, wi.id as wi_id "
+                "FROM project_work_items wi JOIN projects p ON p.id=wi.project_id AND p.organization_id=wi.organization_id "
+                "WHERE wi.organization_id=? AND wi.status!='done' AND wi.due_date < ? LIMIT 5",
+                (org, today)
+            ).fetchall()
+            for wi in overdue_wi:
+                title = f"⏰ Просрочена задача: {wi['title']} ({wi['project_name']})"
+                conn.execute(
+                    "INSERT INTO notifications (id,organization_id,user_id,type,title,body,entity_type,entity_id,project_id,read,created_at) "
+                    "VALUES (?,?,NULL,'system_alert',?,?,?,?,?,0,?)",
+                    (str(uuid.uuid4()), org, title, "", "work_item", wi["wi_id"], wi["project_id"], now)
+                )
+                generated.append(title)
+
+        return {"generated": len(generated), "alerts": generated}
+
     def push_notification(self, org: str, title: str, body: str = "",
                            notif_type: str = "system", user_id: str | None = None,
                            entity_type: str | None = None, entity_id: str | None = None,
@@ -9443,6 +9508,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
                 return
         # Notifications mark-read: POST /api/v1/notifications/read
+        if path == "/api/v1/notifications/generate-alerts":
+            if not self._require_permission("projectRead"): return
+            result = self.store.generate_system_alerts(self.organization_id)
+            self._json(HTTPStatus.OK, result); return
         if path == "/api/v1/notifications/read":
             if not self._require_permission("projectRead"): return
             try:

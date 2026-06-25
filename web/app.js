@@ -8198,6 +8198,10 @@ function setupNotificationCenter() {
     const isOpen = panel.style.display !== 'none';
     panel.style.display = isOpen ? 'none' : '';
     if (!isOpen) {
+      // Generate system alerts on open (once per day, server deduplicates)
+      apiFetch('/api/v1/notifications/generate-alerts', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+      }).catch(() => {});
       const { notifications } = await fetchNotifications();
       renderNotifications(notifications);
     }
