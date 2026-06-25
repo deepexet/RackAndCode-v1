@@ -3967,6 +3967,42 @@ Rules:
     # ── Inventory Management ──────────────────────────────────────────────────
 
     # Warehouses
+    def export_inventory_csv(self, org: str, warehouse_id: str | None = None,
+                              since: str | None = None) -> str:
+        """Returns CSV string: current stock levels + movements summary."""
+        import csv, io as _io
+        buf = _io.StringIO()
+        w = csv.writer(buf)
+        # Stock snapshot
+        w.writerow(["=== STOCK SNAPSHOT ==="])
+        w.writerow(["warehouse", "sku_code", "sku_name", "category", "unit",
+                    "quantity", "reserved", "available", "min_quantity", "location_bin"])
+        for s in self.get_stock_levels(org, warehouse_id):
+            avail = (s["quantity"] or 0) - (s["reserved"] or 0)
+            w.writerow([
+                s.get("warehouse_name",""), s.get("sku_code",""), s.get("sku_name",""),
+                s.get("category",""), s.get("unit",""),
+                s.get("quantity",0), s.get("reserved",0), avail,
+                s.get("min_quantity",""), s.get("location_bin",""),
+            ])
+        w.writerow([])
+        # Movement ledger
+        w.writerow(["=== MOVEMENT LEDGER ==="])
+        w.writerow(["date", "type", "sku_code", "sku_name", "quantity", "unit",
+                    "warehouse", "reference", "note", "source"])
+        movements = self.list_movements(org, warehouse_id=warehouse_id, limit=10000)
+        for m in movements:
+            if since and m.get("created_at","") < since:
+                continue
+            w.writerow([
+                m.get("created_at","")[:19], m.get("movement_type",""),
+                m.get("sku_code",""), m.get("sku_name",""),
+                m.get("quantity",0), m.get("unit",""),
+                m.get("warehouse_name",""), m.get("reference",""),
+                m.get("note",""), m.get("source",""),
+            ])
+        return buf.getvalue()
+
     def list_warehouses(self, org: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -7635,6 +7671,26 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {
                     "reservations": self.store.list_reservations(org, project_id, sku_id, status)
                 }); return
+            if sub == "export":
+                if not self._require_permission("projectRead"): return
+                wh = self.query_params.get("warehouseId",[None])[0]
+                since = self.query_params.get("since",[None])[0]
+                fmt = self.query_params.get("format",["csv"])[0]
+                if fmt == "csv":
+                    csv_data = self.store.export_inventory_csv(org, wh, since)
+                    fname = f"inventory_{(wh or 'all')}_{utc_now()[:10]}.csv"
+                    encoded = csv_data.encode("utf-8-sig")  # BOM for Excel compat
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                    self.send_header("Content-Length", str(len(encoded)))
+                    self.end_headers()
+                    self.wfile.write(encoded)
+                else:
+                    stock = self.store.get_stock_levels(org, wh)
+                    movements = self.store.list_movements(org, warehouse_id=wh, limit=10000)
+                    self._json(HTTPStatus.OK, {"stock": stock, "movements": movements})
+                return
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Unknown inventory route"); return
         # Budget: GET /api/v1/projects/:id/budget  and  /expenses
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "budget":

@@ -6897,6 +6897,27 @@ function _bindInventoryEvents() {
     rec.start();
   });
 
+  // CSV export
+  document.getElementById('invExportBtn')?.addEventListener('click', async () => {
+    const since = prompt('Экспорт движений начиная с (YYYY-MM-DD, пусто = все):', '') || '';
+    const whParam = _invSelectedWarehouse ? `&warehouseId=${_invSelectedWarehouse}` : '';
+    const sinceParam = since ? `&since=${encodeURIComponent(since)}` : '';
+    const url = `/api/v1/inventory/export?format=csv${whParam}${sinceParam}`;
+    try {
+      const r = await apiFetch(url);
+      if (!r.ok) { toast('Ошибка экспорта'); return; }
+      const blob = await r.blob();
+      const cd = r.headers.get('Content-Disposition') || '';
+      const fname = cd.match(/filename="([^"]+)"/)?.[1] || 'inventory.csv';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = fname;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast(`Скачан файл ${fname}`);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
   // Barcode / QR scanner using BarcodeDetector API
   document.getElementById('invScanBtn')?.addEventListener('click', async () => {
     if (!('BarcodeDetector' in window)) {
