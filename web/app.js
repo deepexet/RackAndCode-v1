@@ -7225,7 +7225,7 @@ function _bindInventoryEvents() {
   }
 
   function _closeAllInvPanels() {
-    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel']
+    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel']
       .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   }
 
@@ -7441,6 +7441,53 @@ function _bindInventoryEvents() {
       toast('Поставщик добавлен'); _loadSuppliers();
     } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
+
+  async function _loadLowStock() {
+    const list = document.getElementById('inventoryLowStockList');
+    if (!list) return;
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Проверка остатков…</p>';
+    try {
+      const r = await apiFetch('/api/v1/inventory/stock?limit=500');
+      const { stock = [] } = await r.json();
+      const low = stock.filter(s => s.minQuantity != null && s.quantity <= s.minQuantity);
+      if (!low.length) {
+        list.innerHTML = '<p style="font-size:13px;color:#3bb969;padding:16px 0">✓ Все позиции в норме. Нет товаров ниже минимального остатка.</p>';
+        return;
+      }
+      list.innerHTML = `
+        <p style="font-size:11px;color:var(--text-muted);margin-bottom:10px">${low.length} позиц. ниже мин. остатка</p>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${low.sort((a,b) => (a.quantity/a.minQuantity) - (b.quantity/b.minQuantity)).map(s => {
+            const pct = Math.round(s.quantity / s.minQuantity * 100);
+            const color = pct <= 0 ? '#e05353' : pct <= 50 ? '#f0a44a' : '#e8d74c';
+            return `<div style="background:var(--surface);border:1px solid ${color}44;border-radius:8px;padding:10px 12px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <span style="font-size:13px;font-weight:600">${escapeHtml(s.skuName)}</span>
+                <span style="font-size:11px;color:${color};font-weight:700">${s.quantity} / ${s.minQuantity} ${escapeHtml(s.unit||'')}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:6px">
+                <span>${escapeHtml(s.skuCode)}</span>
+                <span>${escapeHtml(s.warehouseName||'')}</span>
+              </div>
+              <div style="height:4px;border-radius:2px;background:var(--border)">
+                <div style="height:100%;width:${Math.min(100,pct)}%;background:${color};border-radius:2px;transition:width .3s"></div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>`;
+    } catch(e) { list.innerHTML = `<p style="font-size:12px;color:#e05353">${e.message}</p>`; }
+  }
+
+  document.getElementById('invLowStockBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventoryLowStockPanel');
+    const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
+    _closeAllInvPanels();
+    if (wasHidden && panel) { panel.style.display = ''; _loadLowStock(); }
+  });
+  document.getElementById('invLowStockCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventoryLowStockPanel'); if (p) p.style.display = 'none';
+  });
+  document.getElementById('invLowStockRefreshBtn')?.addEventListener('click', _loadLowStock);
 
   document.getElementById('invReorderSuggestBtn')?.addEventListener('click', async () => {
     const list = document.getElementById('inventoryReorderList');
