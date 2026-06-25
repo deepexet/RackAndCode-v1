@@ -3803,11 +3803,13 @@ function renderProjectDetail() {
             <button type="button" class="wi-view-btn active" data-wi-view="list" style="padding:4px 9px;font-size:11px;background:var(--surface);border:none;cursor:pointer;color:var(--text)">≡ Список</button>
             <button type="button" class="wi-view-btn" data-wi-view="kanban" style="padding:4px 9px;font-size:11px;background:var(--surface);border:none;cursor:pointer;color:var(--text-muted);border-left:1px solid var(--border)">⊞ Kanban</button>
           </div>
+          ${canManage ? `<button class="button ghost" id="wiImportCsvBtn" type="button" style="font-size:11px">⬆ CSV</button>` : ''}
           ${canManage ? `<button class="button ghost" id="wiBulkDoneBtn" type="button" style="font-size:11px;display:none">✓ Bulk done</button>` : ''}
         </div>
       </div>
       <div id="workItemsFullList" style="display:flex;flex-direction:column;gap:6px;margin-top:6px"></div>
       <div id="workItemsKanban" style="display:none;margin-top:6px;overflow-x:auto"></div>
+      <input type="file" id="wiCsvInput" accept=".csv,.txt" style="display:none">
     </section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel">
@@ -4704,6 +4706,34 @@ function setupWorkItemsBulkList(project) {
   const filterSel = document.getElementById('wiFilterStatus');
   const bulkBtn = document.getElementById('wiBulkDoneBtn');
   if (!listEl) return;
+
+  // CSV import
+  document.getElementById('wiImportCsvBtn')?.addEventListener('click', () => {
+    const hint = 'Формат CSV: title,status,priority,description,workType,startDate,dueDate,estimatedMinutes\n' +
+      'title (обязательно), остальные — опционально.\n\nВыберите CSV файл для импорта.';
+    if (confirm(hint.replace('Выберите CSV файл для импорта.', 'Продолжить?')))
+      document.getElementById('wiCsvInput')?.click();
+  });
+  document.getElementById('wiCsvInput')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    toast('Импортирую задачи из CSV…');
+    try {
+      const text = await file.text();
+      const r = await apiFetch(`/api/v1/projects/${project.id}/work-items/import-csv`, {
+        method: 'POST', headers: apiHeaders({'Content-Type':'text/csv'}),
+        body: text,
+      });
+      const res = await r.json();
+      if (!r.ok) throw new Error(res.error?.message || r.status);
+      toast(`Создано ${res.created} задач${res.errors?.length ? `. Ошибок: ${res.errors.length}` : '.'}`);
+      if (res.errors?.length) console.warn('Import errors:', res.errors);
+      // Reload project to show new items
+      if (typeof reloadProjectData === 'function') await reloadProjectData(project.id);
+      else render();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+    e.target.value = '';
+  });
 
   // View toggle
   let wiViewMode = 'list';

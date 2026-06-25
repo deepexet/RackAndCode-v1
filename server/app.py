@@ -4533,6 +4533,49 @@ Rules:
         )
         return pending
 
+    def import_work_items_csv(self, org: str, project_id: str,
+                               csv_text: str, recorded_by: str | None = None) -> dict[str, Any]:
+        """Parse CSV rows and bulk-create work items. Returns summary."""
+        import csv as _csv, io as _io
+        reader = _csv.DictReader(_io.StringIO(csv_text))
+        created, errors = [], []
+        VALID_STATUSES = {"ideas","backlog","ready","progress","blocked","review","testing","done"}
+        VALID_PRIORITIES = {"critical","high","medium","low"}
+        with self._connect() as _c:
+            work_types = [dict(r) for r in _c.execute(
+                "SELECT id, code, name FROM work_types WHERE organization_id=? AND active=1", (org,)
+            ).fetchall()]
+        wt_by_code = {wt["code"].upper(): wt["id"] for wt in work_types}
+        wt_by_name = {wt["name"].lower(): wt["id"] for wt in work_types}
+        for i, row in enumerate(reader, start=2):
+            title = (row.get("title") or row.get("Title") or row.get("Название") or "").strip()
+            if not title:
+                errors.append({"row": i, "error": "title is required"})
+                continue
+            status = (row.get("status") or row.get("Status") or row.get("Статус") or "backlog").strip().lower()
+            if status not in VALID_STATUSES:
+                status = "backlog"
+            priority = (row.get("priority") or row.get("Priority") or row.get("Приоритет") or "medium").strip().lower()
+            if priority not in VALID_PRIORITIES:
+                priority = "medium"
+            wt_raw = (row.get("workType") or row.get("work_type") or row.get("Тип работ") or "").strip()
+            work_type_id = (wt_by_code.get(wt_raw.upper()) or wt_by_name.get(wt_raw.lower()))
+            try:
+                item = self.create_work_item(org, project_id, {
+                    "title": title,
+                    "description": (row.get("description") or row.get("Description") or row.get("Описание") or "").strip(),
+                    "status": status, "priority": priority,
+                    "workTypeId": work_type_id,
+                    "startDate": (row.get("startDate") or row.get("start_date") or row.get("Дата начала") or "").strip() or None,
+                    "dueDate": (row.get("dueDate") or row.get("due_date") or row.get("Дата конца") or "").strip() or None,
+                    "estimatedMinutes": int(row.get("estimatedMinutes") or row.get("estimated_minutes") or 0 or 0),
+                })
+                created.append(item["id"])
+            except Exception as e:
+                errors.append({"row": i, "title": title, "error": str(e)})
+        self.audit(org, recorded_by, None, "work_items.bulk_import", "project", project_id)
+        return {"created": len(created), "errors": errors, "ids": created}
+
     # ── Material Reservations ─────────────────────────────────────────────────
 
     def list_reservations(self, org: str, project_id: str | None = None,
@@ -8707,6 +8750,21 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # Work items CSV import: POST /api/v1/projects/:id/work-items/import-csv
+        if len(parts) == 7 and parts[3] == "projects" and parts[5] == "work-items" and parts[6] == "import-csv":
+            project_id = parts[4]
+            if not self._require_permission("projectManage"): return
+            cl = int(self.headers.get("Content-Length","0"))
+            if cl > 2_000_000:
+                self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large", "Max 2 MB"); return
+            raw = self.rfile.read(cl).decode("utf-8-sig", errors="replace")
+            try:
+                result = self.store.import_work_items_csv(
+                    self.organization_id, project_id, raw, self.current_role
+                )
+                self._json(HTTPStatus.CREATED, result); return
+            except Exception as e:
+                self._error(HTTPStatus.BAD_REQUEST, "import_error", str(e)); return
         # Milestones: POST /api/v1/projects/:id/milestones  and  /:id/milestones/:mid/update|delete
         if len(parts) >= 6 and parts[3] == "projects" and parts[5] == "milestones":
             project_id = parts[4]
