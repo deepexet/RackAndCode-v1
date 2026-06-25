@@ -3771,6 +3771,10 @@ function renderProjectDetail() {
     </section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
+    <section class="detail-section" id="workloadWidgetSection">
+      <div class="detail-section-title"><div><p class="eyebrow">НАГРУЗКА</p><h2>Распределение задач</h2></div></div>
+      <div id="workloadSection"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="projectTeamSection">
       <div class="detail-section-title"><div><p class="eyebrow">КОМАНДА</p><h2>Назначенные сотрудники</h2></div><div style="display:flex;gap:6px">${canManage ? '<button class="button ghost" id="assignMemberBtn" type="button">＋ Назначить</button>' : ''}<button class="button ghost" id="presenceToggleBtn" type="button" style="font-size:11px">📍 Присутствие</button></div></div>
       <div id="projectTeamList" style="display:flex;flex-wrap:wrap;gap:8px"><p class="empty-copy" style="font-size:13px">Загрузка…</p></div>
@@ -4089,6 +4093,31 @@ function renderProjectDetail() {
   hydrateProjectTeam(project.id);
   setupPresencePanel(project.id);
   setupWorkItemsBulkList(project);
+  hydrateProjectWorkload(project.id);
+}
+
+async function hydrateProjectWorkload(projectId) {
+  const container = document.getElementById('workloadSection');
+  if (!container) return;
+  try {
+    const r = await apiFetch(`/api/v1/workload?projectId=${projectId}`);
+    const { workload = [] } = await r.json();
+    if (!workload.length) {
+      container.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Задачи не назначены.</p>';
+      return;
+    }
+    const STATUS_COLOR = { ready:'#4f8ef7', progress:'#f0a44a', blocked:'#e05353', review:'#a06fd0', testing:'#42d697', ideas:'#778195', backlog:'#778195' };
+    container.innerHTML = workload.map(m => {
+      const bars = Object.entries(m.byStatus).map(([s, cnt]) =>
+        `<span title="${s}: ${cnt}" style="display:inline-block;width:${Math.max(4,cnt*8)}px;height:10px;background:${STATUS_COLOR[s]||'#556'};border-radius:2px;margin-right:2px"></span>`
+      ).join('');
+      return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+        <span style="font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.displayName)}</span>
+        <span style="font-size:11px;color:var(--text-muted);white-space:nowrap">${m.total} задач</span>
+        <div style="display:flex;align-items:center">${bars}</div>
+      </div>`;
+    }).join('');
+  } catch { container.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Недоступно.</p>'; }
 }
 
 function setupWorkItemsBulkList(project) {

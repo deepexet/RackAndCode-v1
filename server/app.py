@@ -3707,6 +3707,106 @@ Rules:
             if result.rowcount == 0:
                 raise LookupError("Report schedule not found")
 
+    @staticmethod
+    def _make_asset_label_svg(asset: dict[str, Any], base_url: str = "") -> str:
+        """Generate an SVG label card for an asset (printable, A6-ish)."""
+        name = asset.get("name", "")[:40]
+        asset_id = asset.get("id", "")
+        asset_type = asset.get("asset_type") or asset.get("assetType", "")
+        make_model = f"{asset.get('make','')} {asset.get('model','')}".strip()
+        serial = asset.get("serial_number", "") or asset.get("serialNumber", "")
+        url = f"{base_url}/assets/{asset_id}"
+
+        # Encode URL as a simple QR-like grid placeholder (real scannable QR needs a library)
+        # We output a barcode-style SVG label instead, which includes the asset URL as text
+        lines = [
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 160" width="320" height="160" font-family="monospace">',
+            f'  <rect width="320" height="160" fill="#fff" rx="8"/>',
+            f'  <rect x="8" y="8" width="304" height="144" fill="none" stroke="#000" stroke-width="1.5" rx="6"/>',
+            # Header bar
+            f'  <rect x="8" y="8" width="304" height="30" fill="#111" rx="6"/>',
+            f'  <text x="16" y="28" font-size="14" font-weight="bold" fill="#fff">RackPilot Asset</text>',
+            f'  <text x="288" y="28" font-size="11" fill="#aaa" text-anchor="end">{asset_type}</text>',
+            # Asset name
+            f'  <text x="16" y="56" font-size="15" font-weight="bold" fill="#111">{name}</text>',
+            # Make/model
+            f'  <text x="16" y="74" font-size="11" fill="#555">{make_model}</text>',
+            # Serial
+            f'  <text x="16" y="90" font-size="10" fill="#777">S/N: {serial or "—"}</text>',
+            # ID (truncated)
+            f'  <text x="16" y="108" font-size="9" fill="#999">ID: {asset_id[:24]}…</text>',
+            # URL
+            f'  <text x="16" y="148" font-size="8" fill="#bbb">{url[:60]}</text>',
+            # Barcode-like decoration (purely decorative)
+            *[f'  <rect x="{200 + i*3}" y="110" width="{2 if i % 3 != 0 else 1}" height="32" fill="#111"/>'
+              for i in range(36)],
+            '</svg>',
+        ]
+        return "\n".join(lines)
+
+    def get_team_workload(self, org: str, project_id: str | None = None) -> list[dict[str, Any]]:
+        """Per-member open work item counts, grouped by status."""
+        with self._connect() as conn:
+            where = "wi.organization_id=? AND wi.status NOT IN ('done')"
+            params: list[Any] = [org]
+            if project_id:
+                where += " AND wi.project_id=?"
+                params.append(project_id)
+            rows = conn.execute(
+                f"SELECT wi.assignee_user_id, u.display_name, u.email, wi.status, COUNT(*) as cnt "
+                f"FROM project_work_items wi "
+                f"LEFT JOIN users u ON u.id=wi.assignee_user_id "
+                f"WHERE {where} AND wi.assignee_user_id IS NOT NULL "
+                f"GROUP BY wi.assignee_user_id, wi.status "
+                f"ORDER BY u.display_name",
+                params,
+            ).fetchall()
+        # Group by member
+        members: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            uid = row["assignee_user_id"]
+            if uid not in members:
+                members[uid] = {
+                    "userId": uid,
+                    "displayName": row["display_name"] or row["email"] or uid,
+                    "byStatus": {}, "total": 0,
+                }
+            members[uid]["byStatus"][row["status"]] = row["cnt"]
+            members[uid]["total"] += row["cnt"]
+        return sorted(members.values(), key=lambda m: -m["total"])
+
+    def sweep_overdue_items(self, org: str) -> dict[str, int]:
+        """Find work items past due_date, push overdue notifications. Safe to call repeatedly."""
+        today = utc_now()[:10]
+        pushed = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT wi.id, wi.title, wi.project_id, wi.due_date "
+                "FROM project_work_items wi "
+                "WHERE wi.organization_id=? AND wi.status NOT IN ('done','cancelled') "
+                "AND wi.due_date IS NOT NULL AND wi.due_date < ? "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM notifications n "
+                "  WHERE n.organization_id=wi.organization_id "
+                "    AND n.entity_type='work_item' AND n.entity_id=wi.id "
+                "    AND n.type='overdue' AND n.created_at >= date('now','-1 day')"
+                ")",
+                (org, today),
+            ).fetchall()
+        for row in rows:
+            try:
+                self.push_notification(
+                    org, "Задача просрочена",
+                    f"«{row['title']}» — срок {row['due_date']}",
+                    notif_type="overdue",
+                    entity_type="work_item", entity_id=row["id"],
+                    project_id=row["project_id"],
+                )
+                pushed += 1
+            except Exception:
+                pass
+        return {"checked": len(rows), "pushed": pushed}
+
     def run_due_scheduled_reports(self, org: str) -> list[dict[str, Any]]:
         """Generate CSV for all enabled reports whose next_run_at <= now. Returns list of results."""
         today = utc_now()[:10]
@@ -4607,6 +4707,13 @@ Rules:
             try: d[k] = json.loads(d.get(k) or '{}')
             except (json.JSONDecodeError, TypeError): d[k] = {}
         return d
+
+    def get_asset(self, org: str, asset_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM dt_assets WHERE id=? AND organization_id=?", (asset_id, org)
+            ).fetchone()
+        return self._asset_row(row) if row else None
 
     def create_asset(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         asset_id = str(uuid.uuid4())
@@ -5934,6 +6041,37 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             to_date = qs.get("to", today)
             records = self.store.list_presence(self.organization_id, project_id, from_date, to_date)
             self._json(HTTPStatus.OK, {"presence": records})
+            return
+        # Team workload: GET /api/v1/workload?projectId=
+        if path == "/api/v1/workload":
+            if not self._require_permission("projectRead"): return
+            qs = self._params()
+            workload = self.store.get_team_workload(self.organization_id, qs.get("projectId"))
+            self._json(HTTPStatus.OK, {"workload": workload})
+            return
+        # Asset label SVG: GET /api/v1/assets/:id/label.svg
+        # parts: ['','api','v1','assets',':id','label.svg']
+        if len(parts) == 6 and parts[3] == "assets" and parts[5] == "label.svg":
+            if not self._require_permission("projectRead"): return
+            asset = self.store.get_asset(self.organization_id, parts[4])
+            if asset is None:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Asset not found")
+                return
+            host = self.headers.get("Host", "localhost")
+            svg = self.store._make_asset_label_svg(asset, f"http://{host}")
+            body = svg.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # Overdue sweep: GET /api/v1/admin/overdue-sweep
+        if path == "/api/v1/admin/overdue-sweep":
+            if not self._require_permission("adminRead"): return
+            result = self.store.sweep_overdue_items(self.organization_id)
+            self._json(HTTPStatus.OK, result)
             return
         # Scheduled reports: GET /api/v1/admin/scheduled-reports
         if path == "/api/v1/admin/scheduled-reports":
@@ -7704,7 +7842,21 @@ def main() -> None:
                 s.flush_webhook_events()
             except Exception as _e:
                 LOGGER.warning(json.dumps({"event": "webhook_flush_error", "error": str(_e)}))
+
+    def _maintenance_loop(s: WorkspaceStore) -> None:
+        import time as _time
+        while True:
+            _time.sleep(3600)  # hourly
+            try:
+                with s._connect() as _conn:
+                    _orgs = [r["id"] for r in _conn.execute("SELECT id FROM organizations").fetchall()]
+                for _oid in _orgs:
+                    s.sweep_overdue_items(_oid)
+                    s.run_due_scheduled_reports(_oid)
+            except Exception as _e:
+                LOGGER.warning(json.dumps({"event": "maintenance_loop_error", "error": str(_e)}))
     threading.Thread(target=_webhook_flush_loop, args=(store,), daemon=True, name="webhook-flush").start()
+    threading.Thread(target=_maintenance_loop, args=(store,), daemon=True, name="maintenance").start()
     initial_password = store.ensure_initial_credentials()
     if initial_password:
         LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.rackpilot", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))

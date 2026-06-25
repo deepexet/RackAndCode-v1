@@ -674,6 +674,58 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertEqual(row["status"], "pending")
 
 
+    def test_team_workload_counts_by_status(self):
+        uid = self._make_user()
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "WL1", "name": "Workload"})
+        self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"],
+                                    {"title": "Task A", "status": "ready", "assigneeUserId": uid})
+        self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"],
+                                    {"title": "Task B", "status": "progress", "assigneeUserId": uid})
+        workload = self.store.get_team_workload(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(workload), 1)
+        self.assertEqual(workload[0]["total"], 2)
+        self.assertIn("ready", workload[0]["byStatus"])
+        self.assertIn("progress", workload[0]["byStatus"])
+
+    def test_team_workload_unassigned_items_excluded(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "WL2", "name": "No Assign"})
+        self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "Unassigned"})
+        workload = self.store.get_team_workload(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(workload, [])
+
+    def test_overdue_sweep_pushes_notifications(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "OVR", "name": "Overdue Test"})
+        wi = self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"],
+                                          {"title": "Late task", "status": "ready", "dueDate": "2024-01-01"})
+        result = self.store.sweep_overdue_items(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(result["pushed"], 1)
+        notifs = self.store.list_notifications(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(notifs), 1)
+        self.assertEqual(notifs[0]["type"], "overdue")
+        self.assertEqual(notifs[0]["entity_id"], wi["id"])
+
+    def test_overdue_sweep_not_duplicate_within_day(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "OVD", "name": "Dupe Guard"})
+        self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"],
+                                     {"title": "Old task", "status": "ready", "dueDate": "2024-01-01"})
+        self.store.sweep_overdue_items(DEFAULT_ORGANIZATION_ID)
+        result2 = self.store.sweep_overdue_items(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(result2["pushed"], 0)
+
+    def test_asset_label_svg_generated(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "SVG", "name": "SVG Test"})
+        asset = self.store.create_asset(DEFAULT_ORGANIZATION_ID, proj["id"],
+                                         {"name": "Core Switch", "assetType": "network", "make": "Cisco", "model": "C9300"})
+        svg = self.store._make_asset_label_svg(asset, "http://localhost:4173")
+        self.assertIn("<svg", svg)
+        self.assertIn("Core Switch", svg)
+        self.assertIn("Cisco", svg)
+        self.assertIn(asset["id"][:8], svg)
+
+    def test_get_asset_returns_none_for_unknown(self):
+        result = self.store.get_asset(DEFAULT_ORGANIZATION_ID, "nonexistent-id")
+        self.assertIsNone(result)
+
     def test_project_template_create_list_delete(self):
         scaffold = {
             "workItems": [
