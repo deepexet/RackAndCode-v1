@@ -8055,6 +8055,34 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             sessions = self.store.list_active_sessions(self.organization_id)
             self._json(HTTPStatus.OK, {"sessions": sessions, "count": len(sessions)})
             return
+        # Work item search: GET /api/v1/work-items/search?q=&status=&projectId=&limit=
+        if path == "/api/v1/work-items/search":
+            if not self._require_permission("projectRead"): return
+            org = self.organization_id
+            q = self.query_params.get("q", [""])[0].strip()
+            project_id = self.query_params.get("projectId", [None])[0]
+            status_filter = self.query_params.get("status", [""])[0]
+            limit = min(int(self.query_params.get("limit", ["50"])[0]), 200)
+            if not q and not project_id:
+                self._json(HTTPStatus.OK, {"items": [], "total": 0}); return
+            with self.store._connect() as conn:
+                where = "wi.organization_id=?"
+                params: list[Any] = [org]
+                if project_id:
+                    where += " AND wi.project_id=?"; params.append(project_id)
+                if status_filter:
+                    where += " AND wi.status=?"; params.append(status_filter)
+                if q:
+                    where += " AND (wi.title LIKE ? OR wi.description LIKE ? OR wi.code LIKE ?)"
+                    pat = f"%{q}%"; params += [pat, pat, pat]
+                rows = conn.execute(
+                    f"SELECT wi.id, wi.title, wi.code, wi.status, wi.priority, wi.due_date, "
+                    f"wi.assignee_user_id, wi.project_id, p.name as project_name, p.code as project_code "
+                    f"FROM project_work_items wi JOIN projects p ON p.id=wi.project_id AND p.organization_id=wi.organization_id "
+                    f"WHERE {where} ORDER BY wi.updated_at DESC LIMIT ?",
+                    params + [limit]
+                ).fetchall()
+            self._json(HTTPStatus.OK, {"items": [dict(r) for r in rows], "total": len(rows)}); return
         # Issues: GET /api/v1/issues?projectId=&status=&severity=
         if path == "/api/v1/issues":
             if not self._require_permission("projectRead"): return
