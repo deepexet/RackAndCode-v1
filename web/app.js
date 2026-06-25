@@ -4946,21 +4946,50 @@ function setupWorkItemsBulkList(project) {
 
   bulkBtn?.addEventListener('click', async () => {
     if (!selected.size) return;
-    const targetStatus = prompt(`Установить статус для ${selected.size} задач:\n${Object.keys(WORK_ITEM_TRANSITIONS).join(', ')}`, 'done');
-    if (!targetStatus) return;
-    try {
-      const r = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/work-items/bulk-status`, {
-        method: 'POST',
-        headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
-        body: JSON.stringify({ ids: [...selected], status: targetStatus }),
-      });
-      const { updated, skipped } = await r.json();
-      toast(`Обновлено: ${updated}, пропущено: ${skipped}`);
-      selected.clear();
-      if (bulkBtn) bulkBtn.style.display = 'none';
-      // Reload project data
-      await fetchProjects();
-    } catch(e) { toast(`Ошибка: ${e.message}`); }
+    const action = prompt(
+      `Массовое действие для ${selected.size} задач:\n` +
+      `1 — изменить статус\n2 — назначить исполнителя`,
+      '1'
+    );
+    if (!action) return;
+    if (action === '1') {
+      const targetStatus = prompt(`Статус (${Object.keys(WORK_ITEM_TRANSITIONS).join('/')}):`, 'done');
+      if (!targetStatus) return;
+      try {
+        const r = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/work-items/bulk-status`, {
+          method: 'POST',
+          headers: apiHeaders({'Content-Type':'application/json','Idempotency-Key':createIdempotencyKey()}),
+          body: JSON.stringify({ ids: [...selected], status: targetStatus }),
+        });
+        const { updated, skipped } = await r.json();
+        toast(`Обновлено: ${updated}, пропущено: ${skipped}`);
+      } catch(e) { toast(`Ошибка: ${e.message}`); return; }
+    } else if (action === '2') {
+      const members = (project.members || []);
+      const choiceText = members.length
+        ? members.map((m,i) => `${i+1} — ${m.displayName||m.userId}`).join('\n') + '\n0 — снять'
+        : 'Введите ID пользователя (пусто = снять):';
+      const pick = prompt(choiceText, members.length ? '1' : '');
+      let assigneeId = '';
+      if (members.length) {
+        const idx = parseInt(pick||'0') - 1;
+        assigneeId = idx >= 0 && idx < members.length ? members[idx].userId : '';
+      } else {
+        assigneeId = (pick||'').trim();
+      }
+      try {
+        const r = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/work-items/bulk-assign`, {
+          method: 'POST',
+          headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ ids: [...selected], assigneeId }),
+        });
+        const { updated } = await r.json();
+        toast(`Назначено: ${updated}`);
+      } catch(e) { toast(`Ошибка: ${e.message}`); return; }
+    }
+    selected.clear();
+    if (bulkBtn) bulkBtn.style.display = 'none';
+    await fetchProjects();
   });
 }
 

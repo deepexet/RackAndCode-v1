@@ -8785,6 +8785,31 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
+        # Bulk assign: POST /api/v1/projects/:id/work-items/bulk-assign
+        if path.startswith("/api/v1/projects/") and len(parts) == 6 and parts[4] == "work-items" and parts[5] == "bulk-assign":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                ids: list[str] = payload.get("ids", [])
+                assignee_id: str = str(payload.get("assigneeId", "")).strip()
+                if not ids:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "ids[] required"); return
+                if len(ids) > 100:
+                    self._error(HTTPStatus.BAD_REQUEST, "too_many", "Max 100 items"); return
+                project_id = parts[3]
+                now = utc_now(); updated = 0
+                with self.store._connect() as conn:
+                    for item_id in ids:
+                        conn.execute(
+                            "UPDATE project_work_items SET assignee_user_id=?,updated_at=? "
+                            "WHERE organization_id=? AND project_id=? AND id=?",
+                            (assignee_id or None, now, self.organization_id, project_id, item_id),
+                        )
+                        updated += conn.execute("SELECT changes()").fetchone()[0]
+                self._json(HTTPStatus.OK, {"updated": updated})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
         # Team presence: POST /api/v1/projects/:id/presence
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "presence":
             if not self._require_permission("projectManage"): return
