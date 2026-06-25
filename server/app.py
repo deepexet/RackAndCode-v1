@@ -982,6 +982,16 @@ class WorkspaceStore:
                 """SELECT location_id,project_id,zone_type,speaker_count,display_count,source_description,equipment_notes,version
                    FROM audio_zone_details WHERE organization_id=?""", (organization_id,)
             ).fetchall()
+        # Build user display name lookup for work item assignees
+        with self._connect() as _uc:
+            _user_rows = _uc.execute(
+                """SELECT u.id, u.display_name, u.email FROM users u
+                   JOIN memberships m ON m.user_id=u.id
+                   WHERE m.organization_id=?""", (organization_id,)
+            ).fetchall()
+        user_display: dict[str, str] = {
+            r["id"]: (r["display_name"] or r["email"] or r["id"]) for r in _user_rows
+        }
         stages_by_project: dict[str, list[sqlite3.Row]] = {}
         for stage in stages:
             stages_by_project.setdefault(stage["project_id"], []).append(stage)
@@ -1103,7 +1113,10 @@ class WorkspaceStore:
                     "title": item["title"], "description": item["description"], "status": item["status"],
                     "effectiveStatus": item["effective_status"], "dependsOn": item["depends_on"],
                     "blockedBy": item["blocked_by"],
-                    "priority": item["priority"], "assigneeUserId": item["assignee_user_id"],
+                    "priority": item["priority"],
+                    "assigneeUserId": item["assignee_user_id"],
+                    "assigneeName": user_display.get(item["assignee_user_id"] or "", ""),
+                    "workTypeName": work_type_by_id.get(item.get("work_type_id",""), ""),
                     "startDate": item["start_date"], "dueDate": item["due_date"],
                     "estimatedMinutes": item["estimated_minutes"], "actualMinutes": item["actual_minutes"],
                     "version": item["version"],
