@@ -7299,6 +7299,44 @@ function _bindInventoryEvents() {
     } catch { list.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
   }
 
+  async function _quickMovementTyped(movementType) {
+    if (!_invSelectedWarehouse) {
+      toast('Выберите склад из списка'); return;
+    }
+    const skuSearch = prompt(`SKU — введите код или название для ${movementType === 'receive' ? 'приёма' : 'расхода'}:`);
+    if (!skuSearch?.trim()) return;
+    try {
+      const r = await apiFetch(`/api/v1/inventory/skus?q=${encodeURIComponent(skuSearch.trim())}`);
+      const { skus = [] } = await r.json();
+      if (!skus.length) { toast('SKU не найден'); return; }
+      let skuId, skuName;
+      if (skus.length === 1) {
+        skuId = skus[0].id; skuName = skus[0].name;
+      } else {
+        const choices = skus.slice(0,8).map((s,i) => `${i+1} — [${s.sku_code}] ${s.name}`).join('\n');
+        const pick = prompt(`Выберите SKU (номер):\n${choices}`, '1');
+        const idx = parseInt(pick||'0') - 1;
+        if (idx < 0 || idx >= skus.length) return;
+        skuId = skus[idx].id; skuName = skus[idx].name;
+      }
+      const qty = parseFloat(prompt(`Количество для "${skuName}":`) || '0');
+      if (!qty || isNaN(qty) || qty <= 0) return;
+      const ref = prompt('Ссылка / документ (опционально):') || '';
+      const note = prompt('Примечание (опционально):') || '';
+      const r2 = await apiFetch('/api/v1/inventory/movements', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ warehouseId: _invSelectedWarehouse, skuId, movementType, quantity: qty, reference: ref, note }),
+      });
+      if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+      toast(`✓ ${movementType === 'receive' ? 'Принято' : 'Списано'}: ${qty} × ${skuName}`);
+      _loadStock(_invSelectedWarehouse);
+      _loadReorderBadge();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  }
+
+  document.getElementById('invQuickReceiveBtn')?.addEventListener('click', () => _quickMovementTyped('receive'));
+  document.getElementById('invQuickIssueBtn')?.addEventListener('click', () => _quickMovementTyped('issue'));
+
   document.getElementById('invSuppliersBtn')?.addEventListener('click', () => {
     const panel = document.getElementById('inventorySuppliersPanel');
     const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
