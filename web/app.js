@@ -3786,7 +3786,21 @@ function renderProjectDetail() {
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
   container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
-    <section class="detail-kpis"><article><span>Общий прогресс</span><strong>${project.progress}%</strong></article><article><span>Сегодня обновлено</span><strong>${updatesToday.length}</strong></article><article><span>Открытые проблемы</span><strong>${openIssues.length}</strong></article><article><span>Локации</span><strong>${project.locations.length}</strong></article></section>
+    <section class="detail-kpis">${(() => {
+      const now = Date.now();
+      const week = 7 * 86400000;
+      const allWi = project.workItems || [];
+      const overdue = allWi.filter(w => w.status !== 'done' && w.dueDate && new Date(w.dueDate).getTime() < now);
+      const soon = allWi.filter(w => w.status !== 'done' && w.dueDate && new Date(w.dueDate).getTime() >= now && new Date(w.dueDate).getTime() <= now + week);
+      const overdueHtml = overdue.length ? `<span style="color:#f46;font-size:10px;font-weight:700">${overdue.length} просрочено</span>` : '';
+      const soonHtml = soon.length ? `<span style="color:#e8a84c;font-size:10px;font-weight:600">${soon.length} сроком в 7 дней</span>` : '';
+      return `<article><span>Прогресс</span><strong>${project.progress}%</strong></article>
+        <article><span>Обновлено сегодня</span><strong>${updatesToday.length}</strong></article>
+        <article><span>Проблемы</span><strong>${openIssues.length}</strong></article>
+        <article><span>Локации</span><strong>${project.locations.length}</strong></article>
+        ${(overdueHtml || soonHtml) ? `<article style="flex-direction:column;gap:2px;align-items:flex-start">
+          <span>Дедлайны</span>${overdueHtml}${soonHtml}</article>` : ''}`;
+    })()}</section>
     <section class="detail-section"><div class="detail-section-title"><div><p class="eyebrow">WORK PROGRESS</p><h2>Прогресс по видам работ</h2></div><div style="display:flex;gap:8px"><button class="button ghost" id="progressHistoryBtn" type="button" style="font-size:12px">📈 История</button><button class="button ghost" id="criticalPathBtn" type="button" style="font-size:12px">⛓ Critical path</button><button class="button ghost" id="analyticsBtn" type="button" style="font-size:12px">📊 Analytics</button></div></div><div class="scope-cards">${project.workTypeProgress.map(scope => `<article style="--scope:${scope.color}"><div><strong>${escapeHtml(scope.name)}</strong><b>${scope.progress}%</b></div><div class="scope-bar"><i style="width:${scope.progress}%"></i></div><small>${scope.fieldUpdateCount} обновлений · ${scope.taskCount} задач${scope.blocked ? ` · ${scope.blocked} blocked` : ''}</small></article>`).join('')}</div><div id="progressHistoryPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div><div id="criticalPathPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div><div id="analyticsPanel" style="display:none;margin-top:16px;padding:14px;background:rgba(79,142,247,.05);border:1px solid rgba(79,142,247,.2);border-radius:10px"></div></section>
     <section class="detail-section" id="workItemsSection">
       <div class="detail-section-title">
@@ -6694,20 +6708,28 @@ async function _loadStock(warehouseId) {
     table.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr style="color:var(--text-muted);text-align:left">
         <th style="padding:6px 8px">SKU</th><th style="padding:6px 8px">Наименование</th>
-        <th style="padding:6px 8px">Кол-во</th><th style="padding:6px 8px">Ед.</th>
-        <th style="padding:6px 8px">Бин</th><th style="padding:6px 8px"></th>
+        <th style="padding:6px 8px">Кол-во</th><th style="padding:6px 8px">Уровень</th>
+        <th style="padding:6px 8px">Ед.</th><th style="padding:6px 8px">Бин</th><th style="padding:6px 8px"></th>
       </tr></thead>
-      <tbody>${stock.map(s => `<tr style="border-top:1px solid var(--border)${s.belowMin?';background:rgba(255,68,68,.05)':''}">
+      <tbody>${stock.map(s => {
+        const pct = s.min_quantity > 0 ? Math.min(100, Math.round(s.quantity / s.min_quantity * 100)) : null;
+        const barColor = pct === null ? '#4f8ef7' : pct <= 50 ? '#f46' : pct <= 100 ? '#e8a84c' : '#3bb969';
+        const barW = pct === null ? 60 : Math.min(100, Math.max(4, pct));
+        const barHtml = `<div style="height:6px;border-radius:3px;background:var(--border);width:60px;overflow:hidden">
+          <div style="height:100%;width:${barW}%;background:${barColor};border-radius:3px"></div></div>
+          ${pct !== null ? `<span style="font-size:9px;color:${barColor}">${pct}%</span>` : ''}`;
+        return `<tr style="border-top:1px solid var(--border)${s.belowMin?';background:rgba(255,68,68,.05)':''}">
         <td style="padding:7px 8px;font-family:monospace">${escapeHtml(s.sku_code)}</td>
         <td style="padding:7px 8px"><strong>${escapeHtml(s.sku_name)}</strong></td>
-        <td style="padding:7px 8px"><strong style="color:${s.belowMin?'#f46':'inherit'}">${s.quantity}</strong>${s.belowMin?'<span style="font-size:10px;color:#f46;margin-left:4px">⚠ min</span>':''}</td>
+        <td style="padding:7px 8px"><strong style="color:${s.belowMin?'#f46':'inherit'}">${s.quantity}</strong>${s.belowMin?'<span style="font-size:10px;color:#f46;margin-left:4px">⚠</span>':''}</td>
+        <td style="padding:7px 8px">${barHtml}</td>
         <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.unit)}</td>
         <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.location_bin||'—')}</td>
         <td style="padding:7px 8px;display:flex;gap:4px">
           <button type="button" class="text-button" style="font-size:11px" data-quick-mv="${s.sku_id}" data-sku-name="${escapeHtml(s.sku_name)}">＋/−</button>
           <button type="button" class="text-button" style="font-size:11px;color:var(--text-muted)" data-stock-settings="${s.sku_id}" data-min-qty="${s.min_quantity??''}" data-bin="${escapeHtml(s.location_bin||'')}">⚙</button>
         </td>
-      </tr>`).join('')}</tbody>
+      </tr>`;}).join('')}</tbody>
     </table>`;
     table.querySelectorAll('[data-quick-mv]').forEach(btn => {
       btn.addEventListener('click', () => _quickMovement(warehouseId, btn.dataset.quickMv, btn.dataset.skuName));
