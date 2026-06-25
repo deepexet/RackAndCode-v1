@@ -3852,6 +3852,20 @@ function renderProjectDetail() {
       </div>
       <div id="budgetWidget"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
     </section>
+    <section class="detail-section" id="ganttSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">TIMELINE</p><h2>Диаграмма Ганта</h2></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="ganttGroupBy" style="padding:4px 8px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+            <option value="workType">По типу работ</option>
+            <option value="assignee">По исполнителю</option>
+            <option value="status">По статусу</option>
+          </select>
+          <button class="button ghost" id="ganttRefreshBtn" type="button" style="font-size:11px">↻</button>
+        </div>
+      </div>
+      <div id="ganttChart" style="overflow-x:auto;min-height:120px"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="milestonesSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">ROADMAP</p><h2>Вехи проекта</h2></div>
@@ -4186,6 +4200,132 @@ function renderProjectDetail() {
   setupIssuesPanel(project.id);
   hydrateBudgetWidget(project.id);
   hydrateReservations(project.id);
+  hydrateGantt(project);
+}
+
+function hydrateGantt(project) {
+  const container = document.getElementById('ganttChart');
+  if (!container) return;
+
+  function render() {
+    const groupBy = document.getElementById('ganttGroupBy')?.value || 'workType';
+    const items = (project.workItems || []).filter(wi => wi.startDate || wi.dueDate);
+    const milestones = (project.milestones || []);
+
+    if (!items.length && !milestones.length) {
+      container.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет задач с датами. Установите startDate/dueDate в задачах.</p>';
+      return;
+    }
+
+    // Compute date range
+    const allDates = [
+      ...items.flatMap(wi => [wi.startDate, wi.dueDate].filter(Boolean)),
+      ...milestones.map(m => m.target_date).filter(Boolean),
+    ].map(d => new Date(d).getTime()).filter(t => !isNaN(t));
+    if (!allDates.length) {
+      container.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет действительных дат в задачах.</p>';
+      return;
+    }
+    const minT = Math.min(...allDates);
+    const maxT = Math.max(...allDates);
+    const span = maxT - minT || 86400000;
+    const pad = span * 0.05;
+    const startT = minT - pad;
+    const endT = maxT + pad;
+    const totalSpan = endT - startT;
+
+    // Group items
+    const groups = new Map();
+    for (const wi of items) {
+      let key = 'Без группы';
+      if (groupBy === 'workType') key = wi.workTypeName || wi.workTypeId || 'Общие';
+      else if (groupBy === 'assignee') key = wi.assigneeName || 'Не назначено';
+      else if (groupBy === 'status') key = wi.status || 'unknown';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(wi);
+    }
+
+    const ROW_H = 28, LABEL_W = 160, HEADER_H = 40, MILESTONE_ROW = ROW_H;
+    const totalRows = [...groups.values()].reduce((s, g) => s + g.length, 0) + groups.size;
+    const svgH = HEADER_H + totalRows * ROW_H + MILESTONE_ROW + 20;
+    const svgW = Math.max(900, container.clientWidth - 24);
+    const chartW = svgW - LABEL_W;
+
+    const STATUS_COLOR = { pending:'#8b95a5', ongoing:'#4f8ef7', done:'#4adc84', blocked:'#f46' };
+
+    function xPct(ts) {
+      return LABEL_W + (new Date(ts).getTime() - startT) / totalSpan * chartW;
+    }
+
+    // Header: month ticks
+    const months = [];
+    const d = new Date(startT);
+    d.setDate(1);
+    while (d.getTime() < endT) {
+      months.push({ label: d.toLocaleString('ru', { month: 'short', year: '2-digit' }), x: xPct(d) });
+      d.setMonth(d.getMonth() + 1);
+    }
+    const todayX = xPct(Date.now());
+
+    let svgLines = [
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" style="font-family:inherit;background:var(--surface);border-radius:10px;border:1px solid var(--border)">`,
+      // Header bg
+      `<rect x="0" y="0" width="${svgW}" height="${HEADER_H}" fill="var(--surface-2,rgba(0,0,0,.04))" rx="10"/>`,
+      // Month labels
+      ...months.map(m => `<text x="${m.x.toFixed(1)}" y="24" fill="var(--text-muted)" font-size="11" text-anchor="middle">${m.label}</text>
+        <line x1="${m.x.toFixed(1)}" y1="0" x2="${m.x.toFixed(1)}" y2="${svgH}" stroke="var(--border)" stroke-width="1" opacity=".5"/>`),
+      // Today line
+      todayX >= LABEL_W && todayX <= svgW ? `<line x1="${todayX.toFixed(1)}" y1="0" x2="${todayX.toFixed(1)}" y2="${svgH}" stroke="#4f8ef7" stroke-width="1.5" stroke-dasharray="4"/>
+        <text x="${(todayX+4).toFixed(1)}" y="14" fill="#4f8ef7" font-size="9">сегодня</text>` : '',
+    ];
+
+    let y = HEADER_H;
+    for (const [group, groupItems] of groups) {
+      // Group header row
+      svgLines.push(`<rect x="0" y="${y}" width="${svgW}" height="${ROW_H}" fill="rgba(79,142,247,.05)"/>
+        <text x="8" y="${y + ROW_H/2 + 4}" fill="var(--text-muted)" font-size="10" font-weight="700">${escapeHtml(group.toUpperCase())}</text>`);
+      y += ROW_H;
+      for (const wi of groupItems) {
+        const barColor = STATUS_COLOR[wi.status] || '#8b95a5';
+        const s = wi.startDate ? new Date(wi.startDate).getTime() : null;
+        const e = wi.dueDate ? new Date(wi.dueDate).getTime() : null;
+        const x1 = s ? xPct(s) : (e ? xPct(e) - 20 : LABEL_W);
+        const x2 = e ? xPct(e) : (s ? xPct(s) + 20 : LABEL_W + 20);
+        const bw = Math.max(6, x2 - x1);
+        svgLines.push(
+          `<text x="${LABEL_W - 6}" y="${y + ROW_H/2 + 4}" fill="var(--text)" font-size="11" text-anchor="end" clip-path="none"
+            style="overflow:hidden">${escapeHtml((wi.title||'').slice(0,22))}</text>
+          <rect x="${x1.toFixed(1)}" y="${y+5}" width="${bw.toFixed(1)}" height="${ROW_H-10}" rx="4"
+            fill="${barColor}" opacity=".8"/>
+          <line x1="0" y1="${y}" x2="${svgW}" y2="${y}" stroke="var(--border)" stroke-width=".5" opacity=".4"/>`
+        );
+        y += ROW_H;
+      }
+    }
+
+    // Milestone diamonds at bottom
+    if (milestones.length) {
+      const MY = y + MILESTONE_ROW / 2;
+      svgLines.push(`<text x="8" y="${MY+4}" fill="var(--text-muted)" font-size="10" font-weight="700">ВЕХИ</text>`);
+      const MS_COLORS = { pending:'#8b95a5', at_risk:'#e8a84c', achieved:'#4adc84', missed:'#f46' };
+      for (const m of milestones) {
+        if (!m.target_date) continue;
+        const mx = xPct(m.target_date);
+        const mc = MS_COLORS[m.status] || '#8b95a5';
+        svgLines.push(
+          `<polygon points="${mx},${MY-8} ${mx+8},${MY} ${mx},${MY+8} ${mx-8},${MY}" fill="${mc}" opacity=".9"/>
+          <text x="${mx}" y="${MY+20}" fill="${mc}" font-size="9" text-anchor="middle">${escapeHtml((m.name||'').slice(0,14))}</text>`
+        );
+      }
+    }
+
+    svgLines.push('</svg>');
+    container.innerHTML = svgLines.join('\n');
+  }
+
+  render();
+  document.getElementById('ganttGroupBy')?.addEventListener('change', render);
+  document.getElementById('ganttRefreshBtn')?.addEventListener('click', render);
 }
 
 async function hydrateReservations(projectId) {
