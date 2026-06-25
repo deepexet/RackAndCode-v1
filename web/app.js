@@ -6897,6 +6897,64 @@ function _bindInventoryEvents() {
     rec.start();
   });
 
+  // Barcode / QR scanner using BarcodeDetector API
+  document.getElementById('invScanBtn')?.addEventListener('click', async () => {
+    if (!('BarcodeDetector' in window)) {
+      // Fallback: use file input with BarcodeDetector-like detection via canvas
+      toast('Сканер штрих-кодов не поддерживается в этом браузере. Используйте Chrome 83+ или Edge.');
+      return;
+    }
+    // Create a video overlay for live scanning
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px';
+    overlay.innerHTML = `
+      <p style="color:#fff;font-size:14px;font-weight:600">Наведите камеру на штрих-код</p>
+      <video id="_scanVideo" style="width:min(90vw,400px);border-radius:12px;border:2px solid #4f8ef7" autoplay playsinline muted></video>
+      <button style="padding:10px 24px;border-radius:8px;border:none;background:#f46;color:#fff;font-size:14px;cursor:pointer" id="_scanCloseBtn">Закрыть</button>`;
+    document.body.appendChild(overlay);
+    const video = overlay.querySelector('#_scanVideo');
+    let stream, animId;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      video.srcObject = stream;
+      await video.play();
+      const detector = new BarcodeDetector({ formats: ['ean_13','ean_8','code_128','code_39','qr_code','upc_a','upc_e'] });
+      const scan = async () => {
+        if (!document.body.contains(overlay)) return;
+        try {
+          const barcodes = await detector.detect(video);
+          if (barcodes.length) {
+            const code = barcodes[0].rawValue;
+            cleanup();
+            toast(`Штрих-код: ${code} — ищу SKU…`);
+            const r = await apiFetch(`/api/v1/inventory/skus?q=${encodeURIComponent(code)}`);
+            const { skus = [] } = await r.json();
+            if (skus.length) {
+              toast(`Найдено: ${skus[0].name} (${skus[0].sku_code})`);
+              // Pre-fill search
+              const inp = document.getElementById('invSkuSearch');
+              if (inp) { inp.value = code; inp.dispatchEvent(new Event('input')); }
+            } else {
+              toast(`SKU с кодом «${code}» не найден`);
+            }
+            return;
+          }
+        } catch {}
+        animId = requestAnimationFrame(scan);
+      };
+      animId = requestAnimationFrame(scan);
+    } catch(e) {
+      cleanup();
+      toast(`Ошибка камеры: ${e.message}`);
+    }
+    function cleanup() {
+      cancelAnimationFrame(animId);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      overlay.remove();
+    }
+    overlay.querySelector('#_scanCloseBtn').addEventListener('click', cleanup);
+  });
+
   document.getElementById('invAiPhotoBtn')?.addEventListener('click', () => {
     document.getElementById('invPhotoInput')?.click();
   });
