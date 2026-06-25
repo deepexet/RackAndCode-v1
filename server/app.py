@@ -9297,8 +9297,6 @@ def main() -> None:
                 LOGGER.warning(json.dumps({"event": "email_poll_error", "error": str(_e)}))
 
     threading.Thread(target=_webhook_flush_loop, args=(store,), daemon=True, name="webhook-flush").start()
-    threading.Thread(target=_maintenance_loop, args=(store, server), daemon=True, name="maintenance").start()
-    threading.Thread(target=_email_poll_loop, args=(store, server), daemon=True, name="email-poll").start()
     initial_password = store.ensure_initial_credentials()
     if initial_password:
         LOGGER.warning(json.dumps({"event": "initial_admin_password", "email": "admin@local.rackpilot", "password": initial_password, "note": "Change this at Admin → Security. Shown only once."}))
@@ -9323,6 +9321,8 @@ def main() -> None:
     _webhook_worker.start()
 
     server = FieldOSServer((args.host, args.port), store, agent_token)
+    threading.Thread(target=_maintenance_loop, args=(store, server), daemon=True, name="maintenance").start()
+    threading.Thread(target=_email_poll_loop, args=(store, server), daemon=True, name="email-poll").start()
 
     def stop(_signum: int, _frame: Any) -> None:
         _webhook_worker.stop()
