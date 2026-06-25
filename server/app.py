@@ -5911,6 +5911,43 @@ def validate_workspace(payload: Any) -> tuple[list[dict[str, Any]], list[dict[st
     return tasks, audit, revision
 
 
+class _RateLimiter:
+    """Token-bucket per-IP rate limiter. stdlib only, thread-safe."""
+    def __init__(self, requests_per_minute: int = 120, burst: int = 30) -> None:
+        self._rpm = requests_per_minute
+        self._burst = burst
+        self._buckets: dict[str, tuple[float, float]] = {}  # ip → (tokens, last_refill_ts)
+        self._lock = threading.Lock()
+
+    def allow(self, ip: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            tokens, last = self._buckets.get(ip, (float(self._burst), now))
+            elapsed = now - last
+            tokens = min(self._burst, tokens + elapsed * (self._rpm / 60.0))
+            if tokens < 1.0:
+                self._buckets[ip] = (tokens, now)
+                return False
+            self._buckets[ip] = (tokens - 1.0, now)
+            return True
+
+    def cleanup(self) -> None:
+        """Drop stale buckets (full buckets older than 10 min)."""
+        now = time.monotonic()
+        with self._lock:
+            self._buckets = {
+                ip: (t, ts) for ip, (t, ts) in self._buckets.items()
+                if now - ts < 600
+            }
+
+
+_RATE_LIMITER = _RateLimiter(requests_per_minute=120, burst=30)
+
+
+class _RateLimited(Exception):
+    """Raised after a 429 response is sent so the handler exits cleanly."""
+
+
 class FieldOSHandler(BaseHTTPRequestHandler):
     server_version = "RackPilot/0.33"
 
@@ -5919,7 +5956,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         return self.server.store  # type: ignore[attr-defined]
 
     def do_GET(self) -> None:
-        self._start_request()
+        try:
+            self._start_request()
+        except _RateLimited:
+            return
         path = urlparse(self.path).path
         if path in {"/api/health", "/api/v1/health"}:
             self._json(HTTPStatus.OK, {"status": "ok", "service": "rackpilot-local", "apiVersion": "v1", "schemaVersion": self.store.migration_result.current_version, "time": utc_now()})
@@ -6572,7 +6612,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         self._serve_static(path)
 
     def do_PUT(self) -> None:
-        self._start_request()
+        try:
+            self._start_request()
+        except _RateLimited:
+            return
         if urlparse(self.path).path not in {"/api/workspace", "/api/v1/workspace"}:
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found")
             return
@@ -6604,7 +6647,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(error))
 
     def do_POST(self) -> None:
-        self._start_request()
+        try:
+            self._start_request()
+        except _RateLimited:
+            return
         path = urlparse(self.path).path
         parts = path.strip("/").split("/")
         if path == "/api/v1/auth/login":
@@ -7860,6 +7906,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
 
     def _start_request(self) -> None:
         self.request_started_at = time.perf_counter()
+        # Rate-limit by real IP (X-Forwarded-For first, then socket peer)
+        client_ip = self.headers.get("X-Forwarded-For", self.client_address[0]).split(",")[0].strip()
+        if not _RATE_LIMITER.allow(client_ip):
+            self.request_id = str(uuid.uuid4())
+            self._error(HTTPStatus.TOO_MANY_REQUESTS, "rate_limited",
+                        "Too many requests — please slow down")
+            raise _RateLimited()
         candidate = self.headers.get("X-Request-ID", "")
         self.request_id = candidate if 0 < len(candidate) <= 64 and all(character.isalnum() or character in "-_." for character in candidate) else str(uuid.uuid4())
         parsed_url = urlparse(self.path)
