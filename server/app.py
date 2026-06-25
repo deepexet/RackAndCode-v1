@@ -4059,12 +4059,12 @@ Rules:
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO inventory_skus (id,organization_id,sku_code,name,description,category,unit,"
-                "unit_cost,currency,tags,active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)",
+                "unit_cost,currency,tags,barcode,active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)",
                 (sid, org, sku_code, name, str(payload.get("description",""))[:500],
                  str(payload.get("category","general"))[:50],
                  str(payload.get("unit","pcs"))[:20],
                  payload.get("unitCost"), str(payload.get("currency","USD"))[:3],
-                 tags, now, now),
+                 tags, str(payload.get("barcode",""))[:100], now, now),
             )
             row = conn.execute("SELECT * FROM inventory_skus WHERE id=?", (sid,)).fetchone()
         d = dict(row)
@@ -4080,7 +4080,7 @@ Rules:
             fields, params = [], []
             for key, col in [("name","name"),("skuCode","sku_code"),("description","description"),
                               ("category","category"),("unit","unit"),("unitCost","unit_cost"),
-                              ("currency","currency")]:
+                              ("currency","currency"),("barcode","barcode")]:
                 if key in payload:
                     val = payload[key]
                     if col == "sku_code": val = str(val).strip().upper()
@@ -4115,8 +4115,8 @@ Rules:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM inventory_skus WHERE organization_id=? AND active=1 "
-                "AND (name LIKE ? OR sku_code LIKE ? OR description LIKE ?) ORDER BY name LIMIT 20",
-                (org, pattern, pattern, pattern),
+                "AND (name LIKE ? OR sku_code LIKE ? OR description LIKE ? OR barcode LIKE ?) ORDER BY name LIMIT 20",
+                (org, pattern, pattern, pattern, pattern),
             ).fetchall()
         result = []
         for r in rows:
