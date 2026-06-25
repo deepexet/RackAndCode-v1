@@ -6680,7 +6680,7 @@ async function _loadSkuCatalog() {
       <thead><tr style="color:var(--text-muted);text-align:left">
         <th style="padding:6px 8px">Код</th><th style="padding:6px 8px">Наименование</th>
         <th style="padding:6px 8px">Категория</th><th style="padding:6px 8px">Ед.</th>
-        <th style="padding:6px 8px">Цена</th><th style="padding:6px 8px"></th>
+        <th style="padding:6px 8px">Цена</th><th style="padding:6px 8px">Штрих-код</th><th style="padding:6px 8px"></th>
       </tr></thead>
       <tbody>${skus.map(s => `<tr style="border-top:1px solid var(--border)">
         <td style="padding:7px 8px;font-family:monospace">${escapeHtml(s.sku_code)}</td>
@@ -6688,11 +6688,13 @@ async function _loadSkuCatalog() {
         <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.category)}</td>
         <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.unit)}</td>
         <td style="padding:7px 8px;color:var(--text-muted)">${s.unit_cost != null ? `${s.unit_cost} ${s.currency||''}` : '—'}</td>
+        <td style="padding:7px 8px;color:var(--text-muted);font-size:10px;font-family:monospace">${escapeHtml(s.barcode||'')}</td>
         <td style="padding:7px 8px;white-space:nowrap;display:flex;gap:4px">
           <button class="text-button" data-sku-edit="${s.id}"
             data-sku-code="${escapeHtml(s.sku_code)}" data-sku-name="${escapeHtml(s.name)}"
             data-sku-cat="${escapeHtml(s.category)}" data-sku-unit="${escapeHtml(s.unit)}"
             data-sku-cost="${s.unit_cost??''}" data-sku-cur="${escapeHtml(s.currency||'USD')}"
+            data-sku-barcode="${escapeHtml(s.barcode||'')}"
             style="font-size:11px">✏</button>
           <button class="text-button" data-sku-del="${s.id}" style="font-size:11px;color:var(--text-muted)">✕</button>
         </td>
@@ -6709,11 +6711,12 @@ async function _loadSkuCatalog() {
         const unit = prompt('Единица измерения:', btn.dataset.skuUnit) ?? btn.dataset.skuUnit;
         const costStr = prompt('Цена за единицу (пусто = нет):', btn.dataset.skuCost);
         const currency = prompt('Валюта:', btn.dataset.skuCur) ?? 'USD';
+        const barcode = prompt('Штрих-код / EAN (пусто = нет):', btn.dataset.skuBarcode ?? '') ?? '';
         const unitCost = costStr?.trim() ? parseFloat(costStr) : null;
         try {
           const r = await apiFetch(`/api/v1/inventory/skus/${id}/update`, {
             method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
-            body: JSON.stringify({ name, skuCode, category, unit, unitCost, currency }),
+            body: JSON.stringify({ name, skuCode, category, unit, unitCost, currency, barcode }),
           });
           if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
           toast('SKU обновлён'); _loadSkuCatalog();
