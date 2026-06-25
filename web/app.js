@@ -6831,6 +6831,47 @@ function _bindInventoryEvents() {
         : '<p class="empty-copy" style="font-size:13px">Ничего не найдено.</p>';
     } catch { /* silent */ }
   });
+  // Transfer between warehouses
+  document.getElementById('invTransferBtn')?.addEventListener('click', async () => {
+    const whR = await apiFetch('/api/v1/inventory/warehouses');
+    const { warehouses = [] } = await whR.json();
+    if (warehouses.length < 2) { toast('Нужно минимум 2 склада для перемещения.'); return; }
+    const fromOptions = warehouses.map((w,i) => `${i+1}. ${w.name}`).join('\n');
+    const fromIdx = parseInt(prompt(`Склад-источник:\n${fromOptions}`, _invSelectedWarehouse ? String(warehouses.findIndex(w=>w.id===_invSelectedWarehouse)+1) : '1') || '0') - 1;
+    if (fromIdx < 0 || fromIdx >= warehouses.length) return;
+    const fromWh = warehouses[fromIdx];
+
+    const toOpts = warehouses.filter((_,i)=>i!==fromIdx).map((w,i) => `${i+1}. ${w.name}`).join('\n');
+    const toFiltered = warehouses.filter((_,i)=>i!==fromIdx);
+    const toIdx = parseInt(prompt(`Склад-назначение:\n${toOpts}`, '1') || '0') - 1;
+    if (toIdx < 0 || toIdx >= toFiltered.length) return;
+    const toWh = toFiltered[toIdx];
+
+    const skuR = await apiFetch(`/api/v1/inventory/stock?warehouseId=${fromWh.id}`);
+    const { stock = [] } = await skuR.json();
+    if (!stock.length) { toast(`На складе "${fromWh.name}" нет остатков.`); return; }
+    const skuOpts = stock.map((s,i) => `${i+1}. ${s.sku_name} (${s.sku_code}) — ${s.quantity} ${s.unit}`).join('\n');
+    const skuIdx = parseInt(prompt(`Материал для перемещения:\n${skuOpts}`, '1') || '0') - 1;
+    if (skuIdx < 0 || skuIdx >= stock.length) return;
+    const sku = stock[skuIdx];
+
+    const qty = parseFloat(prompt(`Количество (макс ${sku.quantity} ${sku.unit}):`) || '0');
+    if (!qty || isNaN(qty) || qty <= 0) return;
+    const ref = prompt('Документ/ссылка (опционально):', '') || '';
+
+    try {
+      const r = await apiFetch('/api/v1/inventory/transfer', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({
+          fromWarehouseId: fromWh.id, toWarehouseId: toWh.id,
+          skuId: sku.sku_id, quantity: qty, reference: ref,
+        }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast(`Перемещено ${qty} ${sku.unit} из "${fromWh.name}" в "${toWh.name}"`);
+      if (_invSelectedWarehouse) _loadStock(_invSelectedWarehouse);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
   // Add movement (full form)
   document.getElementById('invAddMovementBtn')?.addEventListener('click', async () => {
     if (!_invSelectedWarehouse) { toast('Сначала выберите склад'); return; }

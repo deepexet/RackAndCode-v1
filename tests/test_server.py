@@ -1089,6 +1089,37 @@ class WorkspaceStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.create_reservation(DEFAULT_ORGANIZATION_ID, pid, wid, sid, 99999.0)
 
+    def test_transfer_between_warehouses(self):
+        wh1 = self.store.create_warehouse(DEFAULT_ORGANIZATION_ID, {"name": "Transfer WH A", "location": "A"})
+        wh2 = self.store.create_warehouse(DEFAULT_ORGANIZATION_ID, {"name": "Transfer WH B", "location": "B"})
+        sku = self.store.create_sku(DEFAULT_ORGANIZATION_ID, {"skuCode": "TRANS-01", "name": "Transfer SKU", "unit": "pcs"})
+        # Stock up wh1
+        self.store.record_movement(DEFAULT_ORGANIZATION_ID, {
+            "warehouseId": wh1["id"], "skuId": sku["id"],
+            "movementType": "receive", "quantity": 100, "reference": "", "note": "",
+        })
+        result = self.store.transfer_stock(
+            DEFAULT_ORGANIZATION_ID, wh1["id"], wh2["id"], sku["id"], 40.0, "PO-TRANS"
+        )
+        self.assertIn("outMovementId", result)
+        self.assertIn("inMovementId", result)
+        # Verify stock levels
+        stock = self.store.get_stock_levels(DEFAULT_ORGANIZATION_ID)
+        by_wh = {s["warehouse_id"]: s["quantity"] for s in stock if s["sku_id"] == sku["id"]}
+        self.assertEqual(by_wh[wh1["id"]], 60.0)
+        self.assertEqual(by_wh[wh2["id"]], 40.0)
+
+    def test_transfer_insufficient_raises(self):
+        wh1 = self.store.create_warehouse(DEFAULT_ORGANIZATION_ID, {"name": "T WH X", "location": "X"})
+        wh2 = self.store.create_warehouse(DEFAULT_ORGANIZATION_ID, {"name": "T WH Y", "location": "Y"})
+        sku = self.store.create_sku(DEFAULT_ORGANIZATION_ID, {"skuCode": "TRANS-02", "name": "Transfer SKU 2", "unit": "pcs"})
+        self.store.record_movement(DEFAULT_ORGANIZATION_ID, {
+            "warehouseId": wh1["id"], "skuId": sku["id"],
+            "movementType": "receive", "quantity": 5, "reference": "", "note": "",
+        })
+        with self.assertRaises(ValueError):
+            self.store.transfer_stock(DEFAULT_ORGANIZATION_ID, wh1["id"], wh2["id"], sku["id"], 999.0)
+
     def test_issue_list_by_project(self):
         proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "ISS", "name": "Issue Test"})
         self._make_issue(proj["id"], "Critical Fault", "critical")

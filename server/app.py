@@ -4153,6 +4153,62 @@ Rules:
             "createdAt": now,
         }
 
+    def transfer_stock(self, org: str, from_warehouse_id: str, to_warehouse_id: str,
+                       sku_id: str, quantity: float, reference: str = "",
+                       note: str = "", recorded_by: str | None = None) -> dict[str, Any]:
+        """Atomic transfer between two warehouses in one transaction."""
+        if from_warehouse_id == to_warehouse_id:
+            raise ValueError("Source and destination warehouse must differ")
+        if quantity <= 0:
+            raise ValueError("quantity must be positive")
+        now = utc_now()
+        out_id = str(uuid.uuid4())
+        in_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            for wid in (from_warehouse_id, to_warehouse_id):
+                if not conn.execute("SELECT 1 FROM warehouses WHERE id=? AND organization_id=?",
+                                    (wid, org)).fetchone():
+                    raise LookupError(f"Warehouse {wid} not found")
+            if not conn.execute("SELECT 1 FROM inventory_skus WHERE id=? AND organization_id=?",
+                                (sku_id, org)).fetchone():
+                raise LookupError("SKU not found")
+            # Check source has enough
+            src = conn.execute(
+                "SELECT quantity FROM inventory_stock WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                (org, from_warehouse_id, sku_id)
+            ).fetchone()
+            if not src or src["quantity"] < quantity:
+                raise ValueError(f"Insufficient stock: have {src['quantity'] if src else 0}, need {quantity}")
+            # Deduct from source
+            conn.execute(
+                "UPDATE inventory_stock SET quantity=MAX(0,quantity-?), updated_at=? "
+                "WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                (quantity, now, org, from_warehouse_id, sku_id)
+            )
+            conn.execute(
+                "INSERT INTO inventory_movements (id,organization_id,warehouse_id,sku_id,movement_type,"
+                "quantity,reference,note,source,recorded_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (out_id, org, from_warehouse_id, sku_id, "transfer", -quantity, reference, note, "manual", recorded_by, now),
+            )
+            # Add to destination
+            conn.execute(
+                "INSERT INTO inventory_stock (id,organization_id,warehouse_id,sku_id,quantity,reserved,updated_at) "
+                "VALUES (?,?,?,?,?,0,?) "
+                "ON CONFLICT(warehouse_id,sku_id) DO UPDATE SET quantity=quantity+?, updated_at=?",
+                (str(uuid.uuid4()), org, to_warehouse_id, sku_id, quantity, now, quantity, now),
+            )
+            conn.execute(
+                "INSERT INTO inventory_movements (id,organization_id,warehouse_id,sku_id,movement_type,"
+                "quantity,reference,note,source,recorded_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (in_id, org, to_warehouse_id, sku_id, "transfer", quantity, reference, note, "manual", recorded_by, now),
+            )
+        self.audit(org, recorded_by, None, "inventory.transfer", "inventory_movement", out_id)
+        return {
+            "outMovementId": out_id, "inMovementId": in_id,
+            "fromWarehouseId": from_warehouse_id, "toWarehouseId": to_warehouse_id,
+            "skuId": sku_id, "quantity": quantity, "createdAt": now,
+        }
+
     def list_movements(self, org: str, sku_id: str | None = None,
                        warehouse_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         where = ["m.organization_id=?"]
@@ -8406,6 +8462,20 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     data = self.rfile.read(content_length)
                     pending = self.store.import_xlsx_inventory(org, data, self.current_role)
                     self._json(HTTPStatus.CREATED, pending); return
+                if sub == "transfer":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    result = self.store.transfer_stock(
+                        org,
+                        from_warehouse_id=str(payload["fromWarehouseId"]),
+                        to_warehouse_id=str(payload["toWarehouseId"]),
+                        sku_id=str(payload["skuId"]),
+                        quantity=float(payload["quantity"]),
+                        reference=str(payload.get("reference","")),
+                        note=str(payload.get("note","")),
+                        recorded_by=payload.get("recordedBy", self.current_role),
+                    )
+                    self._json(HTTPStatus.CREATED, result); return
                 if sub == "stock-settings":
                     if not self._require_permission("projectManage"): return
                     payload = self._read_json()
