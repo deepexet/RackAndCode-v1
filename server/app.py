@@ -4264,13 +4264,16 @@ Rules:
         }
 
     def list_movements(self, org: str, sku_id: str | None = None,
-                       warehouse_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+                       warehouse_id: str | None = None, limit: int = 100,
+                       movement_type: str | None = None) -> list[dict[str, Any]]:
         where = ["m.organization_id=?"]
         params: list[Any] = [org]
         if sku_id:
             where.append("m.sku_id=?"); params.append(sku_id)
         if warehouse_id:
             where.append("m.warehouse_id=?"); params.append(warehouse_id)
+        if movement_type:
+            where.append("m.movement_type=?"); params.append(movement_type)
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(
@@ -7620,7 +7623,8 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 sku_id = self.query_params.get("skuId",[None])[0]
                 wh = self.query_params.get("warehouseId",[None])[0]
                 limit = int(self.query_params.get("limit",["100"])[0])
-                self._json(HTTPStatus.OK, {"movements": self.store.list_movements(org, sku_id, wh, limit)}); return
+                mtype = self.query_params.get("type",[None])[0]
+                self._json(HTTPStatus.OK, {"movements": self.store.list_movements(org, sku_id, wh, limit, mtype)}); return
             if sub == "pending":
                 status = self.query_params.get("status",["pending"])[0]
                 self._json(HTTPStatus.OK, {"pending": self.store.list_inventory_pending(org, status)}); return

@@ -6731,6 +6731,71 @@ function _bindInventoryEvents() {
   document.getElementById('invPendingCloseBtn')?.addEventListener('click', () => {
     const p = document.getElementById('inventoryPendingPanel'); if (p) p.style.display = 'none';
   });
+
+  // Movement history panel
+  const _MT_LABELS = { receive:'Приход', issue:'Расход', transfer:'Перемещение',
+    adjustment:'Корректировка', return:'Возврат', loss:'Списание' };
+  const _MT_COLORS = { receive:'#4adc84', issue:'#f46', transfer:'#4f8ef7',
+    adjustment:'#e8a84c', return:'#a78bfa', loss:'#f46' };
+
+  async function _loadHistory() {
+    const list = document.getElementById('inventoryHistoryList');
+    if (!list) return;
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    const typeFilter = document.getElementById('invHistoryTypeFilter')?.value || '';
+    const whParam = _invSelectedWarehouse ? `&warehouseId=${_invSelectedWarehouse}` : '';
+    const typeParam = typeFilter ? `&type=${typeFilter}` : '';
+    try {
+      const r = await apiFetch(`/api/v1/inventory/movements?limit=200${whParam}${typeParam}`);
+      const { movements = [] } = await r.json();
+      if (!movements.length) {
+        list.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет движений.</p>'; return;
+      }
+      list.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--text-muted);text-align:left">
+          <th style="padding:6px 8px">Дата</th>
+          <th style="padding:6px 8px">Тип</th>
+          <th style="padding:6px 8px">SKU</th>
+          <th style="padding:6px 8px">Кол-во</th>
+          <th style="padding:6px 8px">Склад</th>
+          <th style="padding:6px 8px">Ссылка</th>
+          <th style="padding:6px 8px">Источник</th>
+        </tr></thead>
+        <tbody>${movements.map(m => {
+          const color = _MT_COLORS[m.movement_type] || '#8b95a5';
+          const qty = m.quantity > 0 ? `+${m.quantity}` : String(m.quantity);
+          return `<tr style="border-top:1px solid var(--border)">
+            <td style="padding:6px 8px;color:var(--text-muted);white-space:nowrap;font-size:11px">${(m.created_at||'').slice(0,16).replace('T',' ')}</td>
+            <td style="padding:6px 8px">
+              <span style="font-size:10px;padding:2px 7px;border-radius:8px;background:${color}22;color:${color};font-weight:600">${_MT_LABELS[m.movement_type]||m.movement_type}</span>
+            </td>
+            <td style="padding:6px 8px">
+              <strong style="font-size:11px">${escapeHtml(m.sku_name||m.sku_id)}</strong>
+              <span style="font-size:10px;font-family:monospace;color:var(--text-muted);margin-left:4px">${escapeHtml(m.sku_code||'')}</span>
+            </td>
+            <td style="padding:6px 8px;font-weight:700;color:${color}">${qty} ${escapeHtml(m.unit||'')}</td>
+            <td style="padding:6px 8px;color:var(--text-muted);font-size:11px">${escapeHtml(m.warehouse_name||'')}</td>
+            <td style="padding:6px 8px;color:var(--text-muted);font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.reference||'—')}</td>
+            <td style="padding:6px 8px;font-size:10px;color:var(--text-muted)">${escapeHtml(m.source||'')}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`;
+    } catch { list.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+  }
+
+  document.getElementById('invHistoryBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventoryHistoryPanel');
+    const pendingPanel = document.getElementById('inventoryPendingPanel');
+    const skuPanel = document.getElementById('inventorySkuPanel');
+    if (pendingPanel) pendingPanel.style.display = 'none';
+    if (skuPanel) skuPanel.style.display = 'none';
+    if (panel) { panel.style.display = panel.style.display === 'none' ? '' : 'none'; if (panel.style.display !== 'none') _loadHistory(); }
+  });
+  document.getElementById('invHistoryCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventoryHistoryPanel'); if (p) p.style.display = 'none';
+  });
+  document.getElementById('invHistoryTypeFilter')?.addEventListener('change', _loadHistory);
+
   // SKU catalog
   document.getElementById('invManageSkusBtn')?.addEventListener('click', () => {
     const panel = document.getElementById('inventorySkuPanel');

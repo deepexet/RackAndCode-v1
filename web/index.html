@@ -232,6 +232,7 @@
             <span id="pendingBadge" style="font-size:11px;background:var(--accent);color:#fff;border-radius:10px;padding:1px 6px;display:none">0</span>
           </div>
           <button class="button ghost" id="invPendingBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start">Очередь одобрения</button>
+          <button class="button ghost" id="invHistoryBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">История движений</button>
         </aside>
 
         <!-- Main: stock table -->
@@ -242,6 +243,26 @@
           </div>
           <div id="inventoryStockTable"><p class="empty-copy">Выберите склад или загрузите данные.</p></div>
         </div>
+      </div>
+
+      <!-- Movement history panel -->
+      <div id="inventoryHistoryPanel" style="display:none;margin-top:20px">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">ДВИЖЕНИЯ</p><h2>История движений</h2></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <select id="invHistoryTypeFilter" style="padding:4px 8px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+              <option value="">Все типы</option>
+              <option value="receive">Приход</option>
+              <option value="issue">Расход</option>
+              <option value="transfer">Перемещение</option>
+              <option value="adjustment">Корректировка</option>
+              <option value="return">Возврат</option>
+              <option value="loss">Списание</option>
+            </select>
+            <button class="button ghost" id="invHistoryCloseBtn" type="button">✕</button>
+          </div>
+        </div>
+        <div id="inventoryHistoryList"></div>
       </div>
 
       <!-- Pending approval panel -->
