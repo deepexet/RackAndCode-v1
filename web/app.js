@@ -3801,7 +3801,31 @@ function renderProjectDetail() {
       <div id="workItemsFullList" style="display:flex;flex-direction:column;gap:6px;margin-top:6px"></div>
     </section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
-    <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
+    <article class="detail-panel">
+      <div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div>
+        <div style="display:flex;gap:6px">
+          <b class="issue-count">${openIssues.length}</b>
+          ${canManage ? `<button class="button ghost" id="addIssueBtn" type="button" style="font-size:11px">＋ Проблема</button>` : ''}
+        </div>
+      </div>
+      <div class="issue-list" id="issuesList">
+        ${openIssues.length ? openIssues.map(issue => `
+          <div class="issue-item ${issue.severity}" data-issue-id="${issue.id}">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+              <div>
+                <span style="font-size:10px;font-weight:600;text-transform:uppercase">${escapeHtml(issue.severity)}</span>
+                <strong style="display:block;margin:2px 0 2px">${escapeHtml(issue.title)}</strong>
+                <small style="color:var(--text-muted)">${escapeHtml(issue.description)}</small>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;align-items:flex-end">
+                <span style="font-size:10px;padding:2px 6px;border-radius:8px;background:rgba(79,142,247,.12);color:var(--accent)">${escapeHtml(issue.status_v2||issue.status||'open')}</span>
+                ${canManage ? `<button type="button" class="text-button" style="font-size:10px" data-issue-transition="${issue.id}">Изменить статус</button>` : ''}
+                ${canManage ? `<button type="button" class="text-button" style="font-size:10px" data-issue-assign="${issue.id}">Назначить</button>` : ''}
+              </div>
+            </div>
+          </div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}
+      </div>
+    </article></section>
     <section class="detail-section" id="milestonesSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">ROADMAP</p><h2>Вехи проекта</h2></div>
@@ -4133,6 +4157,81 @@ function renderProjectDetail() {
   setupWorkItemsBulkList(project);
   hydrateProjectWorkload(project.id);
   hydrateMilestones(project.id);
+  setupIssuesPanel(project.id);
+}
+
+const _ISSUE_STATUS_LABELS = {open:'Открыта',in_progress:'В работе',resolved:'Решена',closed:'Закрыта',wont_fix:'Не исправим'};
+const _ISSUE_TRANSITIONS = {open:['in_progress','wont_fix'],in_progress:['resolved','open'],resolved:['closed','open'],closed:['open'],wont_fix:['open']};
+
+function setupIssuesPanel(projectId) {
+  // Add issue
+  document.getElementById('addIssueBtn')?.addEventListener('click', async () => {
+    const title = prompt('Название проблемы:');
+    if (!title?.trim()) return;
+    const sev = prompt('Серьёзность (low/medium/high/critical):', 'medium');
+    if (!['low','medium','high','critical'].includes(sev||'')) { toast('Неверная серьёзность'); return; }
+    try {
+      const r = await apiFetch(`/api/v1/projects/${projectId}/issues`, {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ title: title.trim(), severity: sev, description: '' }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('Проблема добавлена');
+      await reloadProjectData(projectId);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+  // Transition buttons
+  document.querySelectorAll('[data-issue-transition]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const issueId = btn.dataset.issueTransition;
+      const issues = await (await apiFetch(`/api/v1/issues?projectId=${projectId}`)).json();
+      const issue = (issues.issues||[]).find(i => i.id === issueId);
+      if (!issue) return;
+      const current = issue.status_v2 || issue.status || 'open';
+      const options = _ISSUE_TRANSITIONS[current] || [];
+      if (!options.length) { toast('Нет доступных переходов'); return; }
+      const choices = options.map(s => `${s}: ${_ISSUE_STATUS_LABELS[s]}`).join('\n');
+      const newStatus = prompt(`Перевести в статус:\n${choices}`, options[0]);
+      if (!newStatus || !options.includes(newStatus)) return;
+      let note = '';
+      if (newStatus === 'resolved') note = prompt('Примечание к решению (опционально):') || '';
+      try {
+        const r = await apiFetch(`/api/v1/issues/${issueId}/transition`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ status: newStatus, resolutionNote: note }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+        toast(`Статус → ${_ISSUE_STATUS_LABELS[newStatus]}`);
+        await reloadProjectData(projectId);
+      } catch(e) { toast(`Ошибка: ${e.message}`); }
+    });
+  });
+  // Assign buttons
+  document.querySelectorAll('[data-issue-assign]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const issueId = btn.dataset.issueAssign;
+      const assignee = prompt('Имя или ID исполнителя:');
+      if (!assignee?.trim()) return;
+      try {
+        const r = await apiFetch(`/api/v1/issues/${issueId}/assign`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ assignedTo: assignee.trim() }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+        toast('Исполнитель назначен');
+        await reloadProjectData(projectId);
+      } catch(e) { toast(`Ошибка: ${e.message}`); }
+    });
+  });
+}
+
+async function reloadProjectData(projectId) {
+  try {
+    const r = await apiFetch(`/api/v1/projects/${projectId}`);
+    const { project } = await r.json();
+    const idx = projects.findIndex(p => p.id === projectId);
+    if (idx !== -1) { projects[idx] = project; renderProjectDetail(); }
+  } catch { /* silent */ }
 }
 
 const _MILESTONE_STATUS_LABELS = {pending:'Ожидается',at_risk:'Под риском',achieved:'Достигнута',missed:'Пропущена'};

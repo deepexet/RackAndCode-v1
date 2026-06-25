@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "059")
+        self.assertEqual(first.current_version, "061")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -890,6 +890,54 @@ class WorkspaceStoreTests(unittest.TestCase):
         # Bucket should be cleared (last_ts now >> 600s ago? No—cleanup keeps recent)
         # Just check no exception raised and data still present for recent IPs
         self.assertIsNotNone(rl)
+
+
+
+    def test_audit_integrity_on_empty_log(self):
+        result = self.store.verify_audit_integrity(DEFAULT_ORGANIZATION_ID)
+        self.assertTrue(result["valid"])
+        self.assertGreaterEqual(result["eventCount"], 0)
+
+    def test_work_item_comment_add_and_list(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "CMT", "name": "Comment Test", "kind": "customer"})
+        wi = self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "Wi for comment", "workTypeId": "data", "actionId": "data-prewire"})
+        comment = self.store.add_wi_comment(DEFAULT_ORGANIZATION_ID, wi["id"], proj["id"], "First comment", None, "Tester")
+        self.assertEqual(comment["body"], "First comment")
+        comments = self.store.list_wi_comments(DEFAULT_ORGANIZATION_ID, wi["id"])
+        self.assertEqual(len(comments), 1)
+
+    def test_work_item_comment_edit_and_delete(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "CMT2", "name": "Cmt Edit", "kind": "customer"})
+        wi = self.store.create_work_item(DEFAULT_ORGANIZATION_ID, proj["id"], {"title": "Wi2", "workTypeId": "data", "actionId": "data-prewire"})
+        comment = self.store.add_wi_comment(DEFAULT_ORGANIZATION_ID, wi["id"], proj["id"], "Draft", None, "Tester")
+        edited = self.store.edit_wi_comment(DEFAULT_ORGANIZATION_ID, comment["id"], "Final text")
+        self.assertEqual(edited["body"], "Final text")
+        self.assertEqual(edited["edited"], 1)
+        self.store.delete_wi_comment(DEFAULT_ORGANIZATION_ID, comment["id"])
+        self.assertEqual(self.store.list_wi_comments(DEFAULT_ORGANIZATION_ID, wi["id"]), [])
+
+    def test_budget_set_and_summary(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "BUD", "name": "Budget Test"})
+        self.store.set_project_budget(DEFAULT_ORGANIZATION_ID, proj["id"], 50000.0, "USD")
+        self.store.add_expense(DEFAULT_ORGANIZATION_ID, proj["id"], {
+            "amount": 12500.0, "category": "materials", "expenseDate": "2026-06-01"
+        })
+        self.store.add_expense(DEFAULT_ORGANIZATION_ID, proj["id"], {
+            "amount": 7500.0, "category": "labour", "expenseDate": "2026-06-10"
+        })
+        summary = self.store.get_budget_summary(DEFAULT_ORGANIZATION_ID, proj["id"])
+        self.assertEqual(summary["budgetAmount"], 50000.0)
+        self.assertAlmostEqual(summary["totalSpent"], 20000.0)
+        self.assertAlmostEqual(summary["remaining"], 30000.0)
+        self.assertAlmostEqual(summary["utilizationPct"], 40.0)
+
+    def test_expense_delete(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "BUD2", "name": "Expense Del"})
+        exp = self.store.add_expense(DEFAULT_ORGANIZATION_ID, proj["id"], {
+            "amount": 100.0, "category": "other", "expenseDate": "2026-06-01"
+        })
+        self.store.delete_expense(DEFAULT_ORGANIZATION_ID, exp["id"])
+        self.assertEqual(self.store.list_expenses(DEFAULT_ORGANIZATION_ID, proj["id"]), [])
 
 
     def test_issue_list_by_project(self):

@@ -3692,6 +3692,133 @@ Rules:
             "criticalIssues": critical_issues,
         }
 
+    # ── Budget Tracking ───────────────────────────────────────────────────────
+
+    def get_budget_summary(self, org: str, project_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            proj = conn.execute(
+                "SELECT budget_amount, budget_currency FROM projects WHERE organization_id=? AND id=?",
+                (org, project_id),
+            ).fetchone()
+            rows = conn.execute(
+                "SELECT SUM(amount) as total, category FROM project_expenses "
+                "WHERE organization_id=? AND project_id=? GROUP BY category",
+                (org, project_id),
+            ).fetchall()
+        if not proj:
+            raise LookupError("Project not found")
+        spent = sum(r["total"] for r in rows if r["total"])
+        by_cat = {r["category"]: r["total"] for r in rows}
+        budget = proj["budget_amount"]
+        return {
+            "projectId": project_id,
+            "budgetAmount": budget,
+            "budgetCurrency": proj["budget_currency"] or "USD",
+            "totalSpent": spent,
+            "remaining": (budget - spent) if budget is not None else None,
+            "utilizationPct": round((spent / budget * 100), 1) if budget else None,
+            "byCategory": by_cat,
+        }
+
+    def list_expenses(self, org: str, project_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM project_expenses WHERE organization_id=? AND project_id=? ORDER BY expense_date DESC",
+                (org, project_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_expense(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        amount = payload.get("amount")
+        if not isinstance(amount, (int, float)) or amount <= 0:
+            raise ValueError("amount must be a positive number")
+        expense_date = str(payload.get("expenseDate", utc_now()[:10]))
+        eid = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_expenses (id,organization_id,project_id,category,description,"
+                "amount,currency,expense_date,recorded_by,receipt_ref,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (eid, org, project_id,
+                 str(payload.get("category","other"))[:50],
+                 str(payload.get("description",""))[:500],
+                 float(amount),
+                 str(payload.get("currency","USD"))[:3],
+                 expense_date,
+                 payload.get("recordedBy"),
+                 payload.get("receiptRef"),
+                 now, now),
+            )
+            row = conn.execute("SELECT * FROM project_expenses WHERE id=?", (eid,)).fetchone()
+        return dict(row)
+
+    def set_project_budget(self, org: str, project_id: str, amount: float | None, currency: str = "USD") -> None:
+        with self._connect() as conn:
+            result = conn.execute(
+                "UPDATE projects SET budget_amount=?, budget_currency=? WHERE organization_id=? AND id=?",
+                (amount, currency[:3], org, project_id),
+            )
+            if result.rowcount == 0:
+                raise LookupError("Project not found")
+
+    def delete_expense(self, org: str, expense_id: str) -> None:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM project_expenses WHERE id=? AND organization_id=?", (expense_id, org)
+            )
+            if result.rowcount == 0:
+                raise LookupError("Expense not found")
+
+    # ── Work Item Comments ────────────────────────────────────────────────────
+
+    def list_wi_comments(self, org: str, work_item_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM work_item_comments WHERE organization_id=? AND work_item_id=? ORDER BY created_at",
+                (org, work_item_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_wi_comment(self, org: str, work_item_id: str, project_id: str,
+                       body: str, author_id: str | None, author_name: str) -> dict[str, Any]:
+        body = str(body).strip()
+        if not body:
+            raise ValueError("Comment body required")
+        cid = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO work_item_comments (id,organization_id,work_item_id,project_id,"
+                "author_id,author_name,body,edited,created_at,updated_at) VALUES (?,?,?,?,?,?,?,0,?,?)",
+                (cid, org, work_item_id, project_id, author_id, author_name[:100], body[:4000], now, now),
+            )
+            row = conn.execute("SELECT * FROM work_item_comments WHERE id=?", (cid,)).fetchone()
+        return dict(row)
+
+    def edit_wi_comment(self, org: str, comment_id: str, body: str) -> dict[str, Any]:
+        body = str(body).strip()
+        if not body:
+            raise ValueError("Comment body required")
+        now = utc_now()
+        with self._connect() as conn:
+            result = conn.execute(
+                "UPDATE work_item_comments SET body=?,edited=1,updated_at=? WHERE id=? AND organization_id=?",
+                (body[:4000], now, comment_id, org),
+            )
+            if result.rowcount == 0:
+                raise LookupError("Comment not found")
+            row = conn.execute("SELECT * FROM work_item_comments WHERE id=?", (comment_id,)).fetchone()
+        return dict(row)
+
+    def delete_wi_comment(self, org: str, comment_id: str) -> None:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM work_item_comments WHERE id=? AND organization_id=?", (comment_id, org)
+            )
+            if result.rowcount == 0:
+                raise LookupError("Comment not found")
+
     # ── Project Milestones ────────────────────────────────────────────────────
 
     _MILESTONE_STATUSES = {"pending", "at_risk", "achieved", "missed"}
@@ -6365,6 +6492,44 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             result = self.store.sweep_overdue_items(self.organization_id)
             self._json(HTTPStatus.OK, result)
             return
+        # Budget: GET /api/v1/projects/:id/budget  and  /expenses
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "budget":
+            if not self._require_permission("projectRead"): return
+            try:
+                self._json(HTTPStatus.OK, self.store.get_budget_summary(self.organization_id, parts[4]))
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "expenses":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"expenses": self.store.list_expenses(self.organization_id, parts[4])})
+            return
+        # Work item comments: GET /api/v1/work-items/:id/comments
+        if len(parts) == 5 and parts[3] == "work-items" and parts[4] == "comments":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"comments": self.store.list_comments(self.organization_id, parts[3])})
+            return
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "work-items":
+            pass  # handled in project detail
+        if len(parts) == 7 and parts[3] == "projects" and parts[5] == "work-items" and parts[6] == "comments":
+            if not self._require_permission("projectRead"): return
+            wi_id = parts[4] if parts[3] == "projects" else parts[4]
+            # route: /api/v1/projects/:pid/work-items/:wid/comments — extract wid
+            wi_id = parts[6] if parts[5] == "work-items" else parts[4]
+            # Correct parse: parts = ['','api','v1','projects',pid,'work-items',wid,'comments'] — len 8
+            pass
+        if len(parts) == 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "comments":
+            if not self._require_permission("projectRead"): return
+            wi_id = parts[6]
+            self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
+            return
+        # Audit integrity: GET /api/v1/admin/audit-integrity
+        if path == "/api/v1/admin/audit-integrity":
+            if not self._require_permission("adminPanel"): return
+            project_id = self.query_params.get("projectId", [None])[0]
+            result = self.store.verify_audit_integrity(self.organization_id, project_id)
+            self._json(HTTPStatus.OK, result)
+            return
         # Org settings: GET /api/v1/admin/org-settings
         if path == "/api/v1/admin/org-settings":
             if not self._require_permission("adminPanel"): return
@@ -7069,6 +7234,74 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
+        # Budget: POST /api/v1/projects/:id/budget  /expenses  /expenses/:eid/delete
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "budget":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                self.store.set_project_budget(self.organization_id, parts[4],
+                    payload.get("amount"), str(payload.get("currency","USD")))
+                self._json(HTTPStatus.OK, self.store.get_budget_summary(self.organization_id, parts[4]))
+            except (LookupError, ValueError, json.JSONDecodeError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err))
+            return
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "expenses":
+            if not self._require_permission("projectManage"): return
+            try:
+                expense = self.store.add_expense(self.organization_id, parts[4], self._read_json())
+                self._json(HTTPStatus.CREATED, {"expense": expense})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if len(parts) == 8 and parts[3] == "projects" and parts[5] == "expenses" and parts[7] == "delete":
+            if not self._require_permission("projectManage"): return
+            try:
+                self.store.delete_expense(self.organization_id, parts[6])
+                self._json(HTTPStatus.OK, {"deleted": True})
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+            return
+        # Comments: POST /api/v1/projects/:pid/work-items/:wid/comments  and  /comments/:cid/edit|delete
+        if len(parts) >= 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "comments":
+            project_id = parts[4]; wi_id = parts[6]
+            if len(parts) == 8:
+                # Create comment
+                if not self._require_permission("fieldProgress"): return
+                try:
+                    payload = self._read_json()
+                    body_text = str(payload.get("body","")).strip()
+                    author_name = str(payload.get("authorName", self.current_role))
+                    comment = self.store.add_wi_comment(self.organization_id, wi_id, project_id,
+                                                         body_text, None, author_name)
+                    self._json(HTTPStatus.CREATED, {"comment": comment})
+                except (ValueError, json.JSONDecodeError) as err:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+                return
+            if len(parts) == 10 and parts[8] == "comments" and parts[9] in ("edit", "delete"):
+                cid = parts[8]; action = parts[9]
+                # Correct: parts[8] is comment_id, parts[9] is action
+                cid = parts[8] if len(parts) == 10 else None
+            # /projects/:pid/work-items/:wid/comments/:cid/edit|delete  → len=10
+            if len(parts) == 10 and parts[7] == "comments" and parts[9] in ("edit", "delete"):
+                cid = parts[8]; action = parts[9]
+                if not self._require_permission("projectManage"): return
+                if action == "delete":
+                    try:
+                        self.store.delete_wi_comment(self.organization_id, cid)
+                        self._json(HTTPStatus.OK, {"deleted": True})
+                    except LookupError as err:
+                        self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+                    return
+                if action == "edit":
+                    try:
+                        payload = self._read_json()
+                        comment = self.store.edit_wi_comment(self.organization_id, cid, str(payload.get("body","")))
+                        self._json(HTTPStatus.OK, {"comment": comment})
+                    except (LookupError, ValueError, json.JSONDecodeError) as err:
+                        status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                        self._error(status, "invalid_request", str(err))
+                    return
         # Milestones: POST /api/v1/projects/:id/milestones  and  /:id/milestones/:mid/update|delete
         if len(parts) >= 6 and parts[3] == "projects" and parts[5] == "milestones":
             project_id = parts[4]
