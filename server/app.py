@@ -3744,6 +3744,104 @@ Rules:
         ]
         return "\n".join(lines)
 
+    # ── Issue management ──────────────────────────────────────────────────────
+
+    _ISSUE_TRANSITIONS: dict[str, list[str]] = {
+        "open":        ["in_progress", "wont_fix"],
+        "in_progress": ["resolved", "open"],
+        "resolved":    ["closed", "open"],
+        "closed":      ["open"],
+        "wont_fix":    ["open"],
+    }
+    _ISSUE_STATUSES = set(_ISSUE_TRANSITIONS.keys())
+
+    def get_issue(self, org: str, issue_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_issues WHERE id=? AND organization_id=?", (issue_id, org)
+            ).fetchone()
+        if row is None:
+            return None
+        r = dict(row)
+        r["status"] = r.get("status_v2") or r.get("status") or "open"
+        return r
+
+    def transition_issue(self, org: str, issue_id: str, new_status: str,
+                          resolution_note: str = "", resolved_by: str | None = None) -> dict[str, Any]:
+        issue = self.get_issue(org, issue_id)
+        if issue is None:
+            raise LookupError("Issue not found")
+        current = issue["status"]
+        allowed = self._ISSUE_TRANSITIONS.get(current, [])
+        if new_status not in allowed:
+            raise InvalidTransition(current, new_status)
+        now = utc_now()
+        updates: dict[str, Any] = {"status_v2": new_status, "updated_at": now}
+        if new_status in ("resolved", "closed", "wont_fix"):
+            updates["resolved_at"] = now
+            updates["resolved_by"] = resolved_by
+            if resolution_note:
+                updates["resolution_note"] = resolution_note
+        elif new_status == "open":
+            updates["resolved_at"] = None
+            updates["resolved_by"] = None
+        set_clause = ", ".join(f"{k}=?" for k in updates)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE project_issues SET {set_clause} WHERE id=? AND organization_id=?",
+                list(updates.values()) + [issue_id, org],
+            )
+        updated = self.get_issue(org, issue_id)
+        # Push notification if resolved
+        if new_status in ("resolved", "closed"):
+            try:
+                self.push_notification(
+                    org, f"Проблема устранена",
+                    f"«{issue.get('title','')}» → {new_status}" + (f": {resolution_note}" if resolution_note else ""),
+                    notif_type="system",
+                    entity_type="issue", entity_id=issue_id, project_id=issue.get("project_id"),
+                )
+            except Exception:
+                pass
+        return updated  # type: ignore[return-value]
+
+    def assign_issue(self, org: str, issue_id: str, assigned_to: str | None) -> dict[str, Any]:
+        issue = self.get_issue(org, issue_id)
+        if issue is None:
+            raise LookupError("Issue not found")
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE project_issues SET assigned_to=?, updated_at=? WHERE id=? AND organization_id=?",
+                (assigned_to, now, issue_id, org),
+            )
+        return self.get_issue(org, issue_id)  # type: ignore[return-value]
+
+    def list_issues(self, org: str, project_id: str | None = None,
+                     status: str | None = None, severity: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            where = "organization_id=?"
+            params: list[Any] = [org]
+            if project_id:
+                where += " AND project_id=?"
+                params.append(project_id)
+            if status:
+                where += " AND (COALESCE(status_v2, status)=?)"
+                params.append(status)
+            if severity:
+                where += " AND severity=?"
+                params.append(severity)
+            rows = conn.execute(
+                f"SELECT * FROM project_issues WHERE {where} ORDER BY created_at DESC",
+                params,
+            ).fetchall()
+        result = []
+        for row in rows:
+            r = dict(row)
+            r["status"] = r.get("status_v2") or r.get("status") or "open"
+            result.append(r)
+        return result
+
     def get_team_workload(self, org: str, project_id: str | None = None) -> list[dict[str, Any]]:
         """Per-member open work item counts, grouped by status."""
         with self._connect() as conn:
@@ -5981,22 +6079,24 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     if not proj:
                         self._error(HTTPStatus.NOT_FOUND, "not_found", "Project not found"); return
                     items = conn.execute(
-                        "SELECT wi.code, wi.title, wi.status, wi.priority, wi.due_date, "
+                        "SELECT COALESCE(wi.code,'') as code, wi.title, wi.status, wi.priority, wi.due_date, "
                         "wi.estimated_minutes, wi.actual_minutes, wt.name as work_type, "
-                        "pl.name as location "
-                        "FROM work_items wi "
-                        "LEFT JOIN work_types wt ON wt.id=wi.work_type_id "
-                        "LEFT JOIN project_locations pl ON pl.organization_id=wi.organization_id AND pl.id=wi.location_id "
+                        "pl.name as location, u.display_name as assignee "
+                        "FROM project_work_items wi "
+                        "LEFT JOIN work_types wt ON wt.id=wi.work_type_id AND wt.organization_id=wi.organization_id "
+                        "LEFT JOIN project_locations pl ON pl.organization_id=wi.organization_id AND pl.id=wi.building_id "
+                        "LEFT JOIN users u ON u.id=wi.assignee_user_id "
                         "WHERE wi.organization_id=? AND wi.project_id=? ORDER BY wi.code",
                         (self.organization_id, project_id)
                     ).fetchall()
                 import csv, io
                 out = io.StringIO()
                 writer = csv.writer(out)
-                writer.writerow(["Code","Title","Status","Priority","WorkType","Location","DueDate","EstMins","ActMins"])
+                writer.writerow(["Code","Title","Status","Priority","WorkType","Location","Assignee","DueDate","EstMins","ActMins"])
                 for row in items:
                     writer.writerow([row["code"],row["title"],row["status"],row["priority"],
                                      row["work_type"] or "",row["location"] or "",
+                                     row["assignee"] or "",
                                      row["due_date"] or "",row["estimated_minutes"] or "",
                                      row["actual_minutes"] or ""])
                 filename = f"rp-{proj['code'] or project_id}-{utc_now()[:10]}.csv"
@@ -6041,6 +6141,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             to_date = qs.get("to", today)
             records = self.store.list_presence(self.organization_id, project_id, from_date, to_date)
             self._json(HTTPStatus.OK, {"presence": records})
+            return
+        # Issues: GET /api/v1/issues?projectId=&status=&severity=
+        if path == "/api/v1/issues":
+            if not self._require_permission("projectRead"): return
+            qs = self._params()
+            issues = self.store.list_issues(
+                self.organization_id,
+                project_id=qs.get("projectId"),
+                status=qs.get("status"),
+                severity=qs.get("severity"),
+            )
+            self._json(HTTPStatus.OK, {"issues": issues, "total": len(issues)})
             return
         # Team workload: GET /api/v1/workload?projectId=
         if path == "/api/v1/workload":
@@ -6829,6 +6941,44 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
+        # Issues: POST /api/v1/issues/:id/transition  and  /issues/:id/assign
+        _issue_parts = path.split("/")
+        if len(_issue_parts) == 6 and _issue_parts[3] == "issues":
+            _issue_id, _issue_action = _issue_parts[4], _issue_parts[5]
+            if _issue_action == "transition":
+                if not self._require_permission("projectManage"): return
+                try:
+                    payload = self._read_json()
+                    new_status = payload.get("status")
+                    if not new_status:
+                        self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "status required"); return
+                    ctx = self.session_context or {}
+                    updated = self.store.transition_issue(
+                        self.organization_id, _issue_id, new_status,
+                        payload.get("resolutionNote", ""),
+                        ctx.get("userId"),
+                    )
+                    self._json(HTTPStatus.OK, {"issue": updated})
+                except LookupError as e:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", str(e))
+                except InvalidTransition as e:
+                    self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "invalid_transition", str(e))
+                except (ValueError, json.JSONDecodeError) as e:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e))
+                return
+            if _issue_action == "assign":
+                if not self._require_permission("projectManage"): return
+                try:
+                    payload = self._read_json()
+                    updated = self.store.assign_issue(
+                        self.organization_id, _issue_id, payload.get("assignedTo")
+                    )
+                    self._json(HTTPStatus.OK, {"issue": updated})
+                except LookupError as e:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", str(e))
+                except (ValueError, json.JSONDecodeError) as e:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e))
+                return
         # Webhook flush: POST /api/v1/admin/webhooks/flush
         if path == "/api/v1/admin/webhooks/flush":
             if not self._require_permission("adminRead"): return

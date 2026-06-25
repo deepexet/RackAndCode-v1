@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "056")
+        self.assertEqual(first.current_version, "057")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -765,6 +765,62 @@ class WorkspaceStoreTests(unittest.TestCase):
         titles = {wi["title"] for wi in project["workItems"]}
         self.assertIn("Step 1", titles)
         self.assertIn("Step 3", titles)
+
+    def _make_issue(self, project_id: str, title: str = "Test Issue", severity: str = "medium") -> dict:
+        with self.store._connect() as conn:
+            import uuid as _uuid
+            issue_id = str(_uuid.uuid4())
+            now = "2026-06-24T10:00:00Z"
+            conn.execute(
+                "INSERT INTO project_issues (organization_id, id, project_id, title, description, "
+                "severity, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (DEFAULT_ORGANIZATION_ID, issue_id, project_id, title, "", severity, "open", now, now),
+            )
+        return self.store.get_issue(DEFAULT_ORGANIZATION_ID, issue_id)
+
+    def test_issue_list_by_project(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "ISS", "name": "Issue Test"})
+        self._make_issue(proj["id"], "Critical Fault", "critical")
+        self._make_issue(proj["id"], "Minor Warning", "low")
+        issues = self.store.list_issues(DEFAULT_ORGANIZATION_ID, project_id=proj["id"])
+        self.assertEqual(len(issues), 2)
+
+    def test_issue_list_filter_by_status(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "ISF", "name": "Issue Filter"})
+        self._make_issue(proj["id"])
+        issues_open = self.store.list_issues(DEFAULT_ORGANIZATION_ID, status="open")
+        self.assertGreaterEqual(len(issues_open), 1)
+        issues_resolved = self.store.list_issues(DEFAULT_ORGANIZATION_ID, status="resolved")
+        self.assertEqual(issues_resolved, [])
+
+    def test_issue_transition_open_to_in_progress(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "TRS", "name": "Transition"})
+        issue = self._make_issue(proj["id"])
+        updated = self.store.transition_issue(DEFAULT_ORGANIZATION_ID, issue["id"], "in_progress")
+        self.assertEqual(updated["status"], "in_progress")
+
+    def test_issue_transition_invalid_raises(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "TRI", "name": "Invalid Trans"})
+        issue = self._make_issue(proj["id"])
+        with self.assertRaises(InvalidTransition):
+            self.store.transition_issue(DEFAULT_ORGANIZATION_ID, issue["id"], "closed")
+
+    def test_issue_full_lifecycle(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "LCY", "name": "Lifecycle"})
+        issue = self._make_issue(proj["id"])
+        self.store.transition_issue(DEFAULT_ORGANIZATION_ID, issue["id"], "in_progress")
+        self.store.transition_issue(DEFAULT_ORGANIZATION_ID, issue["id"], "resolved", "Fixed by patch", "user-1")
+        final = self.store.transition_issue(DEFAULT_ORGANIZATION_ID, issue["id"], "closed")
+        self.assertEqual(final["status"], "closed")
+        self.assertIsNotNone(final["resolved_at"])
+
+    def test_issue_assign(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "ASN", "name": "Assign Test"})
+        issue = self._make_issue(proj["id"])
+        updated = self.store.assign_issue(DEFAULT_ORGANIZATION_ID, issue["id"], "user-42")
+        self.assertEqual(updated["assigned_to"], "user-42")
+        unassigned = self.store.assign_issue(DEFAULT_ORGANIZATION_ID, issue["id"], None)
+        self.assertIsNone(unassigned["assigned_to"])
 
     def test_scheduled_report_create_list_delete(self):
         proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "RPT", "name": "Report Test"})

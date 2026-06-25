@@ -3590,6 +3590,30 @@ function renderDynamicFields(scope,containerId,values={}){const container=$(`#${
 
 function collectDynamicFields(containerId){const values={};$(`#${containerId}`)?.querySelectorAll('[data-custom-code]').forEach(input=>{if(input.dataset.customType==='boolean')values[input.dataset.customCode]=input.checked;else if(input.dataset.customType==='number')values[input.dataset.customCode]=input.value===''?null:Number(input.value);else values[input.dataset.customCode]=input.value;});return values;}
 
+function _getProjectFilters() {
+  const q = ($('#projectFilterInput')?.value || '').toLowerCase().trim();
+  const status = $('#projectStatusFilter')?.value || '';
+  const kind = $('#projectKindFilter')?.value || '';
+  return { q, status, kind };
+}
+
+function _applyProjectFilters(list) {
+  const { q, status, kind } = _getProjectFilters();
+  return list.filter(p => {
+    if (status && p.status !== status) return false;
+    if (kind && p.kind !== kind) return false;
+    if (q && !p.name.toLowerCase().includes(q) && !p.code.toLowerCase().includes(q) && !(p.description||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function setupProjectFilters() {
+  const update = () => renderProjects();
+  $('#projectFilterInput')?.addEventListener('input', update);
+  $('#projectStatusFilter')?.addEventListener('change', update);
+  $('#projectKindFilter')?.addEventListener('change', update);
+}
+
 function renderProjects(unavailable = false) {
   const portfolio = $('#projectsPortfolio');
   if (!portfolio) return;
@@ -3601,7 +3625,14 @@ function renderProjects(unavailable = false) {
     portfolio.innerHTML = '<article class="project-card project-loading">Проекты пока не созданы.</article>';
     return;
   }
-  portfolio.innerHTML = projects.map(project => {
+  const filtered = _applyProjectFilters(projects);
+  const countEl = $('#projectFilterCount');
+  if (countEl) countEl.textContent = filtered.length < projects.length ? `${filtered.length} из ${projects.length}` : '';
+  if (!filtered.length) {
+    portfolio.innerHTML = '<article class="project-card project-loading">Нет проектов по фильтру.</article>';
+    return;
+  }
+  portfolio.innerHTML = filtered.map(project => {
     const summary = project.taskSummary;
     const buildings = project.buildings || [];
     const workItems = project.workItems || [];
@@ -5780,6 +5811,7 @@ async function setup() {
 setup();
 setupGlobalSearch();
 setupNotificationCenter();
+setupProjectFilters();
 
 // PWA service worker registration
 // ── Global Search ──────────────────────────────────────────────────────────
