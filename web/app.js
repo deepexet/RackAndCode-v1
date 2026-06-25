@@ -3814,27 +3814,41 @@ function renderProjectDetail() {
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel">
       <div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="issueSevFilter" style="padding:3px 6px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+            <option value="">Все</option>
+            <option value="critical">Критические</option>
+            <option value="high">Высокие</option>
+            <option value="medium">Средние</option>
+            <option value="low">Низкие</option>
+          </select>
           <b class="issue-count">${openIssues.length}</b>
           ${canManage ? `<button class="button ghost" id="addIssueBtn" type="button" style="font-size:11px">＋ Проблема</button>` : ''}
         </div>
       </div>
       <div class="issue-list" id="issuesList">
-        ${openIssues.length ? openIssues.map(issue => `
-          <div class="issue-item ${issue.severity}" data-issue-id="${issue.id}">
+        ${openIssues.length ? openIssues.map(issue => {
+          const SEV_COLOR = {critical:'#f46',high:'#e87',medium:'#e8a84c',low:'#4f8ef7'};
+          const st = issue.status_v2||issue.status||'open';
+          return `<div class="issue-item ${issue.severity}" data-issue-id="${issue.id}" data-issue-sev="${issue.severity}">
             <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
-              <div>
-                <span style="font-size:10px;font-weight:600;text-transform:uppercase">${escapeHtml(issue.severity)}</span>
-                <strong style="display:block;margin:2px 0 2px">${escapeHtml(issue.title)}</strong>
-                <small style="color:var(--text-muted)">${escapeHtml(issue.description)}</small>
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+                  <span style="font-size:9px;font-weight:700;text-transform:uppercase;color:${SEV_COLOR[issue.severity]||'#888'};background:${SEV_COLOR[issue.severity]||'#888'}22;padding:1px 5px;border-radius:4px">${escapeHtml(issue.severity)}</span>
+                  <span style="font-size:9px;padding:1px 6px;border-radius:8px;background:rgba(79,142,247,.12);color:var(--accent)">${escapeHtml(st)}</span>
+                  ${issue.assigned_to ? `<small style="font-size:9px;color:var(--text-muted)">👤 ${escapeHtml(issue.assigned_to)}</small>` : ''}
+                </div>
+                <strong style="font-size:12px;display:block;margin-bottom:2px">${escapeHtml(issue.title)}</strong>
+                ${issue.description ? `<small style="color:var(--text-muted);font-size:11px">${escapeHtml(issue.description.slice(0,120))}${issue.description.length>120?'…':''}</small>` : ''}
+                ${issue.resolution_note ? `<small style="color:#3bb969;font-size:10px;display:block;margin-top:2px">✓ ${escapeHtml(issue.resolution_note)}</small>` : ''}
               </div>
               <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;align-items:flex-end">
-                <span style="font-size:10px;padding:2px 6px;border-radius:8px;background:rgba(79,142,247,.12);color:var(--accent)">${escapeHtml(issue.status_v2||issue.status||'open')}</span>
-                ${canManage ? `<button type="button" class="text-button" style="font-size:10px" data-issue-transition="${issue.id}">Изменить статус</button>` : ''}
-                ${canManage ? `<button type="button" class="text-button" style="font-size:10px" data-issue-assign="${issue.id}">Назначить</button>` : ''}
+                ${canManage ? `<button type="button" class="text-button" style="font-size:10px" data-issue-transition="${issue.id}">→ Статус</button>` : ''}
+                ${canManage ? `<button type="button" class="text-button" style="font-size:10px" data-issue-assign="${issue.id}">👤 Назначить</button>` : ''}
               </div>
             </div>
-          </div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}
+          </div>`;
+        }).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}
       </div>
     </article></section>
     <section class="detail-section" id="reservationsSection">
@@ -4634,6 +4648,13 @@ function setupIssuesPanel(projectId) {
         toast('Исполнитель назначен');
         await reloadProjectData(projectId);
       } catch(e) { toast(`Ошибка: ${e.message}`); }
+    });
+  });
+  // Severity filter
+  document.getElementById('issueSevFilter')?.addEventListener('change', (e) => {
+    const sev = e.target.value;
+    document.querySelectorAll('#issuesList .issue-item').forEach(el => {
+      el.style.display = !sev || el.dataset.issueSev === sev ? '' : 'none';
     });
   });
 }
