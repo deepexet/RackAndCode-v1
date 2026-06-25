@@ -57,7 +57,7 @@
       <span class="brand-mark">V</span>
       <span><strong>RackPilot</strong><small>by Valeronix</small></span>
     </a>
-    <nav class="primary-nav" aria-label="Platform navigation"><a href="#overview" data-route-link="overview" data-i18n="NAV_OVERVIEW">Overview</a><a href="#projects" data-route-link="projects" data-i18n="NAV_PROJECTS">Projects</a><a href="#tech" data-route-link="tech" data-i18n="NAV_TECH">Field</a><a href="#logs" data-route-link="logs" data-i18n="NAV_LOGS">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin" data-i18n="NAV_ADMIN">Admin</a></nav>
+    <nav class="primary-nav" aria-label="Platform navigation"><a href="#overview" data-route-link="overview" data-i18n="NAV_OVERVIEW">Overview</a><a href="#projects" data-route-link="projects" data-i18n="NAV_PROJECTS">Projects</a><a href="#inventory" data-route-link="inventory">Склад</a><a href="#tech" data-route-link="tech" data-i18n="NAV_TECH">Field</a><a href="#logs" data-route-link="logs" data-i18n="NAV_LOGS">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin" data-i18n="NAV_ADMIN">Admin</a></nav>
     <div class="header-right">
       <div class="global-search-wrap" style="position:relative">
         <input id="globalSearchInput" type="search" placeholder="⌕ Поиск…" autocomplete="off"
@@ -203,6 +203,66 @@
       </div>
       <div class="projects-grid" id="projectsPortfolio" aria-live="polite"><article class="project-card project-loading">Загрузка проектов…</article></div></div>
       <div id="projectDetailView" class="hidden" aria-live="polite"></div>
+    </section>
+
+    <section class="app-view" data-view="inventory" id="inventory">
+      <header class="page-header">
+        <div><p class="eyebrow">INVENTORY</p><h1>Управление складами</h1><p>Учёт остатков, движение материалов, AI-распознавание накладных и фото.</p></div>
+        <div style="display:flex;gap:8px">
+          <button class="button ghost" id="invImportXlsxBtn" type="button">⬆ Excel</button>
+          <button class="button ghost" id="invAiParseBtn" type="button">✦ AI заметка</button>
+          <button class="button primary" id="invAddMovementBtn" type="button">＋ Движение</button>
+        </div>
+      </header>
+
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:start">
+        <!-- Sidebar: warehouses -->
+        <aside>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <p class="eyebrow" style="margin:0">СКЛАДЫ</p>
+            <button class="text-button" id="invAddWarehouseBtn" type="button" style="font-size:11px">＋</button>
+          </div>
+          <div id="warehouseList" style="display:flex;flex-direction:column;gap:4px"></div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <p class="eyebrow" style="margin:0">ОЖИДАЮТ</p>
+            <span id="pendingBadge" style="font-size:11px;background:var(--accent);color:#fff;border-radius:10px;padding:1px 6px;display:none">0</span>
+          </div>
+          <button class="button ghost" id="invPendingBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start">Очередь одобрения</button>
+        </aside>
+
+        <!-- Main: stock table -->
+        <div>
+          <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+            <input id="invSkuSearch" type="search" placeholder="Поиск SKU…" style="flex:1;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+            <button class="button ghost" id="invManageSkusBtn" type="button" style="font-size:12px">Каталог SKU</button>
+          </div>
+          <div id="inventoryStockTable"><p class="empty-copy">Выберите склад или загрузите данные.</p></div>
+        </div>
+      </div>
+
+      <!-- Pending approval panel -->
+      <div id="inventoryPendingPanel" style="display:none;margin-top:20px">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">PENDING APPROVAL</p><h2>Ожидают подтверждения</h2></div>
+          <button class="button ghost" id="invPendingCloseBtn" type="button">✕</button>
+        </div>
+        <div id="inventoryPendingList"></div>
+      </div>
+
+      <!-- SKU catalog panel -->
+      <div id="inventorySkuPanel" style="display:none;margin-top:20px">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">SKU CATALOG</p><h2>Каталог материалов</h2></div>
+          <div style="display:flex;gap:8px">
+            <button class="button ghost" id="invAddSkuBtn" type="button" style="font-size:12px">＋ SKU</button>
+            <button class="button ghost" id="invSkuCloseBtn" type="button">✕</button>
+          </div>
+        </div>
+        <div id="inventorySkuList"></div>
+      </div>
+
+      <input type="file" id="invXlsxInput" accept=".xlsx" style="display:none">
     </section>
 
     <section class="app-view logs-page" data-view="logs" id="logs">

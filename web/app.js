@@ -640,6 +640,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
+  if (route === 'inventory') { hydrateInventory(); }
   if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
@@ -6015,6 +6016,304 @@ async function loadTemplates() {
     _templates = templates;
     return templates;
   } catch { return []; }
+}
+
+// ── Inventory ─────────────────────────────────────────────────────────────────
+
+let _invSelectedWarehouse = null;
+
+async function hydrateInventory() {
+  await Promise.all([_loadWarehouses(), _loadPendingCount()]);
+  _bindInventoryEvents();
+}
+
+async function _loadWarehouses() {
+  const list = document.getElementById('warehouseList');
+  if (!list) return;
+  try {
+    const r = await apiFetch('/api/v1/inventory/warehouses');
+    const { warehouses = [] } = await r.json();
+    if (!warehouses.length) {
+      list.innerHTML = '<p class="empty-copy" style="font-size:12px">Нет складов.</p>';
+      return;
+    }
+    list.innerHTML = warehouses.map(w => `
+      <button type="button" class="button ghost" style="width:100%;justify-content:flex-start;font-size:12px;${_invSelectedWarehouse===w.id?'background:rgba(79,142,247,.15);':''}" data-wh-id="${w.id}">
+        🏭 ${escapeHtml(w.name)}
+        <small style="display:block;color:var(--text-muted);font-size:10px">${escapeHtml(w.location||'')}</small>
+      </button>`).join('');
+    list.querySelectorAll('[data-wh-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _invSelectedWarehouse = btn.dataset.whId;
+        _loadWarehouses();
+        _loadStock(_invSelectedWarehouse);
+      });
+    });
+    if (_invSelectedWarehouse) _loadStock(_invSelectedWarehouse);
+  } catch { list.innerHTML = '<p class="empty-copy" style="font-size:12px">Ошибка.</p>'; }
+}
+
+async function _loadStock(warehouseId) {
+  const table = document.getElementById('inventoryStockTable');
+  if (!table) return;
+  table.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+  try {
+    const r = await apiFetch(`/api/v1/inventory/stock?warehouseId=${warehouseId}`);
+    const { stock = [] } = await r.json();
+    if (!stock.length) {
+      table.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет остатков на этом складе.</p>'; return;
+    }
+    table.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:var(--text-muted);text-align:left">
+        <th style="padding:6px 8px">SKU</th><th style="padding:6px 8px">Наименование</th>
+        <th style="padding:6px 8px">Кол-во</th><th style="padding:6px 8px">Ед.</th>
+        <th style="padding:6px 8px">Бин</th><th style="padding:6px 8px"></th>
+      </tr></thead>
+      <tbody>${stock.map(s => `<tr style="border-top:1px solid var(--border)${s.belowMin?';background:rgba(255,68,68,.05)':''}">
+        <td style="padding:7px 8px;font-family:monospace">${escapeHtml(s.sku_code)}</td>
+        <td style="padding:7px 8px"><strong>${escapeHtml(s.sku_name)}</strong></td>
+        <td style="padding:7px 8px"><strong style="color:${s.belowMin?'#f46':'inherit'}">${s.quantity}</strong>${s.belowMin?'<span style="font-size:10px;color:#f46;margin-left:4px">⚠ min</span>':''}</td>
+        <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.unit)}</td>
+        <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.location_bin||'—')}</td>
+        <td style="padding:7px 8px">
+          <button type="button" class="text-button" style="font-size:11px" data-quick-mv="${s.sku_id}" data-sku-name="${escapeHtml(s.sku_name)}">＋/−</button>
+        </td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+    table.querySelectorAll('[data-quick-mv]').forEach(btn => {
+      btn.addEventListener('click', () => _quickMovement(warehouseId, btn.dataset.quickMv, btn.dataset.skuName));
+    });
+  } catch { table.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+}
+
+async function _quickMovement(warehouseId, skuId, skuName) {
+  const typeMap = { '1':'receive','2':'issue','3':'adjustment','4':'return','5':'loss' };
+  const choice = prompt(`Движение для "${skuName}":\n1 — Приход\n2 — Расход\n3 — Корректировка\n4 — Возврат\n5 — Списание`);
+  const movementType = typeMap[choice?.trim()||''];
+  if (!movementType) return;
+  const qty = parseFloat(prompt('Количество:') || '0');
+  if (!qty || isNaN(qty)) return;
+  const ref = prompt('Ссылка / номер документа (опционально):') || '';
+  try {
+    const r = await apiFetch('/api/v1/inventory/movements', {
+      method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ warehouseId, skuId, movementType, quantity: qty, reference: ref }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+    toast(`${movementType} записан`);
+    _loadStock(warehouseId);
+  } catch(e) { toast(`Ошибка: ${e.message}`); }
+}
+
+async function _loadPendingCount() {
+  try {
+    const r = await apiFetch('/api/v1/inventory/pending?status=pending');
+    const { pending = [] } = await r.json();
+    const badge = document.getElementById('pendingBadge');
+    if (badge) { badge.textContent = pending.length; badge.style.display = pending.length ? '' : 'none'; }
+  } catch { /* silent */ }
+}
+
+async function _loadPendingList() {
+  const list = document.getElementById('inventoryPendingList');
+  if (!list) return;
+  list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+  try {
+    const r = await apiFetch('/api/v1/inventory/pending?status=pending');
+    const { pending = [] } = await r.json();
+    if (!pending.length) { list.innerHTML = '<p class="empty-copy">Нет ожидающих подтверждения.</p>'; return; }
+    list.innerHTML = pending.map(p => `
+      <div style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+          <div>
+            <p class="eyebrow" style="margin:0">${escapeHtml(p.source.toUpperCase())} · ${(p.created_at||'').slice(0,16).replace('T',' ')}</p>
+            <p style="font-size:12px;color:var(--text-muted);margin:4px 0 8px;max-width:600px">${escapeHtml((p.raw_input||'').slice(0,200))}</p>
+            ${p.ai_confidence != null ? `<span style="font-size:11px;color:var(--text-muted)">Уверенность AI: ${Math.round(p.ai_confidence*100)}%</span>` : ''}
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button type="button" class="button ghost" style="font-size:11px" data-approve="${p.id}">✓ Подтвердить</button>
+            <button type="button" class="button ghost" style="font-size:11px;color:#f46" data-reject="${p.id}">✕ Отклонить</button>
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+          ${(p.suggested_movements||[]).map((mv,i) => `
+            <span style="font-size:11px;padding:3px 8px;border-radius:8px;background:rgba(79,142,247,.1);color:var(--accent)">
+              ${mv.movementType||'?'} ${mv.quantity||'?'} ${mv.sku_code_guess||mv.skuId||'?'}
+              ${mv.skuId ? '' : '<span style="color:#e8a84c"> ⚠ не найден</span>'}
+            </span>`).join('')}
+        </div>
+      </div>`).join('');
+    list.querySelectorAll('[data-approve]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          const r2 = await apiFetch(`/api/v1/inventory/pending/${btn.dataset.approve}/approve`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ reviewer: 'user' }),
+          });
+          const res = await r2.json();
+          toast(`Применено: ${res.applied}, ошибок: ${res.errors?.length||0}`);
+          _loadPendingList(); _loadPendingCount();
+          if (_invSelectedWarehouse) _loadStock(_invSelectedWarehouse);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+    list.querySelectorAll('[data-reject]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await apiFetch(`/api/v1/inventory/pending/${btn.dataset.reject}/reject`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ reviewer: 'user' }),
+          });
+          toast('Отклонено'); _loadPendingList(); _loadPendingCount();
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+  } catch { list.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+}
+
+async function _loadSkuCatalog() {
+  const list = document.getElementById('inventorySkuList');
+  if (!list) return;
+  list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+  try {
+    const r = await apiFetch('/api/v1/inventory/skus');
+    const { skus = [] } = await r.json();
+    if (!skus.length) { list.innerHTML = '<p class="empty-copy">Нет SKU в каталоге.</p>'; return; }
+    list.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:var(--text-muted);text-align:left">
+        <th style="padding:6px 8px">Код</th><th style="padding:6px 8px">Наименование</th>
+        <th style="padding:6px 8px">Категория</th><th style="padding:6px 8px">Ед.</th>
+      </tr></thead>
+      <tbody>${skus.map(s => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:7px 8px;font-family:monospace">${escapeHtml(s.sku_code)}</td>
+        <td style="padding:7px 8px"><strong>${escapeHtml(s.name)}</strong></td>
+        <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.category)}</td>
+        <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.unit)}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+  } catch { list.innerHTML = '<p class="empty-copy">Ошибка.</p>'; }
+}
+
+function _bindInventoryEvents() {
+  // Add warehouse
+  document.getElementById('invAddWarehouseBtn')?.addEventListener('click', async () => {
+    const name = prompt('Название склада:');
+    if (!name?.trim()) return;
+    const location = prompt('Адрес / расположение:') || '';
+    try {
+      const r = await apiFetch('/api/v1/inventory/warehouses', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ name: name.trim(), location }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('Склад создан'); _loadWarehouses();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+  // Pending panel
+  document.getElementById('invPendingBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventoryPendingPanel');
+    const skuPanel = document.getElementById('inventorySkuPanel');
+    if (panel) { panel.style.display = panel.style.display === 'none' ? '' : 'none'; _loadPendingList(); }
+    if (skuPanel) skuPanel.style.display = 'none';
+  });
+  document.getElementById('invPendingCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventoryPendingPanel'); if (p) p.style.display = 'none';
+  });
+  // SKU catalog
+  document.getElementById('invManageSkusBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventorySkuPanel');
+    const pendPanel = document.getElementById('inventoryPendingPanel');
+    if (panel) { panel.style.display = panel.style.display === 'none' ? '' : 'none'; _loadSkuCatalog(); }
+    if (pendPanel) pendPanel.style.display = 'none';
+  });
+  document.getElementById('invSkuCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventorySkuPanel'); if (p) p.style.display = 'none';
+  });
+  // Add SKU
+  document.getElementById('invAddSkuBtn')?.addEventListener('click', async () => {
+    const code = prompt('Код SKU (уникальный артикул):');
+    if (!code?.trim()) return;
+    const name = prompt('Наименование:');
+    if (!name?.trim()) return;
+    const unit = prompt('Единица измерения (pcs/m/kg/roll/box):', 'pcs') || 'pcs';
+    const category = prompt('Категория (cable/equipment/consumable/general):', 'general') || 'general';
+    try {
+      const r = await apiFetch('/api/v1/inventory/skus', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ skuCode: code.trim(), name: name.trim(), unit, category }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('SKU добавлен'); _loadSkuCatalog();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+  // AI parse
+  document.getElementById('invAiParseBtn')?.addEventListener('click', async () => {
+    const text = prompt('Текст заметки или описание поставки:');
+    if (!text?.trim()) return;
+    try {
+      toast('Отправляю в AI…');
+      const r = await apiFetch('/api/v1/inventory/ai-parse', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ text: text.trim(), warehouseId: _invSelectedWarehouse }),
+      });
+      const res = await r.json();
+      if (!r.ok) { toast(`Ошибка AI: ${res.error?.message||r.status}`); return; }
+      toast(`AI предложил ${res.suggested_movements?.length||0} движений. Проверьте очередь одобрения.`);
+      const panel = document.getElementById('inventoryPendingPanel');
+      if (panel) { panel.style.display = ''; _loadPendingList(); }
+      _loadPendingCount();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+  // XLSX import
+  document.getElementById('invImportXlsxBtn')?.addEventListener('click', () => {
+    document.getElementById('invXlsxInput')?.click();
+  });
+  document.getElementById('invXlsxInput')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    toast(`Загружаю ${file.name}…`);
+    try {
+      const data = await file.arrayBuffer();
+      const r = await fetch('/api/v1/inventory/import-xlsx', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),
+        body: data,
+      });
+      const res = await r.json();
+      if (!r.ok) { toast(`Ошибка: ${res.error?.message||r.status}`); return; }
+      toast(`Импортировано ${res.suggested_movements?.length||0} строк. Проверьте очередь.`);
+      const panel = document.getElementById('inventoryPendingPanel');
+      if (panel) { panel.style.display = ''; _loadPendingList(); }
+      _loadPendingCount();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+    e.target.value = '';
+  });
+  // SKU search
+  document.getElementById('invSkuSearch')?.addEventListener('input', async (e) => {
+    const q = e.target.value.trim();
+    if (!q) { if (_invSelectedWarehouse) _loadStock(_invSelectedWarehouse); return; }
+    const table = document.getElementById('inventoryStockTable');
+    try {
+      const r = await apiFetch(`/api/v1/inventory/skus?q=${encodeURIComponent(q)}`);
+      const { skus = [] } = await r.json();
+      if (table) table.innerHTML = skus.length
+        ? `<div style="display:flex;flex-wrap:wrap;gap:8px">${skus.map(s => `<div style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:12px"><strong>${escapeHtml(s.sku_code)}</strong><br>${escapeHtml(s.name)}<br><span style="color:var(--text-muted)">${s.unit}</span></div>`).join('')}</div>`
+        : '<p class="empty-copy" style="font-size:13px">Ничего не найдено.</p>';
+    } catch { /* silent */ }
+  });
+  // Add movement (full form)
+  document.getElementById('invAddMovementBtn')?.addEventListener('click', async () => {
+    if (!_invSelectedWarehouse) { toast('Сначала выберите склад'); return; }
+    const sku = prompt('Код SKU:');
+    if (!sku?.trim()) return;
+    try {
+      const r = await apiFetch(`/api/v1/inventory/skus?q=${encodeURIComponent(sku.trim())}`);
+      const { skus = [] } = await r.json();
+      if (!skus.length) { toast(`SKU "${sku}" не найден`); return; }
+      const found = skus[0];
+      _quickMovement(_invSelectedWarehouse, found.id, found.name);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
 }
 
 async function hydrateOrgSettings() {

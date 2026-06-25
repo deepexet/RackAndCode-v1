@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import hashlib
+import io
 import json
 import logging
 import mimetypes
@@ -3692,6 +3693,410 @@ Rules:
             "criticalIssues": critical_issues,
         }
 
+    # ── Inventory Management ──────────────────────────────────────────────────
+
+    # Warehouses
+    def list_warehouses(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM warehouses WHERE organization_id=? AND active=1 ORDER BY name", (org,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_warehouse(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name","")).strip()
+        if not name: raise ValueError("Warehouse name required")
+        wid = str(uuid.uuid4()); now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO warehouses (id,organization_id,name,location,description,active,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,1,?,?)",
+                (wid, org, name, str(payload.get("location",""))[:200],
+                 str(payload.get("description",""))[:500], now, now),
+            )
+            row = conn.execute("SELECT * FROM warehouses WHERE id=?", (wid,)).fetchone()
+        return dict(row)
+
+    def delete_warehouse(self, org: str, warehouse_id: str) -> None:
+        with self._connect() as conn:
+            r = conn.execute("UPDATE warehouses SET active=0,updated_at=? WHERE id=? AND organization_id=?",
+                             (utc_now(), warehouse_id, org))
+            if r.rowcount == 0: raise LookupError("Warehouse not found")
+
+    # SKUs
+    def list_skus(self, org: str, category: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if category:
+                rows = conn.execute(
+                    "SELECT * FROM inventory_skus WHERE organization_id=? AND active=1 AND category=? ORDER BY name",
+                    (org, category)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM inventory_skus WHERE organization_id=? AND active=1 ORDER BY name",
+                    (org,)).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["tags"] = json.loads(d.get("tags") or "[]")
+            except Exception: d["tags"] = []
+            result.append(d)
+        return result
+
+    def create_sku(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name","")).strip()
+        sku_code = str(payload.get("skuCode","")).strip().upper()
+        if not name: raise ValueError("SKU name required")
+        if not sku_code: raise ValueError("skuCode required")
+        sid = str(uuid.uuid4()); now = utc_now()
+        tags = json.dumps(payload.get("tags",[]) if isinstance(payload.get("tags"), list) else [])
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO inventory_skus (id,organization_id,sku_code,name,description,category,unit,"
+                "unit_cost,currency,tags,active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)",
+                (sid, org, sku_code, name, str(payload.get("description",""))[:500],
+                 str(payload.get("category","general"))[:50],
+                 str(payload.get("unit","pcs"))[:20],
+                 payload.get("unitCost"), str(payload.get("currency","USD"))[:3],
+                 tags, now, now),
+            )
+            row = conn.execute("SELECT * FROM inventory_skus WHERE id=?", (sid,)).fetchone()
+        d = dict(row)
+        try: d["tags"] = json.loads(d.get("tags") or "[]")
+        except Exception: d["tags"] = []
+        return d
+
+    def search_skus(self, org: str, q: str) -> list[dict[str, Any]]:
+        pattern = f"%{q}%"
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM inventory_skus WHERE organization_id=? AND active=1 "
+                "AND (name LIKE ? OR sku_code LIKE ? OR description LIKE ?) ORDER BY name LIMIT 20",
+                (org, pattern, pattern, pattern),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["tags"] = json.loads(d.get("tags") or "[]")
+            except Exception: d["tags"] = []
+            result.append(d)
+        return result
+
+    # Stock levels
+    def get_stock_levels(self, org: str, warehouse_id: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            if warehouse_id:
+                rows = conn.execute(
+                    "SELECT s.*, k.name as sku_name, k.sku_code, k.unit, k.category, w.name as warehouse_name "
+                    "FROM inventory_stock s "
+                    "JOIN inventory_skus k ON k.id=s.sku_id "
+                    "JOIN warehouses w ON w.id=s.warehouse_id "
+                    "WHERE s.organization_id=? AND s.warehouse_id=? ORDER BY k.name",
+                    (org, warehouse_id)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT s.*, k.name as sku_name, k.sku_code, k.unit, k.category, w.name as warehouse_name "
+                    "FROM inventory_stock s "
+                    "JOIN inventory_skus k ON k.id=s.sku_id "
+                    "JOIN warehouses w ON w.id=s.warehouse_id "
+                    "WHERE s.organization_id=? ORDER BY w.name, k.name",
+                    (org,)).fetchall()
+        result = [dict(r) for r in rows]
+        # Flag items below minimum
+        for item in result:
+            if item.get("min_quantity") is not None:
+                item["belowMin"] = item["quantity"] < item["min_quantity"]
+        return result
+
+    def record_movement(self, org: str, payload: dict[str, Any],
+                        source: str = "manual", source_ref: str | None = None) -> dict[str, Any]:
+        """Apply a stock movement and update inventory_stock in one transaction."""
+        warehouse_id = str(payload.get("warehouseId",""))
+        sku_id = str(payload.get("skuId",""))
+        movement_type = str(payload.get("movementType","receive"))
+        quantity = payload.get("quantity")
+
+        if not warehouse_id or not sku_id:
+            raise ValueError("warehouseId and skuId required")
+        if not isinstance(quantity, (int, float)) or quantity == 0:
+            raise ValueError("quantity must be a non-zero number")
+        if movement_type not in ("receive","issue","transfer","adjustment","return","loss"):
+            raise ValueError(f"Invalid movement type: {movement_type}")
+
+        # issue/loss/transfer out are negative
+        delta = float(quantity)
+        if movement_type in ("issue", "loss"):
+            delta = -abs(delta)
+        else:
+            delta = abs(delta)
+
+        mid = str(uuid.uuid4()); now = utc_now()
+        with self._connect() as conn:
+            # Verify warehouse + sku belong to org
+            if not conn.execute("SELECT 1 FROM warehouses WHERE id=? AND organization_id=?",
+                                (warehouse_id, org)).fetchone():
+                raise LookupError("Warehouse not found")
+            if not conn.execute("SELECT 1 FROM inventory_skus WHERE id=? AND organization_id=?",
+                                (sku_id, org)).fetchone():
+                raise LookupError("SKU not found")
+            # Upsert stock level
+            conn.execute(
+                "INSERT INTO inventory_stock (id,organization_id,warehouse_id,sku_id,quantity,reserved,updated_at) "
+                "VALUES (?,?,?,?,MAX(0,?),0,?) "
+                "ON CONFLICT(warehouse_id,sku_id) DO UPDATE SET "
+                "quantity=MAX(0,quantity+?), updated_at=?",
+                (str(uuid.uuid4()), org, warehouse_id, sku_id, delta, now, delta, now),
+            )
+            # Record movement
+            conn.execute(
+                "INSERT INTO inventory_movements (id,organization_id,warehouse_id,sku_id,movement_type,"
+                "quantity,reference,note,source,source_ref,recorded_by,project_id,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (mid, org, warehouse_id, sku_id, movement_type, delta,
+                 str(payload.get("reference",""))[:100],
+                 str(payload.get("note",""))[:500],
+                 source, source_ref, payload.get("recordedBy"), payload.get("projectId"), now),
+            )
+            stock = conn.execute(
+                "SELECT quantity FROM inventory_stock WHERE warehouse_id=? AND sku_id=?",
+                (warehouse_id, sku_id)).fetchone()
+        return {
+            "movementId": mid, "warehouseId": warehouse_id, "skuId": sku_id,
+            "movementType": movement_type, "delta": delta,
+            "newQuantity": stock["quantity"] if stock else 0,
+            "createdAt": now,
+        }
+
+    def list_movements(self, org: str, sku_id: str | None = None,
+                       warehouse_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        where = ["m.organization_id=?"]
+        params: list[Any] = [org]
+        if sku_id:
+            where.append("m.sku_id=?"); params.append(sku_id)
+        if warehouse_id:
+            where.append("m.warehouse_id=?"); params.append(warehouse_id)
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT m.*, k.name as sku_name, k.sku_code, k.unit, w.name as warehouse_name "
+                f"FROM inventory_movements m "
+                f"JOIN inventory_skus k ON k.id=m.sku_id "
+                f"JOIN warehouses w ON w.id=m.warehouse_id "
+                f"WHERE {' AND '.join(where)} ORDER BY m.created_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # Pending AI/email approval queue
+    def create_inventory_pending(self, org: str, source: str, raw_input: str,
+                                  suggested_movements: list[dict[str, Any]],
+                                  ai_confidence: float | None = None,
+                                  source_ref: str | None = None) -> dict[str, Any]:
+        pid = str(uuid.uuid4()); now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO inventory_pending (id,organization_id,source,source_ref,suggested_movements,"
+                "raw_input,ai_confidence,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (pid, org, source, source_ref, json.dumps(suggested_movements),
+                 raw_input[:10000], ai_confidence, "pending", now, now),
+            )
+            row = conn.execute("SELECT * FROM inventory_pending WHERE id=?", (pid,)).fetchone()
+        d = dict(row)
+        try: d["suggested_movements"] = json.loads(d["suggested_movements"])
+        except Exception: d["suggested_movements"] = []
+        return d
+
+    def list_inventory_pending(self, org: str, status: str = "pending") -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM inventory_pending WHERE organization_id=? AND status=? ORDER BY created_at DESC",
+                (org, status),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try: d["suggested_movements"] = json.loads(d["suggested_movements"])
+            except Exception: d["suggested_movements"] = []
+            result.append(d)
+        return result
+
+    def approve_inventory_pending(self, org: str, pending_id: str,
+                                   reviewer: str | None, approved_indices: list[int] | None = None) -> dict[str, Any]:
+        """Apply selected (or all) suggested movements, mark as approved."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM inventory_pending WHERE id=? AND organization_id=? AND status='pending'",
+                (pending_id, org),
+            ).fetchone()
+        if not row:
+            raise LookupError("Pending item not found or already reviewed")
+        try:
+            suggestions = json.loads(row["suggested_movements"])
+        except Exception:
+            suggestions = []
+
+        if approved_indices is not None:
+            to_apply = [suggestions[i] for i in approved_indices if 0 <= i < len(suggestions)]
+        else:
+            to_apply = suggestions
+
+        applied = []
+        errors = []
+        for mv in to_apply:
+            try:
+                result = self.record_movement(org, mv, source="ai", source_ref=pending_id)
+                applied.append(result)
+            except Exception as e:
+                errors.append({"movement": mv, "error": str(e)})
+
+        now = utc_now()
+        new_status = "approved" if not errors else "partial"
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE inventory_pending SET status=?,reviewed_by=?,reviewed_at=?,updated_at=? WHERE id=?",
+                (new_status, reviewer, now, now, pending_id),
+            )
+        return {"pendingId": pending_id, "status": new_status,
+                "applied": len(applied), "errors": errors}
+
+    def reject_inventory_pending(self, org: str, pending_id: str, reviewer: str | None) -> None:
+        now = utc_now()
+        with self._connect() as conn:
+            r = conn.execute(
+                "UPDATE inventory_pending SET status='rejected',reviewed_by=?,reviewed_at=?,updated_at=? "
+                "WHERE id=? AND organization_id=? AND status='pending'",
+                (reviewer, now, now, pending_id, org),
+            )
+            if r.rowcount == 0: raise LookupError("Pending item not found or already reviewed")
+
+    def build_inventory_ai_prompt(self, org: str, warehouse_id: str | None = None) -> str:
+        """Build system prompt for inventory AI parsing — called by HTTP handler."""
+        skus = self.list_skus(org)
+        sku_catalog = "\n".join(
+            f"- {s['sku_code']}: {s['name']} ({s['unit']}, category={s['category']})"
+            for s in skus[:100]
+        )
+        warehouses = self.list_warehouses(org)
+        wh_list = "\n".join(f"- id={w['id']} name={w['name']}" for w in warehouses)
+        prompt = (
+            "You are an inventory assistant. Extract stock movements from the user's note.\n"
+            "Return ONLY a JSON object with key 'movements' (array) and 'confidence' (0-1).\n"
+            "Each movement: {warehouseId, skuId, movementType, quantity, reference, note}\n"
+            "movementType: receive|issue|transfer|adjustment|return|loss\n"
+            "Match SKUs by name/code from the catalog. If unsure, set skuId=null and add sku_name_guess.\n\n"
+            f"Available warehouses:\n{wh_list or 'None defined'}\n\n"
+            f"SKU catalog:\n{sku_catalog or 'No SKUs defined'}\n\n"
+            "Return JSON only, no explanation."
+        )
+        if warehouse_id:
+            prompt += f"\nTarget warehouse: {warehouse_id}"
+        return prompt
+
+    def create_inventory_pending_from_ai(self, org: str, text: str,
+                                          ai_response: str, warehouse_id: str | None = None) -> dict[str, Any]:
+        """Parse AI response JSON and create pending approval entry."""
+        import re as _re
+        try:
+            m = _re.search(r'\{.*\}', ai_response, _re.DOTALL)
+            parsed = json.loads(m.group(0)) if m else {}
+        except Exception:
+            parsed = {}
+        movements = parsed.get("movements", [])
+        confidence = float(parsed.get("confidence", 0.5))
+        pending = self.create_inventory_pending(
+            org, "ai", text, movements, confidence,
+            source_ref=f"ai-{utc_now()[:10]}"
+        )
+        pending["aiResponse"] = ai_response[:2000]
+        return pending
+
+    # XLSX import (stdlib only — XLSX is a ZIP of XML files)
+    @staticmethod
+    def _parse_xlsx_movements(data: bytes) -> list[dict[str, Any]]:
+        """Parse an Excel file for inventory columns: SKU, Warehouse, Qty, Type, Reference."""
+        import zipfile, xml.etree.ElementTree as ET
+        NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        rows: list[dict[str, Any]] = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                # Shared strings
+                shared: list[str] = []
+                if "xl/sharedStrings.xml" in zf.namelist():
+                    tree = ET.parse(zf.open("xl/sharedStrings.xml"))
+                    for si in tree.getroot().findall(f".//{{{NS}}}si"):
+                        texts = "".join(t.text or "" for t in si.iter(f"{{{NS}}}t"))
+                        shared.append(texts)
+                # First sheet
+                sheet_name = "xl/worksheets/sheet1.xml"
+                if sheet_name not in zf.namelist():
+                    for n in zf.namelist():
+                        if n.startswith("xl/worksheets/sheet") and n.endswith(".xml"):
+                            sheet_name = n; break
+                tree = ET.parse(zf.open(sheet_name))
+                header: list[str] = []
+                for i, row_el in enumerate(tree.getroot().findall(f".//{{{NS}}}row")):
+                    cells = []
+                    for c in row_el.findall(f"{{{NS}}}c"):
+                        t = c.get("t","")
+                        if t == "inlineStr":
+                            is_el = c.find(f"{{{NS}}}is")
+                            text = "".join(el.text or "" for el in (is_el.iter(f"{{{NS}}}t") if is_el is not None else []))
+                            cells.append(text)
+                            continue
+                        v_el = c.find(f"{{{NS}}}v")
+                        v = v_el.text if v_el is not None else ""
+                        if t == "s" and v is not None:
+                            cells.append(shared[int(v)] if int(v) < len(shared) else "")
+                        else:
+                            cells.append(v or "")
+                    if i == 0:
+                        header = [h.strip().lower() for h in cells]
+                        continue
+                    if not any(cells): continue
+                    record = dict(zip(header, cells))
+                    # Normalise keys
+                    sku = record.get("sku") or record.get("sku_code") or record.get("артикул","")
+                    wh  = record.get("warehouse") or record.get("склад","")
+                    qty_raw = record.get("qty") or record.get("quantity") or record.get("количество","0")
+                    mv_type = record.get("type") or record.get("movement_type") or "receive"
+                    ref = record.get("reference") or record.get("ref") or record.get("po","")
+                    try: qty = float(qty_raw)
+                    except Exception: qty = 0
+                    if sku and qty:
+                        rows.append({
+                            "sku_code_guess": sku.upper(), "warehouse_name_guess": wh,
+                            "movementType": mv_type.strip().lower() or "receive",
+                            "quantity": qty, "reference": str(ref)[:100],
+                            "note": "xlsx-import", "skuId": None, "warehouseId": None,
+                        })
+        except Exception as e:
+            rows.append({"error": str(e)})
+        return rows
+
+    def import_xlsx_inventory(self, org: str, data: bytes, recorded_by: str | None) -> dict[str, Any]:
+        """Parse XLSX, resolve SKUs/warehouses, create pending approval."""
+        raw_rows = self._parse_xlsx_movements(data)
+        # Resolve SKU codes and warehouse names to IDs
+        with self._connect() as conn:
+            sku_map = {r["sku_code"]: r["id"] for r in
+                       conn.execute("SELECT id,sku_code FROM inventory_skus WHERE organization_id=? AND active=1",
+                                    (org,)).fetchall()}
+            wh_map  = {r["name"].lower(): r["id"] for r in
+                       conn.execute("SELECT id,name FROM warehouses WHERE organization_id=? AND active=1",
+                                    (org,)).fetchall()}
+        resolved = []
+        for row in raw_rows:
+            if "error" in row: continue
+            row["skuId"] = sku_map.get(row.get("sku_code_guess",""))
+            wh_guess = (row.get("warehouse_name_guess","") or "").lower()
+            row["warehouseId"] = wh_map.get(wh_guess)
+            row["recordedBy"] = recorded_by
+            resolved.append(row)
+        pending = self.create_inventory_pending(
+            org, "import", f"xlsx-import ({len(resolved)} rows)",
+            resolved, ai_confidence=None, source_ref="xlsx"
+        )
+        return pending
+
     # ── Budget Tracking ───────────────────────────────────────────────────────
 
     def get_budget_summary(self, org: str, project_id: str) -> dict[str, Any]:
@@ -6492,6 +6897,31 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             result = self.store.sweep_overdue_items(self.organization_id)
             self._json(HTTPStatus.OK, result)
             return
+        # Inventory: GET /api/v1/inventory/warehouses|skus|stock|movements|pending
+        if len(parts) >= 4 and parts[3] == "inventory":
+            if not self._require_permission("projectRead"): return
+            sub = parts[4] if len(parts) > 4 else ""
+            org = self.organization_id
+            if sub == "warehouses":
+                self._json(HTTPStatus.OK, {"warehouses": self.store.list_warehouses(org)}); return
+            if sub == "skus":
+                cat = self.query_params.get("category",[None])[0]
+                q = self.query_params.get("q",[None])[0]
+                if q:
+                    self._json(HTTPStatus.OK, {"skus": self.store.search_skus(org, q)}); return
+                self._json(HTTPStatus.OK, {"skus": self.store.list_skus(org, cat)}); return
+            if sub == "stock":
+                wh = self.query_params.get("warehouseId",[None])[0]
+                self._json(HTTPStatus.OK, {"stock": self.store.get_stock_levels(org, wh)}); return
+            if sub == "movements":
+                sku_id = self.query_params.get("skuId",[None])[0]
+                wh = self.query_params.get("warehouseId",[None])[0]
+                limit = int(self.query_params.get("limit",["100"])[0])
+                self._json(HTTPStatus.OK, {"movements": self.store.list_movements(org, sku_id, wh, limit)}); return
+            if sub == "pending":
+                status = self.query_params.get("status",["pending"])[0]
+                self._json(HTTPStatus.OK, {"pending": self.store.list_inventory_pending(org, status)}); return
+            self._error(HTTPStatus.NOT_FOUND, "not_found", "Unknown inventory route"); return
         # Budget: GET /api/v1/projects/:id/budget  and  /expenses
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "budget":
             if not self._require_permission("projectRead"): return
@@ -7234,6 +7664,63 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
+        # Inventory POST routes
+        if len(parts) >= 4 and parts[3] == "inventory":
+            org = self.organization_id
+            sub = parts[4] if len(parts) > 4 else ""
+            try:
+                if sub == "warehouses":
+                    if not self._require_permission("adminPanel"): return
+                    wh = self.store.create_warehouse(org, self._read_json())
+                    self._json(HTTPStatus.CREATED, {"warehouse": wh}); return
+                if len(parts) == 7 and sub == "warehouses" and parts[6] == "delete":
+                    if not self._require_permission("adminPanel"): return
+                    self.store.delete_warehouse(org, parts[5])
+                    self._json(HTTPStatus.OK, {"deleted": True}); return
+                if sub == "skus":
+                    if not self._require_permission("projectManage"): return
+                    sku = self.store.create_sku(org, self._read_json())
+                    self._json(HTTPStatus.CREATED, {"sku": sku}); return
+                if sub == "movements":
+                    if not self._require_permission("projectManage"): return
+                    result = self.store.record_movement(org, self._read_json())
+                    self._json(HTTPStatus.CREATED, result); return
+                if sub == "pending" and len(parts) == 7 and parts[6] in ("approve","reject"):
+                    if not self._require_permission("projectManage"): return
+                    pending_id = parts[5]; action = parts[6]
+                    payload = self._read_json()
+                    reviewer = payload.get("reviewer", self.current_role)
+                    if action == "approve":
+                        indices = payload.get("approvedIndices")
+                        result = self.store.approve_inventory_pending(org, pending_id, reviewer, indices)
+                        self._json(HTTPStatus.OK, result); return
+                    else:
+                        self.store.reject_inventory_pending(org, pending_id, reviewer)
+                        self._json(HTTPStatus.OK, {"rejected": True}); return
+                if sub == "ai-parse":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    text = str(payload.get("text","")).strip()
+                    if not text:
+                        self._error(HTTPStatus.BAD_REQUEST, "missing_text", "text required"); return
+                    warehouse_id = payload.get("warehouseId")
+                    system_prompt = self.store.build_inventory_ai_prompt(org, warehouse_id)
+                    ai = self.server.ai_gateway  # type: ignore[attr-defined]
+                    ai_response = ai.complete(f"{system_prompt}\n\nUser note:\n{text}", max_tokens=512) or ""
+                    pending = self.store.create_inventory_pending_from_ai(org, text, ai_response, warehouse_id)
+                    self._json(HTTPStatus.CREATED, pending); return
+                if sub == "import-xlsx":
+                    if not self._require_permission("projectManage"): return
+                    content_length = int(self.headers.get("Content-Length","0"))
+                    if content_length > 10_000_000:
+                        self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large", "Max 10 MB"); return
+                    data = self.rfile.read(content_length)
+                    pending = self.store.import_xlsx_inventory(org, data, self.current_role)
+                    self._json(HTTPStatus.CREATED, pending); return
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err)); return
+            except LookupError as err:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err)); return
         # Budget: POST /api/v1/projects/:id/budget  /expenses  /expenses/:eid/delete
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "budget":
             if not self._require_permission("projectManage"): return

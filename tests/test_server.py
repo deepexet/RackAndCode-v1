@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "061")
+        self.assertEqual(first.current_version, "062")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -938,6 +938,81 @@ class WorkspaceStoreTests(unittest.TestCase):
         })
         self.store.delete_expense(DEFAULT_ORGANIZATION_ID, exp["id"])
         self.assertEqual(self.store.list_expenses(DEFAULT_ORGANIZATION_ID, proj["id"]), [])
+
+
+
+    def test_inventory_warehouse_and_sku_crud(self):
+        wh = self.store.create_warehouse(DEFAULT_ORGANIZATION_ID, {
+            "name": "Main Warehouse", "location": "Building A"
+        })
+        self.assertEqual(wh["name"], "Main Warehouse")
+        warehouses = self.store.list_warehouses(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(warehouses), 1)
+        sku = self.store.create_sku(DEFAULT_ORGANIZATION_ID, {
+            "skuCode": "CAT6A-305", "name": "Cat6A UTP Cable 305m",
+            "unit": "roll", "category": "cable"
+        })
+        self.assertEqual(sku["sku_code"], "CAT6A-305")
+        skus = self.store.list_skus(DEFAULT_ORGANIZATION_ID, "cable")
+        self.assertEqual(len(skus), 1)
+
+    def test_inventory_movement_updates_stock(self):
+        wh = self.store.create_warehouse(DEFAULT_ORGANIZATION_ID, {"name": "WH1"})
+        sku = self.store.create_sku(DEFAULT_ORGANIZATION_ID, {"skuCode": "ITEM-1", "name": "Test Item", "unit": "pcs"})
+        result = self.store.record_movement(DEFAULT_ORGANIZATION_ID, {
+            "warehouseId": wh["id"], "skuId": sku["id"],
+            "movementType": "receive", "quantity": 100,
+        })
+        self.assertEqual(result["newQuantity"], 100)
+        result2 = self.store.record_movement(DEFAULT_ORGANIZATION_ID, {
+            "warehouseId": wh["id"], "skuId": sku["id"],
+            "movementType": "issue", "quantity": 30,
+        })
+        self.assertEqual(result2["newQuantity"], 70)
+        stock = self.store.get_stock_levels(DEFAULT_ORGANIZATION_ID, wh["id"])
+        self.assertEqual(len(stock), 1)
+        self.assertAlmostEqual(stock[0]["quantity"], 70.0)
+
+    def test_inventory_pending_approve(self):
+        wh = self.store.create_warehouse(DEFAULT_ORGANIZATION_ID, {"name": "WH2"})
+        sku = self.store.create_sku(DEFAULT_ORGANIZATION_ID, {"skuCode": "ITEM-2", "name": "Cable", "unit": "m"})
+        movements = [{"warehouseId": wh["id"], "skuId": sku["id"], "movementType": "receive", "quantity": 50}]
+        pending = self.store.create_inventory_pending(
+            DEFAULT_ORGANIZATION_ID, "ai", "Got 50m cable", movements, 0.9
+        )
+        self.assertEqual(pending["status"], "pending")
+        result = self.store.approve_inventory_pending(DEFAULT_ORGANIZATION_ID, pending["id"], "admin")
+        self.assertEqual(result["applied"], 1)
+        self.assertEqual(result["status"], "approved")
+        stock = self.store.get_stock_levels(DEFAULT_ORGANIZATION_ID, wh["id"])
+        self.assertAlmostEqual(stock[0]["quantity"], 50.0)
+
+    def test_inventory_search_skus(self):
+        self.store.create_sku(DEFAULT_ORGANIZATION_ID, {"skuCode": "CAT6-100", "name": "Cat6 Cable 100m", "unit": "roll"})
+        self.store.create_sku(DEFAULT_ORGANIZATION_ID, {"skuCode": "CAT7-100", "name": "Cat7 Cable 100m", "unit": "roll"})
+        results = self.store.search_skus(DEFAULT_ORGANIZATION_ID, "Cat6")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["sku_code"], "CAT6-100")
+
+    def test_inventory_xlsx_import(self):
+        import io, zipfile, xml.etree.ElementTree as ET
+        # Build minimal xlsx in memory
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            sheet = """<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>
+<row><c t="inlineStr"><is><t>sku</t></is></c><c t="inlineStr"><is><t>warehouse</t></is></c><c t="inlineStr"><is><t>qty</t></is></c></row>
+<row><c t="inlineStr"><is><t>ITEM-X</t></is></c><c t="inlineStr"><is><t>Store1</t></is></c><c><v>25</v></c></row>
+</sheetData></worksheet>"""
+            zf.writestr("xl/worksheets/sheet1.xml", sheet)
+        data = buf.getvalue()
+        pending = self.store.import_xlsx_inventory(DEFAULT_ORGANIZATION_ID, data, "tester")
+        self.assertEqual(pending["source"], "import")
+        # 1 row parsed (sku_code unresolved → skuId=None but still in movements)
+        movements = pending["suggested_movements"]
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0]["sku_code_guess"], "ITEM-X")
 
 
     def test_issue_list_by_project(self):
