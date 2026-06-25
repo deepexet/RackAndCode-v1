@@ -640,7 +640,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -5595,6 +5595,7 @@ async function setup() {
   $('#clearAuditButton').addEventListener('click', () => { state.audit = []; persist('', { auditDirty: true }); renderAudit(); });
   $('#newProjectButton').addEventListener('click', () => { $('#projectForm').reset(); populateProjectWorkTypeScope(); $('#projectDialog').showModal(); requestAnimationFrame(() => $('#projectCode').focus()); });
   document.getElementById('fromTemplateButton')?.addEventListener('click', openCreateFromTemplate);
+  document.getElementById('refreshSessionsBtn')?.addEventListener('click', hydrateSessionsAdmin);
   document.getElementById('addTemplateBtn')?.addEventListener('click', () => {
     const dialog = document.createElement('dialog');
     dialog.innerHTML = `
@@ -5827,6 +5828,56 @@ async function loadTemplates() {
     _templates = templates;
     return templates;
   } catch { return []; }
+}
+
+async function hydrateSessionsAdmin() {
+  const list = document.getElementById('sessionsList');
+  if (!list) return;
+  try {
+    const r = await apiFetch('/api/v1/admin/sessions');
+    const { sessions = [] } = await r.json();
+    if (!sessions.length) {
+      list.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет активных сессий.</p>';
+      return;
+    }
+    list.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:var(--text-muted);text-align:left">
+        <th style="padding:6px 8px">Пользователь</th>
+        <th style="padding:6px 8px">Роль</th>
+        <th style="padding:6px 8px">IP</th>
+        <th style="padding:6px 8px">Последняя активность</th>
+        <th style="padding:6px 8px">Истекает</th>
+        <th style="padding:6px 8px"></th>
+      </tr></thead>
+      <tbody>${sessions.map(s => `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:7px 8px">
+          <strong>${escapeHtml(s.displayName || s.email || s.userId)}</strong>
+          <small style="display:block;color:var(--text-muted)">${escapeHtml(s.email || '')}</small>
+        </td>
+        <td style="padding:7px 8px">${escapeHtml(s.role)}</td>
+        <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.ipAddress || '—')}</td>
+        <td style="padding:7px 8px;color:var(--text-muted)">${(s.lastSeenAt||'').slice(0,16).replace('T',' ')}</td>
+        <td style="padding:7px 8px;color:var(--text-muted)">${(s.expiresAt||'').slice(0,16).replace('T',' ')}</td>
+        <td style="padding:7px 8px">
+          <button type="button" class="text-button danger" style="font-size:11px" data-revoke-prefix="${s.tokenHash.replace('…','')}">Отозвать</button>
+        </td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+    list.querySelectorAll('[data-revoke-prefix]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Отозвать эту сессию?')) return;
+        try {
+          const r2 = await apiFetch('/api/v1/admin/sessions/revoke', {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ tokenHashPrefix: btn.dataset.revokePrefix }),
+          });
+          const { revoked } = await r2.json();
+          toast(revoked ? 'Сессия отозвана' : 'Сессия не найдена');
+          hydrateSessionsAdmin();
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+  } catch { list.innerHTML = '<p class="empty-copy" style="font-size:13px">Недоступно.</p>'; }
 }
 
 async function hydrateTemplatesAdmin() {

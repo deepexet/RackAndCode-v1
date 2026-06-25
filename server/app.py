@@ -1982,17 +1982,52 @@ class WorkspaceStore:
             )
             return password
 
+    def list_active_sessions(self, org: str) -> list[dict[str, Any]]:
+        now = utc_now()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT s.token_hash, s.user_id, s.role, s.created_at, s.expires_at, "
+                "s.last_seen_at, s.ip_address, s.user_agent, s.revoked, "
+                "u.email, u.display_name "
+                "FROM sessions s LEFT JOIN users u ON u.id=s.user_id "
+                "WHERE s.organization_id=? AND s.revoked=0 AND s.expires_at > ? "
+                "ORDER BY s.last_seen_at DESC",
+                (org, now),
+            ).fetchall()
+        return [{
+            "tokenHash": r["token_hash"][:8] + "…",  # never expose full hash
+            "userId": r["user_id"],
+            "email": r["email"],
+            "displayName": r["display_name"],
+            "role": r["role"],
+            "createdAt": r["created_at"],
+            "expiresAt": r["expires_at"],
+            "lastSeenAt": r["last_seen_at"],
+            "ipAddress": r["ip_address"],
+            "userAgent": (r["user_agent"] or "")[:80],
+        } for r in rows]
+
+    def revoke_session(self, org: str, token_hash_prefix: str) -> int:
+        with self._connect() as conn:
+            result = conn.execute(
+                "UPDATE sessions SET revoked=1 WHERE organization_id=? AND token_hash LIKE ?",
+                (org, token_hash_prefix + "%"),
+            )
+        return result.rowcount
+
     def validate_session(self, token: str) -> dict[str, Any] | None:
         """Return session context dict or None if expired/invalid."""
         token_hash = _hash_token(token)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT s.user_id, s.organization_id, s.role, s.expires_at, u.email, u.display_name "
+                "SELECT s.user_id, s.organization_id, s.role, s.expires_at, s.revoked, u.email, u.display_name "
                 "FROM sessions s JOIN users u ON u.id = s.user_id "
                 "WHERE s.token_hash = ?",
                 (token_hash,),
             ).fetchone()
             if not row:
+                return None
+            if row["revoked"]:
                 return None
             if row["expires_at"] < utc_now():
                 connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
@@ -5303,7 +5338,8 @@ Rules:
             conn.execute("UPDATE mfa_backup_codes SET used=1 WHERE id=?", (row["id"],))
         return True
 
-    def login(self, email: str, password: str) -> dict[str, Any] | None:
+    def login(self, email: str, password: str,
+               ip_address: str | None = None, user_agent: str | None = None) -> dict[str, Any] | None:
         """Returns None on bad credentials, or session dict.
         If MFA is required returns {mfaRequired: True, challengeToken: ...} instead."""
         with self._connect() as conn:
@@ -5333,7 +5369,7 @@ Rules:
             return {"mfaRequired": True, "challengeToken": challenge_token,
                     "user": {"id": user["id"], "displayName": user["display_name"], "email": email}}
 
-        return self._create_session(user, email)
+        return self._create_session(user, email, ip_address=ip_address, user_agent=user_agent)
 
     def verify_mfa_challenge(self, challenge_token: str, code: str) -> dict[str, Any] | None:
         """Verify TOTP or backup code against challenge. Returns full session on success."""
@@ -5362,15 +5398,18 @@ Rules:
             return None
         return self._create_session(user, user["email"])
 
-    def _create_session(self, user: Any, email: str) -> dict[str, Any]:
+    def _create_session(self, user: Any, email: str,
+                         ip_address: str | None = None, user_agent: str | None = None) -> dict[str, Any]:
         token = secrets.token_urlsafe(32)
         token_hash = _hash_token(token)
         now = utc_now()
         expires = datetime.fromtimestamp(time.time() + SESSION_TTL_SECONDS, tz=timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO sessions (token_hash,user_id,organization_id,role,created_at,expires_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
-                (token_hash, user["id"], user["organization_id"], user["role"], now, expires, now),
+                "INSERT INTO sessions (token_hash,user_id,organization_id,role,created_at,expires_at,last_seen_at,ip_address,user_agent) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (token_hash, user["id"], user["organization_id"], user["role"], now, expires, now,
+                 ip_address, (user_agent or "")[:200]),
             )
         return {
             "token": token,
@@ -6141,6 +6180,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             to_date = qs.get("to", today)
             records = self.store.list_presence(self.organization_id, project_id, from_date, to_date)
             self._json(HTTPStatus.OK, {"presence": records})
+            return
+        # Session management: GET /api/v1/admin/sessions
+        if path == "/api/v1/admin/sessions":
+            if not self._require_permission("adminPanel"): return
+            sessions = self.store.list_active_sessions(self.organization_id)
+            self._json(HTTPStatus.OK, {"sessions": sessions, "count": len(sessions)})
             return
         # Issues: GET /api/v1/issues?projectId=&status=&severity=
         if path == "/api/v1/issues":
@@ -6940,6 +6985,20 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"marked": count})
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        # Session revoke: POST /api/v1/admin/sessions/revoke
+        if path == "/api/v1/admin/sessions/revoke":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                prefix = payload.get("tokenHashPrefix", "")
+                if not isinstance(prefix, str) or len(prefix) < 4:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "tokenHashPrefix ≥4 chars required")
+                    return
+                revoked = self.store.revoke_session(self.organization_id, prefix)
+                self._json(HTTPStatus.OK, {"revoked": revoked})
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e))
             return
         # Issues: POST /api/v1/issues/:id/transition  and  /issues/:id/assign
         _issue_parts = path.split("/")
@@ -7772,8 +7831,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if not email or not password:
             self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "email and password are required")
             return
-        result = self.store.login(email, password)
         ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        ua = self.headers.get("User-Agent", "")
+        result = self.store.login(email, password, ip_address=ip, user_agent=ua)
         if not result:
             self.store.audit(self.organization_id, None, None, "login", "session", None, "denied", ip)
             self._error(HTTPStatus.UNAUTHORIZED, "invalid_credentials", "Invalid email or password")

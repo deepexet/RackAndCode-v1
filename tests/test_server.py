@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "057")
+        self.assertEqual(first.current_version, "058")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -777,6 +777,55 @@ class WorkspaceStoreTests(unittest.TestCase):
                 (DEFAULT_ORGANIZATION_ID, issue_id, project_id, title, "", severity, "open", now, now),
             )
         return self.store.get_issue(DEFAULT_ORGANIZATION_ID, issue_id)
+
+    def _login_user(self, email: str = "sess@test.invalid", password: str = "Pass1234!") -> str:
+        import hashlib as _hl, secrets as _sec
+        uid = self._make_user()
+        salt = _sec.token_bytes(16)
+        dk = _hl.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+        ph = f"scrypt:{salt.hex()}:{dk.hex()}"
+        with self.store._connect() as conn:
+            conn.execute("UPDATE users SET email=? WHERE id=?", (email, uid))
+            conn.execute(
+                "INSERT OR REPLACE INTO password_credentials (user_id,password_hash,must_change,created_at,updated_at) "
+                "VALUES (?,?,0,datetime('now'),datetime('now'))", (uid, ph)
+            )
+        return uid
+
+    def test_session_created_on_login(self):
+        self._login_user()
+        result = self.store.login("sess@test.invalid", "Pass1234!", ip_address="192.168.1.1", user_agent="TestAgent/1")
+        self.assertIsNotNone(result)
+        self.assertIn("token", result)
+        sessions = self.store.list_active_sessions(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["ipAddress"], "192.168.1.1")
+
+    def test_session_revoke_invalidates(self):
+        self._login_user()
+        result = self.store.login("sess@test.invalid", "Pass1234!")
+        self.assertIsNotNone(result)
+        token = result["token"]
+        # Validate before revoke
+        ctx = self.store.validate_session(token)
+        self.assertIsNotNone(ctx)
+        # Revoke by prefix of token_hash
+        import hashlib
+        full_hash = hashlib.sha256(token.encode()).hexdigest()
+        revoked = self.store.revoke_session(DEFAULT_ORGANIZATION_ID, full_hash[:8])
+        self.assertEqual(revoked, 1)
+        # Session now invalid
+        ctx_after = self.store.validate_session(token)
+        self.assertIsNone(ctx_after)
+
+    def test_list_active_sessions_excludes_revoked(self):
+        self._login_user()
+        result = self.store.login("sess@test.invalid", "Pass1234!")
+        import hashlib
+        full_hash = hashlib.sha256(result["token"].encode()).hexdigest()
+        self.store.revoke_session(DEFAULT_ORGANIZATION_ID, full_hash[:8])
+        sessions = self.store.list_active_sessions(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(sessions, [])
 
     def test_issue_list_by_project(self):
         proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "ISS", "name": "Issue Test"})
