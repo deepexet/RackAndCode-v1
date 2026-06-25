@@ -641,7 +641,7 @@ function renderRoute() {
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
   if (route === 'inventory') { hydrateInventory(); }
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -6629,6 +6629,82 @@ function _bindInventoryEvents() {
       _quickMovement(_invSelectedWarehouse, found.id, found.name);
     } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
+}
+
+function hydrateDigest() {
+  const el = document.getElementById('digestWidget');
+  const refreshBtn = document.getElementById('digestRefreshBtn');
+  const aiBtn = document.getElementById('digestAiBtn');
+
+  async function loadDigest(useAi = false) {
+    if (!el) return;
+    el.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    try {
+      const r = await apiFetch('/api/v1/admin/digest', useAi ? { method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}' } : {});
+      const data = await r.json();
+
+      const lowStockHtml = data.lowStock?.length ? `
+        <div style="margin-bottom:14px">
+          <p style="font-size:11px;font-weight:700;color:#e8a84c;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">⚠ Низкий остаток (${data.lowStock.length})</p>
+          ${data.lowStock.map(item => {
+            const avail = (item.quantity||0) - (item.reserved||0);
+            const pct = item.min_quantity > 0 ? Math.round(item.quantity / item.min_quantity * 100) : 0;
+            return `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(232,168,76,.07);border-radius:7px;margin-bottom:4px">
+              <div style="flex:1">
+                <span style="font-size:12px;font-weight:600">${escapeHtml(item.sku_name)}</span>
+                <span style="font-size:10px;font-family:monospace;color:var(--text-muted);margin-left:6px">${escapeHtml(item.sku_code)}</span>
+                <span style="font-size:11px;color:var(--text-muted);display:block">${escapeHtml(item.warehouse_name)}</span>
+              </div>
+              <div style="text-align:right">
+                <strong style="font-size:13px;color:#e8a84c">${item.quantity}</strong>
+                <span style="font-size:11px;color:var(--text-muted)">/ min ${item.min_quantity} ${item.unit}</span>
+                <div style="font-size:10px;color:var(--text-muted)">avail: ${avail}</div>
+              </div>
+              <div style="width:40px;font-size:10px;text-align:center;color:#e8a84c">${pct}%</div>
+            </div>`;
+          }).join('')}
+        </div>` : '';
+
+      const projectsHtml = data.projects?.length ? `
+        <div style="margin-bottom:14px">
+          <p style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">📋 Проекты (${data.projects.length})</p>
+          ${data.projects.map(p => {
+            const bar = '█'.repeat(Math.floor(p.pct_done/10)) + '░'.repeat(10-Math.floor(p.pct_done/10));
+            const barColor = p.pct_done >= 80 ? '#4adc84' : p.pct_done >= 40 ? '#4f8ef7' : '#8b95a5';
+            return `<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:7px;margin-bottom:4px">
+              <code style="font-size:10px;color:var(--text-muted);min-width:36px">${escapeHtml(p.code)}</code>
+              <span style="flex:1;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}</span>
+              <span style="font-size:10px;font-family:monospace;color:${barColor}">${bar}</span>
+              <span style="font-size:12px;font-weight:700;color:${barColor};min-width:32px;text-align:right">${p.pct_done}%</span>
+              ${p.blocked ? `<span style="font-size:10px;color:#f46">⛔${p.blocked}</span>` : ''}
+            </div>`;
+          }).join('')}
+        </div>` : '';
+
+      const notesHtml = (data.pendingApprovals || data.openIssues) ? `
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${data.pendingApprovals ? `<span style="font-size:11px;padding:3px 9px;border-radius:8px;background:rgba(79,142,247,.1);color:var(--accent)">${data.pendingApprovals} ожидают одобрения</span>` : ''}
+          ${data.openIssues ? `<span style="font-size:11px;padding:3px 9px;border-radius:8px;background:rgba(244,68,68,.1);color:#f44">${data.openIssues} открытых проблем</span>` : ''}
+        </div>` : '';
+
+      const aiNarrativeHtml = data.narrative ? `
+        <div style="margin-bottom:14px;padding:12px 14px;background:rgba(79,142,247,.06);border:1px solid rgba(79,142,247,.2);border-radius:10px">
+          <p style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">✦ AI СВОДКА</p>
+          <p style="font-size:13px;line-height:1.5;color:var(--text)">${escapeHtml(data.narrative)}</p>
+        </div>` : '';
+
+      el.innerHTML = `
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:12px">Сгенерировано: ${(data.generatedAt||'').replace('T',' ').slice(0,16)} UTC</div>
+        ${aiNarrativeHtml}${lowStockHtml}${projectsHtml}${notesHtml}
+        ${(!data.lowStock?.length && !data.projects?.length && !data.pendingApprovals && !data.openIssues)
+          ? '<p class="empty-copy">Всё в порядке, критических событий нет.</p>' : ''}`;
+    } catch(e) {
+      if (el) el.innerHTML = `<p class="empty-copy">Ошибка: ${e.message}</p>`;
+    }
+  }
+
+  refreshBtn?.addEventListener('click', () => loadDigest(false));
+  aiBtn?.addEventListener('click', () => loadDigest(true));
 }
 
 async function hydrateEmailInboxes() {

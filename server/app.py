@@ -4557,6 +4557,101 @@ Rules:
             if result.rowcount == 0:
                 raise LookupError("Expense not found")
 
+    # ── Digest / Reporting ────────────────────────────────────────────────────
+
+    def build_digest_data(self, org: str) -> dict[str, Any]:
+        """Collect low-stock alerts + project progress for digest report."""
+        with self._connect() as conn:
+            # Low stock items
+            low_stock = conn.execute(
+                """SELECT s.quantity, s.reserved, s.min_quantity, s.location_bin,
+                          sk.name as sku_name, sk.sku_code, sk.unit,
+                          w.name as warehouse_name
+                   FROM inventory_stock s
+                   JOIN inventory_skus sk ON sk.id = s.sku_id
+                   JOIN warehouses w ON w.id = s.warehouse_id
+                   WHERE s.organization_id = ?
+                     AND s.min_quantity IS NOT NULL
+                     AND s.quantity <= s.min_quantity
+                   ORDER BY (s.quantity / s.min_quantity)""",
+                (org,)
+            ).fetchall()
+
+            # Active projects summary
+            projects = conn.execute(
+                """SELECT p.id, p.name, p.code, p.status,
+                          COUNT(wi.id) as total_items,
+                          SUM(CASE WHEN wi.status='done' THEN 1 ELSE 0 END) as done_items,
+                          SUM(CASE WHEN wi.status='blocked' THEN 1 ELSE 0 END) as blocked_items,
+                          p.budget_amount, p.budget_currency
+                   FROM projects p
+                   LEFT JOIN project_work_items wi ON wi.project_id=p.id AND wi.organization_id=p.organization_id
+                   WHERE p.organization_id=? AND p.status NOT IN ('archived','completed')
+                   GROUP BY p.id ORDER BY p.updated_at DESC LIMIT 20""",
+                (org,)
+            ).fetchall()
+
+            # Pending inventory approvals
+            pending_count = conn.execute(
+                "SELECT COUNT(*) FROM inventory_pending WHERE organization_id=? AND status='pending'", (org,)
+            ).fetchone()[0]
+
+            # Unresolved issues
+            open_issues = conn.execute(
+                "SELECT COUNT(*) FROM project_issues WHERE organization_id=? AND status NOT IN ('resolved','closed')", (org,)
+            ).fetchone()[0]
+
+        project_list = []
+        for p in projects:
+            total = p["total_items"] or 0
+            done = p["done_items"] or 0
+            blocked = p["blocked_items"] or 0
+            pct = round(done / total * 100) if total else 0
+            project_list.append({
+                "id": p["id"], "name": p["name"], "code": p["code"],
+                "status": p["status"], "pct_done": pct,
+                "total": total, "done": done, "blocked": blocked,
+                "budget": p["budget_amount"], "currency": p["budget_currency"],
+            })
+
+        return {
+            "generatedAt": utc_now(),
+            "lowStock": [dict(r) for r in low_stock],
+            "projects": project_list,
+            "pendingApprovals": pending_count,
+            "openIssues": open_issues,
+        }
+
+    def build_digest_text(self, org: str, data: dict[str, Any]) -> str:
+        """Format digest data as plain-text report."""
+        lines = [
+            f"=== RackPilot Digest — {data['generatedAt'][:10]} ===\n",
+        ]
+        if data["lowStock"]:
+            lines.append(f"⚠ LOW STOCK ALERTS ({len(data['lowStock'])} items)\n")
+            for item in data["lowStock"]:
+                avail = item["quantity"] - (item["reserved"] or 0)
+                lines.append(
+                    f"  • {item['sku_name']} [{item['sku_code']}] @ {item['warehouse_name']}: "
+                    f"{item['quantity']}/{item['min_quantity']} {item['unit']} (available: {avail})"
+                )
+            lines.append("")
+        if data["projects"]:
+            lines.append(f"📋 PROJECTS ({len(data['projects'])})\n")
+            for p in data["projects"]:
+                bar = "█" * (p["pct_done"] // 10) + "░" * (10 - p["pct_done"] // 10)
+                blocked_note = f" ⛔ {p['blocked']} blocked" if p["blocked"] else ""
+                lines.append(f"  [{p['code']}] {p['name']}: {bar} {p['pct_done']}%{blocked_note}")
+            lines.append("")
+        notes = []
+        if data["pendingApprovals"]:
+            notes.append(f"{data['pendingApprovals']} pending inventory approvals")
+        if data["openIssues"]:
+            notes.append(f"{data['openIssues']} open issues")
+        if notes:
+            lines.append("ℹ " + " | ".join(notes))
+        return "\n".join(lines)
+
     # ── Work Item Comments ────────────────────────────────────────────────────
 
     def list_wi_comments(self, org: str, work_item_id: str) -> list[dict[str, Any]]:
@@ -7426,6 +7521,22 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Digest: GET /api/v1/admin/digest[?format=text]
+        if path == "/api/v1/admin/digest":
+            if not self._require_permission("projectRead"): return
+            data = self.store.build_digest_data(self.organization_id)
+            fmt = self.query_params.get("format", ["json"])[0]
+            if fmt == "text":
+                text = self.store.build_digest_text(self.organization_id, data)
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(text.encode())))
+                self.end_headers()
+                self.wfile.write(text.encode())
+            else:
+                self._json(HTTPStatus.OK, data)
+            return
+        # Digest with AI narrative: POST /api/v1/admin/digest
         # Audit integrity: GET /api/v1/admin/audit-integrity
         if path == "/api/v1/admin/audit-integrity":
             if not self._require_permission("adminPanel"): return
@@ -8482,6 +8593,27 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"revoked": revoked})
             except (ValueError, json.JSONDecodeError) as e:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e))
+            return
+        # Digest AI narrative: POST /api/v1/admin/digest
+        if path == "/api/v1/admin/digest":
+            if not self._require_permission("projectRead"): return
+            data = self.store.build_digest_data(self.organization_id)
+            base_text = self.store.build_digest_text(self.organization_id, data)
+            ai = getattr(self.server, "ai_gateway", None)
+            if ai:
+                try:
+                    narrative = ai.complete(
+                        f"You are a project assistant. Summarize this status report in 3-4 concise sentences "
+                        f"highlighting the most urgent items. Write in Russian.\n\n{base_text}",
+                        max_tokens=256, org=self.organization_id, purpose="digest"
+                    ) or base_text
+                except Exception:
+                    narrative = base_text
+            else:
+                narrative = base_text
+            data["narrative"] = narrative
+            data["plainText"] = base_text
+            self._json(HTTPStatus.OK, data)
             return
         # Issues: POST /api/v1/issues/:id/transition  and  /issues/:id/assign
         _issue_parts = path.split("/")
