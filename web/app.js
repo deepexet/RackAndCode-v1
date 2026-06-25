@@ -3792,10 +3792,20 @@ function renderProjectDetail() {
       const allWi = project.workItems || [];
       const overdue = allWi.filter(w => w.status !== 'done' && w.dueDate && new Date(w.dueDate).getTime() < now);
       const soon = allWi.filter(w => w.status !== 'done' && w.dueDate && new Date(w.dueDate).getTime() >= now && new Date(w.dueDate).getTime() <= now + week);
-      const overdueHtml = overdue.length ? `<span style="color:#f46;font-size:10px;font-weight:700">${overdue.length} просрочено</span>` : '';
-      const soonHtml = soon.length ? `<span style="color:#e8a84c;font-size:10px;font-weight:600">${soon.length} сроком в 7 дней</span>` : '';
+      const blocked = allWi.filter(w => (w.effectiveStatus || w.status) === 'blocked');
+      const overdueHtml = overdue.length ? `<span style="color:#f46;font-size:10px;font-weight:700">⚠ ${overdue.length} просрочено</span>` : '';
+      const soonHtml = soon.length ? `<span style="color:#e8a84c;font-size:10px;font-weight:600">⏰ ${soon.length} в 7 дней</span>` : '';
+      // Health score: 100 - overduePenalty - blockedPenalty - issuePenalty
+      const total = allWi.length || 1;
+      let health = 100;
+      health -= Math.min(40, Math.round(overdue.length / total * 60));
+      health -= Math.min(20, Math.round(blocked.length / total * 30));
+      health -= Math.min(20, openIssues.length * 5);
+      health = Math.max(0, health);
+      const healthColor = health >= 70 ? '#3bb969' : health >= 40 ? '#e8a84c' : '#f46';
+      const healthLabel = health >= 70 ? 'Хорошее' : health >= 40 ? 'Среднее' : 'Критическое';
       return `<article><span>Прогресс</span><strong>${project.progress}%</strong></article>
-        <article><span>Обновлено сегодня</span><strong>${updatesToday.length}</strong></article>
+        <article><span>Health</span><strong style="color:${healthColor}">${health} <small style="font-size:9px;font-weight:400">${healthLabel}</small></strong></article>
         <article><span>Проблемы</span><strong>${openIssues.length}</strong></article>
         <article><span>Локации</span><strong>${project.locations.length}</strong></article>
         ${(overdueHtml || soonHtml) ? `<article style="flex-direction:column;gap:2px;align-items:flex-start">
