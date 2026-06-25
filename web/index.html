@@ -701,6 +701,34 @@
         <div id="connectorsList"><p class="empty-copy">Загрузка…</p></div>
       </section>
 
+      <section class="detail-section" data-permission="adminPanel" id="orgSettingsSection">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">ORGANIZATION</p><h2>Настройки организации</h2></div>
+          <button class="button ghost" id="saveOrgSettingsBtn" type="button">Сохранить</button>
+        </div>
+        <div id="orgSettingsForm" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:600px">
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Часовой пояс
+            <input id="orgTz" type="text" placeholder="UTC" style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Локаль
+            <input id="orgLocale" type="text" placeholder="en" style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Формат даты
+            <input id="orgDateFormat" type="text" placeholder="YYYY-MM-DD" style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Валюта
+            <input id="orgCurrency" type="text" placeholder="USD" style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:13px">Начало рабочей недели
+            <select id="orgWorkWeekStart" style="padding:7px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+              <option value="0">Воскресенье</option>
+              <option value="1">Понедельник</option>
+              <option value="6">Суббота</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
       <section class="detail-section" data-permission="adminPanel" id="sessionsSection">
         <div class="detail-section-title">
           <div><p class="eyebrow">SECURITY</p><h2>Активные сессии</h2></div>

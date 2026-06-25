@@ -3692,6 +3692,101 @@ Rules:
             "criticalIssues": critical_issues,
         }
 
+    # ── Project Milestones ────────────────────────────────────────────────────
+
+    _MILESTONE_STATUSES = {"pending", "at_risk", "achieved", "missed"}
+
+    def list_milestones(self, org: str, project_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM project_milestones WHERE organization_id=? AND project_id=? ORDER BY target_date",
+                (org, project_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_milestone(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Milestone name required")
+        target_date = payload.get("targetDate")
+        if not isinstance(target_date, str) or len(target_date) != 10:
+            raise ValueError("targetDate required (YYYY-MM-DD)")
+        mid = str(uuid.uuid4())
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_milestones (id,organization_id,project_id,name,description,"
+                "target_date,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (mid, org, project_id, name.strip(), str(payload.get("description",""))[:500],
+                 target_date, "pending", now, now),
+            )
+            row = conn.execute("SELECT * FROM project_milestones WHERE id=?", (mid,)).fetchone()
+        return dict(row)
+
+    def update_milestone(self, org: str, milestone_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        row = None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_milestones WHERE id=? AND organization_id=?", (milestone_id, org)
+            ).fetchone()
+        if row is None:
+            raise LookupError("Milestone not found")
+        now = utc_now()
+        status = payload.get("status", row["status"])
+        if status not in self._MILESTONE_STATUSES:
+            raise ValueError(f"Invalid milestone status")
+        achieved_at = now if status == "achieved" and row["status"] != "achieved" else row["achieved_at"]
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE project_milestones SET name=?,description=?,target_date=?,status=?,achieved_at=?,updated_at=? "
+                "WHERE id=? AND organization_id=?",
+                (payload.get("name", row["name"]),
+                 payload.get("description", row["description"]),
+                 payload.get("targetDate", row["target_date"]),
+                 status, achieved_at, now, milestone_id, org),
+            )
+            updated = conn.execute("SELECT * FROM project_milestones WHERE id=?", (milestone_id,)).fetchone()
+        return dict(updated)
+
+    def delete_milestone(self, org: str, milestone_id: str) -> None:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM project_milestones WHERE id=? AND organization_id=?", (milestone_id, org)
+            )
+            if result.rowcount == 0:
+                raise LookupError("Milestone not found")
+
+    # ── Org Settings ──────────────────────────────────────────────────────────
+
+    def get_org_settings(self, org: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM org_settings WHERE organization_id=?", (org,)).fetchone()
+        if row:
+            return dict(row)
+        return {"organization_id": org, "timezone": "UTC", "locale": "en",
+                "date_format": "YYYY-MM-DD", "currency": "USD", "work_week_start": 1}
+
+    def update_org_settings(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        current = self.get_org_settings(org)
+        tz = payload.get("timezone", current["timezone"])
+        locale = payload.get("locale", current["locale"])
+        date_fmt = payload.get("dateFormat", current["date_format"])
+        currency = payload.get("currency", current["currency"])
+        wws = payload.get("workWeekStart", current["work_week_start"])
+        if not isinstance(wws, int) or wws not in range(7):
+            raise ValueError("workWeekStart must be 0-6")
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO org_settings (organization_id,timezone,locale,date_format,currency,work_week_start,updated_at) "
+                "VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(organization_id) DO UPDATE SET "
+                "timezone=excluded.timezone, locale=excluded.locale, date_format=excluded.date_format, "
+                "currency=excluded.currency, work_week_start=excluded.work_week_start, updated_at=excluded.updated_at",
+                (org, tz, locale, date_fmt, currency, wws, now),
+            )
+        return self.get_org_settings(org)
+
     # ── Scheduled Reports ────────────────────────────────────────────────────
 
     _REPORT_TYPES = {"project_summary", "issues", "team_presence", "velocity"}
@@ -6230,6 +6325,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             result = self.store.sweep_overdue_items(self.organization_id)
             self._json(HTTPStatus.OK, result)
             return
+        # Org settings: GET /api/v1/admin/org-settings
+        if path == "/api/v1/admin/org-settings":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, {"settings": self.store.get_org_settings(self.organization_id)})
+            return
+        # Milestones: GET /api/v1/projects/:id/milestones
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "milestones":
+            if not self._require_permission("projectRead"): return
+            project_id = parts[4]
+            self._json(HTTPStatus.OK, {"milestones": self.store.list_milestones(self.organization_id, project_id)})
+            return
         # Scheduled reports: GET /api/v1/admin/scheduled-reports
         if path == "/api/v1/admin/scheduled-reports":
             if not self._require_permission("adminRead"): return
@@ -6907,6 +7013,46 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
             return
+        # Org settings: POST /api/v1/admin/org-settings
+        if path == "/api/v1/admin/org-settings":
+            if not self._require_permission("adminPanel"): return
+            try:
+                payload = self._read_json()
+                settings = self.store.update_org_settings(self.organization_id, payload)
+                self._json(HTTPStatus.OK, {"settings": settings})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        # Milestones: POST /api/v1/projects/:id/milestones  and  /:id/milestones/:mid/update|delete
+        if len(parts) >= 6 and parts[3] == "projects" and parts[5] == "milestones":
+            project_id = parts[4]
+            if not self._require_permission("projectManage"): return
+            if len(parts) == 6:
+                # Create
+                try:
+                    ms = self.store.create_milestone(self.organization_id, project_id, self._read_json())
+                    self._json(HTTPStatus.CREATED, {"milestone": ms})
+                except (ValueError, json.JSONDecodeError) as err:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+                return
+            if len(parts) == 8 and parts[7] in ("update", "delete"):
+                mid = parts[6]
+                action = parts[7]
+                if action == "delete":
+                    try:
+                        self.store.delete_milestone(self.organization_id, mid)
+                        self._json(HTTPStatus.OK, {"deleted": True})
+                    except LookupError as err:
+                        self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+                    return
+                if action == "update":
+                    try:
+                        ms = self.store.update_milestone(self.organization_id, mid, self._read_json())
+                        self._json(HTTPStatus.OK, {"milestone": ms})
+                    except (LookupError, ValueError, json.JSONDecodeError) as err:
+                        status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                        self._error(status, "invalid_request", str(err))
+                    return
         # Scheduled reports: POST /api/v1/admin/scheduled-reports  and  /:id/delete  and  /:id/run
         if path == "/api/v1/admin/scheduled-reports":
             if not self._require_permission("adminRead"): return

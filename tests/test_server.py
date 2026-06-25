@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "058")
+        self.assertEqual(first.current_version, "059")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -826,6 +826,48 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.store.revoke_session(DEFAULT_ORGANIZATION_ID, full_hash[:8])
         sessions = self.store.list_active_sessions(DEFAULT_ORGANIZATION_ID)
         self.assertEqual(sessions, [])
+
+
+    def test_milestone_create_and_list(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "MS", "name": "Milestone Test"})
+        ms = self.store.create_milestone(DEFAULT_ORGANIZATION_ID, proj["id"], {
+            "name": "Phase 1 Complete", "targetDate": "2026-09-01"
+        })
+        self.assertEqual(ms["name"], "Phase 1 Complete")
+        self.assertEqual(ms["status"], "pending")
+        milestones = self.store.list_milestones(DEFAULT_ORGANIZATION_ID, proj["id"])
+        self.assertEqual(len(milestones), 1)
+
+    def test_milestone_update_status_to_achieved(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "MS2", "name": "MS Update"})
+        ms = self.store.create_milestone(DEFAULT_ORGANIZATION_ID, proj["id"], {
+            "name": "Go Live", "targetDate": "2026-10-01"
+        })
+        updated = self.store.update_milestone(DEFAULT_ORGANIZATION_ID, ms["id"], {"status": "achieved"})
+        self.assertEqual(updated["status"], "achieved")
+        self.assertIsNotNone(updated["achieved_at"])
+
+    def test_milestone_delete(self):
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "MS3", "name": "MS Delete"})
+        ms = self.store.create_milestone(DEFAULT_ORGANIZATION_ID, proj["id"], {
+            "name": "Drop", "targetDate": "2026-11-01"
+        })
+        self.store.delete_milestone(DEFAULT_ORGANIZATION_ID, ms["id"])
+        self.assertEqual(self.store.list_milestones(DEFAULT_ORGANIZATION_ID, proj["id"]), [])
+
+    def test_org_settings_default_and_update(self):
+        defaults = self.store.get_org_settings(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(defaults["timezone"], "UTC")
+        self.assertEqual(defaults["locale"], "en")
+        updated = self.store.update_org_settings(DEFAULT_ORGANIZATION_ID, {
+            "timezone": "Europe/Moscow", "locale": "ru", "currency": "RUB", "workWeekStart": 1
+        })
+        self.assertEqual(updated["timezone"], "Europe/Moscow")
+        self.assertEqual(updated["locale"], "ru")
+        self.assertEqual(updated["currency"], "RUB")
+        again = self.store.get_org_settings(DEFAULT_ORGANIZATION_ID)
+        self.assertEqual(again["timezone"], "Europe/Moscow")
+
 
     def test_issue_list_by_project(self):
         proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "ISS", "name": "Issue Test"})

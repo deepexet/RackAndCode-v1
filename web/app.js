@@ -640,7 +640,7 @@ function renderRoute() {
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings()]); renderAITeam(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -3802,6 +3802,13 @@ function renderProjectDetail() {
     </section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel"><div class="detail-section-title"><div><p class="eyebrow">ISSUES</p><h2>Проблемы</h2></div><b class="issue-count">${openIssues.length}</b></div><div class="issue-list">${openIssues.length ? openIssues.slice(0,6).map(issue => `<div class="issue-item ${issue.severity}"><span>${escapeHtml(issue.severity)}</span><strong>${escapeHtml(issue.title)}</strong><small>${escapeHtml(issue.description)}</small></div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}</div></article></section>
+    <section class="detail-section" id="milestonesSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">ROADMAP</p><h2>Вехи проекта</h2></div>
+        ${canManage ? `<button class="button ghost" id="addMilestoneBtn" type="button" style="font-size:12px">＋ Веха</button>` : ''}
+      </div>
+      <div id="milestonesList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="workloadWidgetSection">
       <div class="detail-section-title"><div><p class="eyebrow">НАГРУЗКА</p><h2>Распределение задач</h2></div></div>
       <div id="workloadSection"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
@@ -4125,6 +4132,69 @@ function renderProjectDetail() {
   setupPresencePanel(project.id);
   setupWorkItemsBulkList(project);
   hydrateProjectWorkload(project.id);
+  hydrateMilestones(project.id);
+}
+
+const _MILESTONE_STATUS_LABELS = {pending:'Ожидается',at_risk:'Под риском',achieved:'Достигнута',missed:'Пропущена'};
+const _MILESTONE_STATUS_COLORS = {pending:'var(--text-muted)',at_risk:'#e8a84c',achieved:'#4adc84',missed:'#f46'};
+
+async function hydrateMilestones(projectId) {
+  const list = document.getElementById('milestonesList');
+  if (!list) return;
+  try {
+    const r = await apiFetch(`/api/v1/projects/${projectId}/milestones`);
+    const { milestones = [] } = await r.json();
+    const canManage = roleCan('projectManage');
+    if (!milestones.length) {
+      list.innerHTML = '<p class="empty-copy" style="font-size:13px">Вехи не добавлены.</p>';
+    } else {
+      list.innerHTML = milestones.map(m => `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="width:10px;height:10px;border-radius:50%;background:${_MILESTONE_STATUS_COLORS[m.status]};flex-shrink:0"></div>
+          <div style="flex:1">
+            <strong style="font-size:13px">${escapeHtml(m.name)}</strong>
+            ${m.description ? `<small style="display:block;color:var(--text-muted)">${escapeHtml(m.description)}</small>` : ''}
+          </div>
+          <span style="font-size:11px;color:${_MILESTONE_STATUS_COLORS[m.status]};background:${_MILESTONE_STATUS_COLORS[m.status]}1a;padding:2px 7px;border-radius:10px">${_MILESTONE_STATUS_LABELS[m.status]||m.status}</span>
+          <span style="font-size:11px;color:var(--text-muted)">${m.target_date}</span>
+          ${canManage ? `<button type="button" class="text-button" style="font-size:11px" data-ms-id="${m.id}" data-ms-action="edit">•••</button>` : ''}
+        </div>`).join('');
+    }
+    // Add milestone button wiring
+    document.getElementById('addMilestoneBtn')?.addEventListener('click', async () => {
+      const name = prompt('Название вехи:');
+      if (!name?.trim()) return;
+      const targetDate = prompt('Целевая дата (YYYY-MM-DD):');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate||'')) { toast('Неверный формат даты'); return; }
+      try {
+        const r2 = await apiFetch(`/api/v1/projects/${projectId}/milestones`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ name: name.trim(), targetDate }),
+        });
+        if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+        toast('Веха добавлена'); hydrateMilestones(projectId);
+      } catch(e) { toast(`Ошибка: ${e.message}`); }
+    });
+    // Edit/status buttons
+    list.querySelectorAll('[data-ms-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const mid = btn.dataset.msId;
+        const ms = milestones.find(m => m.id === mid);
+        if (!ms) return;
+        const choices = Object.keys(_MILESTONE_STATUS_LABELS).map(k => `${k}: ${_MILESTONE_STATUS_LABELS[k]}`).join('\n');
+        const newStatus = prompt(`Статус вехи:\n${choices}\n\nТекущий: ${ms.status}`, ms.status);
+        if (!newStatus || !_MILESTONE_STATUS_LABELS[newStatus]) return;
+        try {
+          const r2 = await apiFetch(`/api/v1/projects/${projectId}/milestones/${mid}/update`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ status: newStatus }),
+          });
+          if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+          toast('Статус обновлён'); hydrateMilestones(projectId);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+  } catch { list.innerHTML = '<p class="empty-copy" style="font-size:13px">Недоступно.</p>'; }
 }
 
 async function hydrateProjectWorkload(projectId) {
@@ -5596,6 +5666,24 @@ async function setup() {
   $('#newProjectButton').addEventListener('click', () => { $('#projectForm').reset(); populateProjectWorkTypeScope(); $('#projectDialog').showModal(); requestAnimationFrame(() => $('#projectCode').focus()); });
   document.getElementById('fromTemplateButton')?.addEventListener('click', openCreateFromTemplate);
   document.getElementById('refreshSessionsBtn')?.addEventListener('click', hydrateSessionsAdmin);
+  document.getElementById('saveOrgSettingsBtn')?.addEventListener('click', async () => {
+    const el = id => document.getElementById(id);
+    const payload = {
+      timezone: el('orgTz')?.value.trim() || 'UTC',
+      locale: el('orgLocale')?.value.trim() || 'en',
+      dateFormat: el('orgDateFormat')?.value.trim() || 'YYYY-MM-DD',
+      currency: el('orgCurrency')?.value.trim() || 'USD',
+      workWeekStart: parseInt(el('orgWorkWeekStart')?.value || '1', 10),
+    };
+    try {
+      const r = await apiFetch('/api/v1/admin/org-settings', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('Настройки сохранены');
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
   document.getElementById('addTemplateBtn')?.addEventListener('click', () => {
     const dialog = document.createElement('dialog');
     dialog.innerHTML = `
@@ -5828,6 +5916,20 @@ async function loadTemplates() {
     _templates = templates;
     return templates;
   } catch { return []; }
+}
+
+async function hydrateOrgSettings() {
+  try {
+    const r = await apiFetch('/api/v1/admin/org-settings');
+    const { settings = {} } = await r.json();
+    const set = v => v != null ? v : '';
+    const el = id => document.getElementById(id);
+    if (el('orgTz')) el('orgTz').value = set(settings.timezone);
+    if (el('orgLocale')) el('orgLocale').value = set(settings.locale);
+    if (el('orgDateFormat')) el('orgDateFormat').value = set(settings.date_format);
+    if (el('orgCurrency')) el('orgCurrency').value = set(settings.currency);
+    if (el('orgWorkWeekStart')) el('orgWorkWeekStart').value = String(settings.work_week_start ?? 1);
+  } catch { /* panel stays with placeholders */ }
 }
 
 async function hydrateSessionsAdmin() {
