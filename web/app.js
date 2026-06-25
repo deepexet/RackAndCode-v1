@@ -3794,12 +3794,20 @@ function renderProjectDetail() {
         <div style="display:flex;gap:6px;align-items:center">
           <select id="wiFilterStatus" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
             <option value="">Все статусы</option>
-            ${STATUSES.map(s => `<option value="${s.id}">${s.label}</option>`).join('')}
+            <option value="pending">Pending</option>
+            <option value="ongoing">Ongoing</option>
+            <option value="done">Done</option>
+            <option value="blocked">Blocked</option>
           </select>
+          <div style="display:flex;border:1px solid var(--border);border-radius:7px;overflow:hidden">
+            <button type="button" class="wi-view-btn active" data-wi-view="list" style="padding:4px 9px;font-size:11px;background:var(--surface);border:none;cursor:pointer;color:var(--text)">≡ Список</button>
+            <button type="button" class="wi-view-btn" data-wi-view="kanban" style="padding:4px 9px;font-size:11px;background:var(--surface);border:none;cursor:pointer;color:var(--text-muted);border-left:1px solid var(--border)">⊞ Kanban</button>
+          </div>
           ${canManage ? `<button class="button ghost" id="wiBulkDoneBtn" type="button" style="font-size:11px;display:none">✓ Bulk done</button>` : ''}
         </div>
       </div>
       <div id="workItemsFullList" style="display:flex;flex-direction:column;gap:6px;margin-top:6px"></div>
+      <div id="workItemsKanban" style="display:none;margin-top:6px;overflow-x:auto"></div>
     </section>
     <section class="detail-grid"><article class="detail-panel">${_renderLocationsPanel(project, canManage)}</article>
     <article class="detail-panel">
@@ -3827,6 +3835,16 @@ function renderProjectDetail() {
           </div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}
       </div>
     </article></section>
+    <section class="detail-section" id="budgetSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">БЮДЖЕТ</p><h2>Финансы проекта</h2></div>
+        <div style="display:flex;gap:6px">
+          ${canManage ? `<button class="button ghost" id="addExpenseBtn" type="button" style="font-size:12px">＋ Расход</button>
+          <button class="button ghost" id="setBudgetBtn" type="button" style="font-size:12px">✏ Бюджет</button>` : ''}
+        </div>
+      </div>
+      <div id="budgetWidget"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="milestonesSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">ROADMAP</p><h2>Вехи проекта</h2></div>
@@ -4159,6 +4177,74 @@ function renderProjectDetail() {
   hydrateProjectWorkload(project.id);
   hydrateMilestones(project.id);
   setupIssuesPanel(project.id);
+  hydrateBudgetWidget(project.id);
+}
+
+async function hydrateBudgetWidget(projectId) {
+  const el = document.getElementById('budgetWidget');
+  if (!el) return;
+  try {
+    const r = await apiFetch(`/api/v1/projects/${projectId}/budget`);
+    const b = await r.json();
+    const hasBudget = b.budgetAmount != null;
+    const pct = b.utilizationPct ?? 0;
+    const barColor = pct > 90 ? '#f46' : pct > 70 ? '#e8a84c' : '#4adc84';
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px">
+        <article style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+          <span style="font-size:11px;color:var(--text-muted)">Бюджет</span>
+          <strong style="display:block;font-size:18px;margin-top:2px">${hasBudget ? b.budgetAmount.toLocaleString() + ' ' + (b.budgetCurrency||'') : '—'}</strong>
+        </article>
+        <article style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+          <span style="font-size:11px;color:var(--text-muted)">Израсходовано</span>
+          <strong style="display:block;font-size:18px;margin-top:2px;color:${barColor}">${(b.totalSpent||0).toLocaleString()}</strong>
+        </article>
+        <article style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+          <span style="font-size:11px;color:var(--text-muted)">Остаток</span>
+          <strong style="display:block;font-size:18px;margin-top:2px">${b.remaining != null ? b.remaining.toLocaleString() : '—'}</strong>
+        </article>
+      </div>
+      ${hasBudget ? `<div style="background:var(--border);border-radius:4px;height:6px;margin-bottom:12px">
+        <div style="height:6px;border-radius:4px;background:${barColor};width:${Math.min(100,pct)}%;transition:width .4s"></div>
+      </div>` : ''}
+      <div id="expensesList">
+        ${Object.keys(b.byCategory||{}).length ? `<p style="font-size:12px;color:var(--text-muted);margin-bottom:6px">По категориям:</p>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${Object.entries(b.byCategory||{}).map(([cat,amt]) =>
+          `<span style="font-size:11px;padding:3px 8px;border-radius:8px;background:rgba(79,142,247,.1);color:var(--accent)">${escapeHtml(cat)}: ${amt.toLocaleString()}</span>`
+        ).join('')}</div>` : '<p class="empty-copy" style="font-size:13px">Расходов нет.</p>'}
+      </div>`;
+
+    document.getElementById('addExpenseBtn')?.addEventListener('click', async () => {
+      const category = prompt('Категория (materials/labour/equipment/other):', 'materials') || 'other';
+      const desc = prompt('Описание расхода:') || '';
+      const amount = parseFloat(prompt('Сумма:') || '0');
+      if (!amount || isNaN(amount)) return;
+      const date = prompt('Дата (YYYY-MM-DD):', new Date().toISOString().slice(0,10)) || new Date().toISOString().slice(0,10);
+      try {
+        const r2 = await apiFetch(`/api/v1/projects/${projectId}/expenses`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ category, description: desc, amount, expenseDate: date }),
+        });
+        if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+        toast('Расход добавлен'); hydrateBudgetWidget(projectId);
+      } catch(e) { toast(`Ошибка: ${e.message}`); }
+    });
+
+    document.getElementById('setBudgetBtn')?.addEventListener('click', async () => {
+      const amount = parseFloat(prompt('Бюджет проекта:', b.budgetAmount ?? '') || '0');
+      if (isNaN(amount)) return;
+      const currency = prompt('Валюта:', b.budgetCurrency || 'USD') || 'USD';
+      try {
+        const r2 = await apiFetch(`/api/v1/projects/${projectId}/budget`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ amount, currency }),
+        });
+        if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+        toast('Бюджет обновлён'); hydrateBudgetWidget(projectId);
+      } catch(e) { toast(`Ошибка: ${e.message}`); }
+    });
+  } catch { el.innerHTML = '<p class="empty-copy" style="font-size:13px">Недоступно.</p>'; }
 }
 
 const _ISSUE_STATUS_LABELS = {open:'Открыта',in_progress:'В работе',resolved:'Решена',closed:'Закрыта',wont_fix:'Не исправим'};
@@ -4321,11 +4407,64 @@ async function hydrateProjectWorkload(projectId) {
   } catch { container.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Недоступно.</p>'; }
 }
 
+const _WI_STATUSES = [
+  { id: 'pending', label: 'Pending', color: '#8b95a5' },
+  { id: 'ongoing', label: 'Ongoing', color: '#4f8ef7' },
+  { id: 'done',    label: 'Done',    color: '#4adc84' },
+  { id: 'blocked', label: 'Blocked', color: '#f46' },
+];
+
+function renderWiKanban(project) {
+  const board = document.getElementById('workItemsKanban');
+  if (!board) return;
+  const items = project.workItems || [];
+  const filterStatus = document.getElementById('wiFilterStatus')?.value || '';
+  const filtered = filterStatus ? items.filter(wi => wi.status === filterStatus) : items;
+  const cols = (filterStatus ? _WI_STATUSES.filter(s => s.id === filterStatus) : _WI_STATUSES);
+  board.innerHTML = `<div style="display:flex;gap:12px;min-width:${cols.length * 240}px;padding-bottom:8px">
+    ${cols.map(col => {
+      const cards = filtered.filter(wi => wi.status === col.id);
+      return `<div style="flex:0 0 220px;display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <div style="width:8px;height:8px;border-radius:50%;background:${col.color}"></div>
+          <strong style="font-size:12px">${col.label}</strong>
+          <span style="font-size:11px;color:var(--text-muted);margin-left:auto">${cards.length}</span>
+        </div>
+        ${cards.length ? cards.map(wi => `
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:default">
+            ${wi.code ? `<span style="font-size:10px;font-family:monospace;color:var(--text-muted)">${escapeHtml(wi.code)}</span>` : ''}
+            <p style="font-size:12px;font-weight:600;margin:3px 0 4px;line-height:1.3">${escapeHtml(wi.title)}</p>
+            ${wi.assigneeName ? `<small style="color:var(--text-muted);font-size:11px">👤 ${escapeHtml(wi.assigneeName)}</small>` : ''}
+            ${wi.dueDate ? `<small style="color:var(--text-muted);font-size:11px;display:block">📅 ${wi.dueDate}</small>` : ''}
+          </div>`).join('') : `<div style="border:1px dashed var(--border);border-radius:8px;padding:16px;text-align:center;color:var(--text-muted);font-size:12px">Нет задач</div>`}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
 function setupWorkItemsBulkList(project) {
   const listEl = document.getElementById('workItemsFullList');
+  const kanbanEl = document.getElementById('workItemsKanban');
   const filterSel = document.getElementById('wiFilterStatus');
   const bulkBtn = document.getElementById('wiBulkDoneBtn');
   if (!listEl) return;
+
+  // View toggle
+  let wiViewMode = 'list';
+  document.querySelectorAll('.wi-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      wiViewMode = btn.dataset.wiView;
+      document.querySelectorAll('.wi-view-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.wiView === wiViewMode);
+        b.style.color = b.dataset.wiView === wiViewMode ? 'var(--text)' : 'var(--text-muted)';
+        b.style.background = b.dataset.wiView === wiViewMode ? 'rgba(79,142,247,.12)' : 'var(--surface)';
+      });
+      listEl.style.display = wiViewMode === 'list' ? '' : 'none';
+      if (kanbanEl) kanbanEl.style.display = wiViewMode === 'kanban' ? '' : 'none';
+      if (wiViewMode === 'kanban') renderWiKanban(project);
+      else render();
+    });
+  });
 
   const workTypeById = new Map((project.workTypeProgress||[]).map(wt => [wt.id, wt]));
   const buildingById = new Map((project.buildings||[]).map(b => [b.id, b]));
@@ -4367,7 +4506,9 @@ function setupWorkItemsBulkList(project) {
     });
   }
 
-  filterSel?.addEventListener('change', render);
+  filterSel?.addEventListener('change', () => {
+    if (wiViewMode === 'kanban') renderWiKanban(project); else render();
+  });
   render();
 
   bulkBtn?.addEventListener('click', async () => {
