@@ -4694,6 +4694,12 @@ function renderWiKanban(project) {
             <p style="font-size:12px;font-weight:600;margin:3px 0 4px;line-height:1.3">${escapeHtml(wi.title)}</p>
             ${wi.assigneeName ? `<small style="color:var(--text-muted);font-size:11px">👤 ${escapeHtml(wi.assigneeName)}</small>` : ''}
             ${wi.dueDate ? `<small style="color:var(--text-muted);font-size:11px;display:block">📅 ${wi.dueDate}</small>` : ''}
+            ${wi.startDate && wi.dueDate ? (() => {
+              const now = Date.now();
+              const due = new Date(wi.dueDate).getTime();
+              const overdue = wi.status !== 'done' && due < now;
+              return overdue ? `<small style="color:#f46;font-size:10px">⚠ просрочено</small>` : '';
+            })() : ''}
           </div>`).join('') : `<div style="border:1px dashed var(--border);border-radius:8px;padding:16px;text-align:center;color:var(--text-muted);font-size:12px">Нет задач</div>`}
       </div>`;
     }).join('')}
@@ -4780,11 +4786,39 @@ function setupWorkItemsBulkList(project) {
           </div>
           <small style="font-size:10px;color:var(--text-muted)">${wt ? escapeHtml(wt.name) : ''}${bld ? ' · ' + escapeHtml(bld.code) : ''}${wi.startDate ? ' · с ' + wi.startDate : ''}${wi.dueDate ? ' · до ' + wi.dueDate : ''}</small>
         </div>
+        <select class="wi-status-sel" data-wi-status-id="${wi.id}" data-wi-ver="${wi.version}"
+          style="padding:3px 6px;font-size:10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:${STATUS_COLOR[wi.effectiveStatus||wi.status]||'#556'};cursor:pointer;flex-shrink:0"
+          aria-label="Статус">
+          ${['pending','ongoing','done','blocked'].map(s =>
+            `<option value="${s}" ${(wi.status||'')==s?'selected':''}>${s}</option>`
+          ).join('')}
+        </select>
         <button class="text-button wi-date-btn" data-wi-date-id="${wi.id}" data-wi-ver="${wi.version}"
           data-wi-start="${wi.startDate||''}" data-wi-due="${wi.dueDate||''}"
           style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0" title="Даты">📅</button>
       </label>`;
     }).join('');
+
+    listEl.querySelectorAll('.wi-status-sel').forEach(sel => {
+      sel.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const wiId = sel.dataset.wiStatusId;
+        const ver = parseInt(sel.dataset.wiVer);
+        const newStatus = sel.value;
+        try {
+          const r = await apiFetch(`/api/v1/projects/${project.id}/work-items/${wiId}`, {
+            method: 'PUT', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ status: newStatus, expectedVersion: ver }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          const updated = await r.json();
+          const wi = (project.workItems||[]).find(w => w.id === wiId);
+          if (wi) { wi.status = newStatus; wi.version = updated.version || ver+1; sel.dataset.wiVer = wi.version; }
+          sel.style.color = STATUS_COLOR[newStatus] || '#556';
+          toast(`Статус → ${newStatus}`);
+        } catch(e) { toast(`Ошибка: ${e.message}`); sel.value = sel.dataset.wiVer ? /* prev */ sel.value : newStatus; }
+      });
+    });
 
     listEl.querySelectorAll('.wi-date-btn').forEach(btn => {
       btn.addEventListener('click', async (e) => {
