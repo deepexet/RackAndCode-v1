@@ -3649,17 +3649,28 @@ function _getProjectFilters() {
   const q = ($('#projectFilterInput')?.value || '').toLowerCase().trim();
   const status = $('#projectStatusFilter')?.value || '';
   const kind = $('#projectKindFilter')?.value || '';
-  return { q, status, kind };
+  const sort = $('#projectSortBy')?.value || 'name';
+  return { q, status, kind, sort };
 }
 
 function _applyProjectFilters(list) {
-  const { q, status, kind } = _getProjectFilters();
-  return list.filter(p => {
+  const { q, status, kind, sort } = _getProjectFilters();
+  let result = list.filter(p => {
     if (status && p.status !== status) return false;
     if (kind && p.kind !== kind) return false;
     if (q && !p.name.toLowerCase().includes(q) && !p.code.toLowerCase().includes(q) && !(p.description||'').toLowerCase().includes(q)) return false;
     return true;
   });
+  result = [...result].sort((a, b) => {
+    switch (sort) {
+      case 'progress': return (b.progress||0) - (a.progress||0);
+      case 'updated': return (b.updatedAt||'').localeCompare(a.updatedAt||'');
+      case 'deadline': return (a.targetDate||'9999').localeCompare(b.targetDate||'9999');
+      case 'code': return (a.code||'').localeCompare(b.code||'');
+      default: return (a.name||'').localeCompare(b.name||'');
+    }
+  });
+  return result;
 }
 
 function setupProjectFilters() {
@@ -3667,6 +3678,7 @@ function setupProjectFilters() {
   $('#projectFilterInput')?.addEventListener('input', update);
   $('#projectStatusFilter')?.addEventListener('change', update);
   $('#projectKindFilter')?.addEventListener('change', update);
+  $('#projectSortBy')?.addEventListener('change', update);
 }
 
 function renderProjects(unavailable = false) {

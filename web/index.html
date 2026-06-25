@@ -199,6 +199,13 @@
           <option value="customer">Customer</option>
           <option value="internal">Internal</option>
         </select>
+        <select id="projectSortBy" style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+          <option value="name">Сортировка: Название</option>
+          <option value="code">Код</option>
+          <option value="progress">Прогресс ↓</option>
+          <option value="updated">Обновлён ↓</option>
+          <option value="deadline">Дедлайн ↑</option>
+        </select>
         <span id="projectFilterCount" style="font-size:12px;color:var(--text-muted);white-space:nowrap"></span>
       </div>
       <div class="projects-grid" id="projectsPortfolio" aria-live="polite"><article class="project-card project-loading">Загрузка проектов…</article></div></div>
