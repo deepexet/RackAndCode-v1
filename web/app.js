@@ -4752,17 +4752,22 @@ async function hydrateMilestones(projectId) {
     if (!milestones.length) {
       list.innerHTML = '<p class="empty-copy" style="font-size:13px">Вехи не добавлены.</p>';
     } else {
-      list.innerHTML = milestones.map(m => `
-        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-          <div style="width:10px;height:10px;border-radius:50%;background:${_MILESTONE_STATUS_COLORS[m.status]};flex-shrink:0"></div>
+      const today = new Date().toISOString().slice(0,10);
+      list.innerHTML = milestones.map(m => {
+        const isOverdue = m.status !== 'achieved' && m.target_date < today;
+        const dateColor = isOverdue ? '#f46' : 'var(--text-muted)';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)${isOverdue?';background:rgba(255,68,68,.04)':''}">
+          <div style="width:10px;height:10px;border-radius:50%;background:${isOverdue?'#f46':_MILESTONE_STATUS_COLORS[m.status]};flex-shrink:0"></div>
           <div style="flex:1">
             <strong style="font-size:13px">${escapeHtml(m.name)}</strong>
+            ${isOverdue ? `<small style="display:block;color:#f46;font-size:10px">⚠ Просрочено</small>` : ''}
             ${m.description ? `<small style="display:block;color:var(--text-muted)">${escapeHtml(m.description)}</small>` : ''}
           </div>
-          <span style="font-size:11px;color:${_MILESTONE_STATUS_COLORS[m.status]};background:${_MILESTONE_STATUS_COLORS[m.status]}1a;padding:2px 7px;border-radius:10px">${_MILESTONE_STATUS_LABELS[m.status]||m.status}</span>
-          <span style="font-size:11px;color:var(--text-muted)">${m.target_date}</span>
+          <span style="font-size:11px;color:${isOverdue?'#f46':_MILESTONE_STATUS_COLORS[m.status]};background:${isOverdue?'rgba(255,68,68,.12)':_MILESTONE_STATUS_COLORS[m.status]+'1a'};padding:2px 7px;border-radius:10px">${_MILESTONE_STATUS_LABELS[m.status]||m.status}</span>
+          <span style="font-size:11px;color:${dateColor};font-weight:${isOverdue?700:400}">${m.target_date}</span>
           ${canManage ? `<button type="button" class="text-button" style="font-size:11px" data-ms-id="${m.id}" data-ms-action="edit">•••</button>` : ''}
-        </div>`).join('');
+        </div>`;
+      }).join('');
     }
     // Add milestone button wiring
     document.getElementById('addMilestoneBtn')?.addEventListener('click', async () => {
