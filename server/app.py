@@ -1149,6 +1149,7 @@ class WorkspaceStore:
                     "action": event["action"], "newValue": json.loads(event["new_value"]),
                     "createdAt": event["created_at"],
                 } for event in activity if event["project_id"] == project_id][:100],
+                "milestones": self.list_milestones(organization_id, project_id),
             })
         return result
 
