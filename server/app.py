@@ -13,6 +13,7 @@ import mimetypes
 import os
 import re
 import signal
+import smtplib
 import socket
 import socketserver
 import sqlite3
@@ -20,6 +21,8 @@ import secrets
 import threading
 import time
 import uuid
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -5072,6 +5075,79 @@ Rules:
             lines.append("ℹ " + " | ".join(notes))
         return "\n".join(lines)
 
+    # ── SMTP Config ───────────────────────────────────────────────────────────
+
+    def get_smtp_config(self, org: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM smtp_config WHERE organization_id=?", (org,)).fetchone()
+        if not row:
+            return {"host":"","port":587,"useTls":True,"username":"","fromAddress":"","toAddresses":"","configured":False}
+        return {
+            "host": row["host"], "port": row["port"], "useTls": bool(row["use_tls"]),
+            "username": row["username"], "fromAddress": row["from_address"],
+            "toAddresses": row["to_addresses"], "configured": bool(row["host"]),
+        }
+
+    def save_smtp_config(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        host = str(payload.get("host","")).strip()[:200]
+        port = int(payload.get("port", 587))
+        use_tls = int(bool(payload.get("useTls", True)))
+        username = str(payload.get("username","")).strip()[:200]
+        password = str(payload.get("password","")).strip()[:500]
+        from_addr = str(payload.get("fromAddress","")).strip()[:200]
+        to_addrs = str(payload.get("toAddresses","")).strip()[:1000]
+        with self._connect() as conn:
+            existing = conn.execute("SELECT password_enc FROM smtp_config WHERE organization_id=?", (org,)).fetchone()
+            # Keep existing password if new one not provided
+            if not password and existing:
+                password = existing["password_enc"]
+            conn.execute(
+                "INSERT INTO smtp_config (organization_id,host,port,use_tls,username,password_enc,from_address,to_addresses,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET "
+                "host=excluded.host,port=excluded.port,use_tls=excluded.use_tls,username=excluded.username,"
+                "password_enc=excluded.password_enc,from_address=excluded.from_address,to_addresses=excluded.to_addresses,"
+                "updated_at=excluded.updated_at",
+                (org, host, port, use_tls, username, password, from_addr, to_addrs, now),
+            )
+        return self.get_smtp_config(org)
+
+    def send_digest_email(self, org: str) -> dict[str, Any]:
+        cfg = self.get_smtp_config(org)
+        if not cfg.get("configured"):
+            raise ValueError("SMTP not configured")
+        if not cfg["toAddresses"].strip():
+            raise ValueError("No recipient addresses configured")
+        data = self.build_digest_data(org)
+        text_body = self.build_digest_text(org, data)
+        recipients = [a.strip() for a in cfg["toAddresses"].split(",") if a.strip()]
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"RackPilot Digest — {data['generatedAt'][:10]}"
+        msg["From"] = cfg["fromAddress"] or cfg["username"]
+        msg["To"] = ", ".join(recipients)
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        host, port = cfg["host"], cfg["port"]
+        try:
+            if cfg["useTls"]:
+                with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                    if cfg["username"] and cfg.get("password_enc", ""):
+                        # password_enc stores plaintext password (no HSM — local only)
+                        with self._connect() as conn:
+                            row = conn.execute("SELECT password_enc FROM smtp_config WHERE organization_id=?", (org,)).fetchone()
+                        server.login(cfg["username"], row["password_enc"] if row else "")
+                    server.sendmail(msg["From"], recipients, msg.as_bytes())
+            else:
+                with smtplib.SMTP(host, port, timeout=10) as server:
+                    server.starttls()
+                    if cfg["username"]:
+                        with self._connect() as conn:
+                            row = conn.execute("SELECT password_enc FROM smtp_config WHERE organization_id=?", (org,)).fetchone()
+                        server.login(cfg["username"], row["password_enc"] if row else "")
+                    server.sendmail(msg["From"], recipients, msg.as_bytes())
+        except smtplib.SMTPException as exc:
+            raise RuntimeError(f"SMTP error: {exc}") from exc
+        return {"sent": True, "recipients": recipients, "subject": msg["Subject"]}
+
     # ── Work Item Comments ────────────────────────────────────────────────────
 
     def list_wi_comments(self, org: str, work_item_id: str) -> list[dict[str, Any]]:
@@ -8006,6 +8082,11 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        if path == "/api/v1/admin/smtp-config":
+            if not self._require_permission("admin"): return
+            cfg = self.store.get_smtp_config(self.organization_id)
+            cfg.pop("password_enc", None)  # never send password to client
+            self._json(HTTPStatus.OK, cfg); return
         # Digest: GET /api/v1/admin/digest[?format=text]
         if path == "/api/v1/admin/digest":
             if not self._require_permission("projectRead"): return
@@ -9181,6 +9262,23 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             data["narrative"] = narrative
             data["plainText"] = base_text
             self._json(HTTPStatus.OK, data)
+            return
+        if path == "/api/v1/admin/digest/send-email":
+            if not self._require_permission("admin"): return
+            try:
+                result = self.store.send_digest_email(self.organization_id)
+                self._json(HTTPStatus.OK, result)
+            except (ValueError, RuntimeError) as exc:
+                self._error(HTTPStatus.BAD_REQUEST, "smtp_error", str(exc))
+            return
+        if path == "/api/v1/admin/smtp-config":
+            if not self._require_permission("admin"): return
+            try:
+                payload = self._read_json()
+                result = self.store.save_smtp_config(self.organization_id, payload)
+                self._json(HTTPStatus.OK, result)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
             return
         # Issues: POST /api/v1/issues/:id/transition  and  /issues/:id/assign
         _issue_parts = path.split("/")

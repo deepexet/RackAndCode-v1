@@ -7576,6 +7576,43 @@ function hydrateDigest() {
 
   refreshBtn?.addEventListener('click', () => loadDigest(false));
   aiBtn?.addEventListener('click', () => loadDigest(true));
+
+  // Email send
+  const sendEmailBtn = document.getElementById('digestSendEmailBtn');
+  sendEmailBtn?.addEventListener('click', async () => {
+    try {
+      sendEmailBtn.disabled = true; sendEmailBtn.textContent = 'Отправляю…';
+      const r = await apiFetch('/api/v1/admin/digest/send-email', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error?.message || r.status);
+      toast(`Дайджест отправлен → ${(data.recipients||[]).join(', ')}`);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+    finally { if (sendEmailBtn) { sendEmailBtn.disabled = false; sendEmailBtn.textContent = '📧 Email'; } }
+  });
+
+  // SMTP config
+  const smtpBtn = document.getElementById('digestSmtpBtn');
+  smtpBtn?.addEventListener('click', async () => {
+    try {
+      const r = await apiFetch('/api/v1/admin/smtp-config');
+      const cfg = await r.json();
+      const host = prompt('SMTP хост (напр. smtp.gmail.com):', cfg.host||''); if (host===null) return;
+      const port = prompt('Порт (587=STARTTLS, 465=SSL):', cfg.port||587); if (port===null) return;
+      const username = prompt('Логин (email):', cfg.username||''); if (username===null) return;
+      const password = prompt('Пароль (пусто = без изменений):', '');
+      const fromAddr = prompt('Адрес отправителя:', cfg.fromAddress||username||''); if (fromAddr===null) return;
+      const toAddrs = prompt('Получатели (через запятую):', cfg.toAddresses||''); if (toAddrs===null) return;
+      const useTls = parseInt(port||587) === 465;
+      const r2 = await apiFetch('/api/v1/admin/smtp-config', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ host, port: parseInt(port||587), useTls, username, password, fromAddress: fromAddr, toAddresses: toAddrs }),
+      });
+      if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+      toast('SMTP настроен');
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
 }
 
 async function hydrateEmailInboxes() {
