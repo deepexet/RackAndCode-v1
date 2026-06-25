@@ -1299,22 +1299,76 @@ async function hydratePrivacySettings() {
 async function hydrateAuditLog() {
   const el = document.getElementById('auditLogList');
   if (!el) return;
-  try {
-    const resp = await apiFetch('/api/v1/admin/audit-log?limit=50');
-    const { entries } = await resp.json();
-    if (!entries.length) { el.innerHTML = '<p class="empty-copy">Нет записей в журнале аудита.</p>'; return; }
-    el.innerHTML = `<div style="display:flex;flex-direction:column;gap:4px">
-      ${entries.map(e => `<div class="audit-row">
-        <code style="font-size:10px;color:#445060;min-width:160px">${(e.created_at||'').slice(0,19).replace('T',' ')}</code>
-        <span style="${OUTCOME_STYLE[e.outcome] || ''}">●</span>
-        <strong style="font-size:12px;min-width:130px">${escapeHtml(e.action)}</strong>
-        <small style="color:#778195">${escapeHtml(e.actor_id || '—')}</small>
-        <small style="color:#556070">${escapeHtml(e.actor_role || '')}</small>
-        ${e.target_type ? `<small style="color:#445060">${escapeHtml(e.target_type)} ${escapeHtml(e.target_id || '')}</small>` : ''}
-        ${e.ip ? `<small style="color:#334050">${escapeHtml(e.ip)}</small>` : ''}
-      </div>`).join('')}
-    </div>`;
-  } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+
+  const filterBar = document.getElementById('auditLogFilter');
+  const limitSel = document.getElementById('auditLogLimit');
+  const actionFilter = document.getElementById('auditLogActionFilter');
+
+  // Inject filter controls if container supports them
+  const section = el.closest('section') || el.parentElement;
+  if (section && !document.getElementById('auditLogFilter')) {
+    const controls = document.createElement('div');
+    controls.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center';
+    controls.innerHTML = `
+      <input id="auditLogFilter" placeholder="Поиск по действию / актору…" style="flex:1;min-width:150px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+      <select id="auditLogActionFilter" style="padding:5px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+        <option value="">Все действия</option>
+        <option value="auth">auth</option>
+        <option value="inventory">inventory</option>
+        <option value="project">project</option>
+        <option value="supplier">supplier</option>
+        <option value="reservation">reservation</option>
+      </select>
+      <select id="auditLogLimit" style="padding:5px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+        <option value="50">50</option>
+        <option value="100">100</option>
+        <option value="200">200</option>
+      </select>
+      <button id="auditLogRefreshBtn" class="button ghost" type="button" style="font-size:12px">↻</button>`;
+    el.before(controls);
+  }
+
+  async function loadAudit() {
+    const q = document.getElementById('auditLogFilter')?.value || '';
+    const action = document.getElementById('auditLogActionFilter')?.value || '';
+    const limit = document.getElementById('auditLogLimit')?.value || '50';
+    let url = `/api/v1/admin/audit-log?limit=${limit}`;
+    if (action) url += `&action=${encodeURIComponent(action)}`;
+    el.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    try {
+      const resp = await apiFetch(url);
+      const { entries } = await resp.json();
+      let filtered = entries;
+      if (q) {
+        const lq = q.toLowerCase();
+        filtered = entries.filter(e =>
+          (e.action||'').toLowerCase().includes(lq) ||
+          (e.actor_id||'').toLowerCase().includes(lq) ||
+          (e.target_id||'').toLowerCase().includes(lq)
+        );
+      }
+      if (!filtered.length) { el.innerHTML = '<p class="empty-copy">Нет записей.</p>'; return; }
+      el.innerHTML = `<div style="display:flex;flex-direction:column;gap:4px">
+        ${filtered.map(e => {
+          const OUTCOME_BADGE = { success: '#3bb969', failure: '#f46', warning: '#e8a84c' };
+          const outcomeColor = OUTCOME_BADGE[e.outcome] || '#778195';
+          return `<div class="audit-row" style="gap:6px;cursor:default" title="${escapeHtml(JSON.stringify({actor:e.actor_id,role:e.actor_role,target:e.target_id,ip:e.ip}))}">
+            <code style="font-size:10px;color:var(--text-muted);min-width:130px;flex-shrink:0">${(e.created_at||'').slice(0,19).replace('T',' ')}</code>
+            <span style="color:${outcomeColor};flex-shrink:0" title="${e.outcome||''}">●</span>
+            <strong style="font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.action)}</strong>
+            <small style="color:var(--text-muted);flex-shrink:0;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.actor_id||'—')}</small>
+            ${e.target_type ? `<small style="color:var(--text-muted);flex-shrink:0;font-size:10px">${escapeHtml(e.target_type)}</small>` : ''}
+          </div>`;
+        }).join('')}
+      </div>`;
+    } catch (e) { el.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }
+  }
+
+  loadAudit();
+  document.getElementById('auditLogRefreshBtn')?.addEventListener('click', loadAudit);
+  document.getElementById('auditLogFilter')?.addEventListener('input', () => loadAudit());
+  document.getElementById('auditLogActionFilter')?.addEventListener('change', loadAudit);
+  document.getElementById('auditLogLimit')?.addEventListener('change', loadAudit);
 }
 
 // ── Team Members ─────────────────────────────────────────────────────────
