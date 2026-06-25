@@ -6502,6 +6502,45 @@ class AIGateway:
             return False, f"monthly_budget_exceeded ({used}/{budget['monthly_limit']} tokens)"
         return True, "ok"
 
+    def complete(self, prompt: str, *, org: str = DEFAULT_ORGANIZATION_ID,
+                  max_tokens: int = 500, purpose: str = "general") -> str | None:
+        """Convenience wrapper: single user message → text response."""
+        try:
+            result = self.call(purpose=purpose,
+                               messages=[{"role": "user", "content": prompt}],
+                               org=org, max_tokens=max_tokens)
+            return result.get("text")
+        except Exception:
+            return None
+
+    def vision(self, *, image_b64: str, media_type: str, prompt: str,
+                org: str = DEFAULT_ORGANIZATION_ID,
+                max_tokens: int = 512, purpose: str = "vision") -> str | None:
+        """Send image + prompt to vision-capable model. Returns text or None."""
+        t0 = time.perf_counter()
+        with self.store._connect() as conn:
+            prow = conn.execute(
+                "SELECT * FROM ai_providers WHERE enabled=1 ORDER BY priority DESC LIMIT 1"
+            ).fetchone()
+        use_model = (prow["model"] if prow else None) or "claude-sonnet-4-6"
+        # Vision requires a model that supports it — prefer sonnet/opus over haiku
+        if "haiku" in use_model:
+            use_model = "claude-sonnet-4-6"
+        api_key = (self._get_api_key(prow) if prow else None) or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return None
+        pid = prow["id"] if prow else None
+        try:
+            result = _anthropic_vision(api_key, use_model, image_b64, media_type, prompt, max_tokens)
+            latency = int((time.perf_counter() - t0) * 1000)
+            self._log_request(pid, org, None, purpose, use_model,
+                              result["prompt_tokens"], result["completion_tokens"], latency, "ok")
+            return result.get("text")
+        except Exception as err:
+            latency = int((time.perf_counter() - t0) * 1000)
+            self._log_request(pid, org, None, purpose, use_model, 0, 0, latency, "error", str(err)[:500])
+            return None
+
     def call(self, *, purpose: str, messages: list[dict], org: str,
              user: str | None = None, model: str | None = None,
              max_tokens: int = 500) -> dict[str, Any]:
@@ -6548,6 +6587,41 @@ def _anthropic_chat(api_key: str, model: str, messages: list[dict], max_tokens: 
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    usage = data.get("usage", {})
+    return {
+        "text": data["content"][0]["text"].strip(),
+        "model": data.get("model", model),
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+    }
+
+
+def _anthropic_vision(api_key: str, model: str, image_b64: str,
+                       media_type: str, prompt: str, max_tokens: int = 512) -> dict[str, Any]:
+    """Send image + text to Anthropic vision endpoint (claude-* models support base64 images)."""
+    messages = [{
+        "role": "user",
+        "content": [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": image_b64,
+                },
+            },
+            {"type": "text", "text": prompt},
+        ],
+    }]
+    body = json.dumps({"model": model, "max_tokens": max_tokens, "messages": messages}).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read())
     usage = data.get("usage", {})
     return {
@@ -8002,6 +8076,51 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     ai_response = ai.complete(f"{system_prompt}\n\nUser note:\n{text}", max_tokens=512) or ""
                     pending = self.store.create_inventory_pending_from_ai(org, text, ai_response, warehouse_id)
                     self._json(HTTPStatus.CREATED, pending); return
+                if sub == "ai-photo":
+                    if not self._require_permission("projectManage"): return
+                    # Accept multipart or JSON with base64
+                    content_type = self.headers.get("Content-Type","")
+                    if "application/json" in content_type:
+                        payload = self._read_json()
+                        image_b64 = payload.get("imageBase64","")
+                        media_type = payload.get("mediaType","image/jpeg")
+                        warehouse_id = payload.get("warehouseId", _invSelectedWarehouseId := None)
+                    else:
+                        # Raw binary upload — treat as JPEG
+                        cl = int(self.headers.get("Content-Length","0"))
+                        if cl > 20_000_000:
+                            self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large", "Max 20 MB"); return
+                        raw = self.rfile.read(cl)
+                        import base64 as _b64
+                        image_b64 = _b64.b64encode(raw).decode()
+                        media_type = content_type.split(";")[0].strip() or "image/jpeg"
+                        warehouse_id = self.query_params.get("warehouseId",[None])[0]
+
+                    if not image_b64:
+                        self._error(HTTPStatus.BAD_REQUEST, "missing_image", "imageBase64 or raw body required"); return
+
+                    ai = getattr(self.server, "ai_gateway", None)
+                    if not ai:
+                        self._error(HTTPStatus.SERVICE_UNAVAILABLE, "no_ai", "AI gateway not available"); return
+
+                    system_prompt = self.store.build_inventory_ai_prompt(org, warehouse_id)
+                    vision_prompt = (
+                        f"{system_prompt}\n\n"
+                        "Analyze this photo and identify any materials, cables, equipment, or supplies visible.\n"
+                        "Describe what you see, then extract inventory movements as instructed above.\n"
+                        "If you cannot identify an item with certainty, set skuId=null and add sku_name_guess with your best description.\n"
+                        "Return JSON only."
+                    )
+                    ai_response = ai.vision(
+                        image_b64=image_b64, media_type=media_type,
+                        prompt=vision_prompt, org=org, purpose="inventory-vision",
+                    ) or ""
+                    pending = self.store.create_inventory_pending_from_ai(
+                        org, f"[photo analysis] {media_type}", ai_response, warehouse_id
+                    )
+                    pending["aiDescription"] = ai_response[:2000]
+                    self._json(HTTPStatus.CREATED, pending)
+                    return
                 if sub == "import-xlsx":
                     if not self._require_permission("projectManage"): return
                     content_length = int(self.headers.get("Content-Length","0"))

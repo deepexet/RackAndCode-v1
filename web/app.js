@@ -6290,6 +6290,39 @@ function _bindInventoryEvents() {
     } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
   // XLSX import
+  // Photo analysis
+  document.getElementById('invAiPhotoBtn')?.addEventListener('click', () => {
+    document.getElementById('invPhotoInput')?.click();
+  });
+  document.getElementById('invPhotoInput')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 20_000_000) { toast('Файл слишком большой (макс 20 МБ)'); return; }
+    toast('Анализирую фото…');
+    try {
+      const buf = await file.arrayBuffer();
+      const url = _invSelectedWarehouse
+        ? `/api/v1/inventory/ai-photo?warehouseId=${_invSelectedWarehouse}`
+        : '/api/v1/inventory/ai-photo';
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type': file.type || 'image/jpeg'}),
+        body: buf,
+      });
+      const res = await r.json();
+      if (!r.ok) { toast(`Ошибка AI: ${res.error?.message||r.status}`); return; }
+      const count = res.suggested_movements?.length || 0;
+      toast(`AI обнаружил ${count} позиций. Проверьте очередь одобрения.`);
+      if (res.aiDescription) {
+        const desc = res.aiDescription.slice(0, 300);
+        setTimeout(() => toast(`AI: ${desc}…`), 1500);
+      }
+      const panel = document.getElementById('inventoryPendingPanel');
+      if (panel) { panel.style.display = ''; _loadPendingList(); }
+      _loadPendingCount();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+    e.target.value = '';
+  });
   document.getElementById('invImportXlsxBtn')?.addEventListener('click', () => {
     document.getElementById('invXlsxInput')?.click();
   });
