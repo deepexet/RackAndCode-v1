@@ -1963,9 +1963,11 @@ class WorkspaceStore:
             next_version, now = row["version"] + 1, utc_now()
             connection.execute(
                 """UPDATE project_work_items SET title = ?, description = ?, status = ?, priority = ?,
-                          due_date = ?, estimated_minutes = ?, actual_minutes = ?, version = ?, updated_at = ?
+                          start_date = ?, due_date = ?, estimated_minutes = ?, actual_minutes = ?,
+                          version = ?, updated_at = ?
                    WHERE organization_id = ? AND project_id = ? AND id = ? AND version = ?""",
                 (title.strip(), str(payload.get("description", row["description"]))[:1000], next_status, priority,
+                 payload.get("startDate", row["start_date"] if "start_date" in row.keys() else None),
                  payload.get("dueDate", row["due_date"]), estimated_minutes,
                  actual_minutes, next_version, now, organization_id, project_id, item_id, expected_version),
             )

@@ -4748,10 +4748,34 @@ function setupWorkItemsBulkList(project) {
             <strong style="font-size:12px">${wi.code ? escapeHtml(wi.code) + ' ' : ''}${escapeHtml(wi.title)}</strong>
             <span style="font-size:9px;font-weight:700;color:${STATUS_COLOR[wi.effectiveStatus||wi.status]||'#556'};text-transform:uppercase">${wi.effectiveStatus||wi.status}</span>
           </div>
-          <small style="font-size:10px;color:var(--text-muted)">${wt ? escapeHtml(wt.name) : ''}${bld ? ' · ' + escapeHtml(bld.code) : ''}${wi.dueDate ? ' · до ' + wi.dueDate : ''}</small>
+          <small style="font-size:10px;color:var(--text-muted)">${wt ? escapeHtml(wt.name) : ''}${bld ? ' · ' + escapeHtml(bld.code) : ''}${wi.startDate ? ' · с ' + wi.startDate : ''}${wi.dueDate ? ' · до ' + wi.dueDate : ''}</small>
         </div>
+        <button class="text-button wi-date-btn" data-wi-date-id="${wi.id}" data-wi-ver="${wi.version}"
+          data-wi-start="${wi.startDate||''}" data-wi-due="${wi.dueDate||''}"
+          style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0" title="Даты">📅</button>
       </label>`;
     }).join('');
+
+    listEl.querySelectorAll('.wi-date-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const wiId = btn.dataset.wiDateId;
+        const ver = parseInt(btn.dataset.wiVer);
+        const startDate = prompt('Дата начала (YYYY-MM-DD, пусто = нет):', btn.dataset.wiStart) ?? '';
+        const dueDate = prompt('Дата окончания (YYYY-MM-DD, пусто = нет):', btn.dataset.wiDue) ?? '';
+        try {
+          const r = await apiFetch(`/api/v1/projects/${project.id}/work-items/${wiId}`, {
+            method: 'PUT', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ startDate: startDate||null, dueDate: dueDate||null, expectedVersion: ver }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          const updated = await r.json();
+          const wi = (project.workItems||[]).find(w => w.id === wiId);
+          if (wi) { wi.startDate = startDate||null; wi.dueDate = dueDate||null; wi.version = updated.version || ver+1; }
+          toast('Даты обновлены'); render();
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
 
     listEl.querySelectorAll('[data-wi-id]').forEach(cb => {
       cb.addEventListener('change', () => {
