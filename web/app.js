@@ -3914,6 +3914,16 @@ function renderProjectDetail() {
       </div>
       <div id="milestonesList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
     </section>
+    <section class="detail-section" id="standupSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">ЕЖЕДНЕВНО</p><h2>Стендап — ${new Date().toLocaleDateString('ru-RU')}</h2></div>
+        <div style="display:flex;gap:6px">
+          <button class="button ghost" id="standupRefreshBtn" type="button" style="font-size:12px">↻</button>
+          <button class="button ghost" id="standupAiBtn" type="button" style="font-size:12px">✦ AI сводка</button>
+        </div>
+      </div>
+      <div id="standupWidget"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="projectCommentsSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">ОБСУЖДЕНИЕ</p><h2>Комментарии к проекту</h2></div>
@@ -4254,6 +4264,42 @@ function renderProjectDetail() {
   hydrateReservations(project.id);
   hydrateGantt(project);
   hydrateProjectComments(project.id);
+  hydrateProjectStandup(project.id);
+}
+
+async function hydrateProjectStandup(projectId) {
+  const widget = document.getElementById('standupWidget');
+  const refreshBtn = document.getElementById('standupRefreshBtn');
+  const aiBtn = document.getElementById('standupAiBtn');
+  if (!widget) return;
+
+  async function loadStandup(useAi = false) {
+    widget.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    try {
+      const r = await apiFetch(`/api/v1/projects/${projectId}/standup`,
+        useAi ? { method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}' } : {}
+      );
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error?.message || r.status);
+      const section = (label, items, color) => items?.length
+        ? `<div style="margin-bottom:10px">
+            <p style="font-size:10px;font-weight:700;text-transform:uppercase;color:${color};letter-spacing:.05em;margin-bottom:5px">${label}</p>
+            <ul style="margin:0;padding-left:16px">
+              ${items.map(t => `<li style="font-size:12px;margin-bottom:3px">${escapeHtml(t)}</li>`).join('')}
+            </ul></div>` : '';
+      const narrativeHtml = d.narrative ? `<div style="padding:10px 12px;background:rgba(79,142,247,.06);border:1px solid rgba(79,142,247,.2);border-radius:8px;margin-bottom:12px">
+        <p style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:6px">✦ AI</p>
+        <p style="font-size:13px;line-height:1.5">${escapeHtml(d.narrative)}</p></div>` : '';
+      const body = section('✓ Завершено', d.completed, '#3bb969')
+        + section('→ Перемещено', d.moved, '#4f8ef7')
+        + section('✏ Обновлено', d.updated, '#e8a84c');
+      widget.innerHTML = narrativeHtml + (body || '<p class="empty-copy">Сегодня нет изменений.</p>');
+    } catch(e) { widget.innerHTML = `<p class="empty-copy">Ошибка: ${e.message}</p>`; }
+  }
+
+  loadStandup();
+  refreshBtn?.addEventListener('click', () => loadStandup(false));
+  aiBtn?.addEventListener('click', () => loadStandup(true));
 }
 
 async function hydrateProjectComments(projectId) {

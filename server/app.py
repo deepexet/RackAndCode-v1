@@ -6283,6 +6283,43 @@ Rules:
                  event_type, summary, json.dumps(payload or {}, ensure_ascii=False), utc_now()),
             )
 
+    def build_standup_data(self, org: str, project_id: str) -> dict[str, Any]:
+        """Collect today's work item changes for standup report."""
+        today = utc_now()[:10]
+        with self._connect() as conn:
+            changes = conn.execute(
+                "SELECT entity_id, action, old_value, new_value, created_at "
+                "FROM project_change_log WHERE organization_id=? AND project_id=? "
+                "AND created_at >= ? ORDER BY created_at",
+                (org, project_id, today + "T00:00:00"),
+            ).fetchall()
+            # Map item_id to title
+            titles = {r["id"]: r["title"] for r in conn.execute(
+                "SELECT id, title FROM project_work_items WHERE organization_id=? AND project_id=?",
+                (org, project_id)
+            ).fetchall()}
+        completed, moved, updated = [], [], []
+        for ch in changes:
+            title = titles.get(ch["entity_id"], ch["entity_id"])
+            try:
+                old = json.loads(ch["old_value"] or "{}")
+                new = json.loads(ch["new_value"] or "{}")
+            except Exception:
+                old, new = {}, {}
+            if new.get("status") == "done" and old.get("status") != "done":
+                completed.append(title)
+            elif "status" in new and new["status"] != old.get("status"):
+                moved.append(f"{title}: {old.get('status','?')} → {new['status']}")
+            elif ch["action"] in ("updated",) and "status" not in new:
+                updated.append(title)
+        return {
+            "date": today,
+            "completed": list(dict.fromkeys(completed)),
+            "moved": list(dict.fromkeys(moved)),
+            "updated": list(dict.fromkeys(updated)),
+            "totalChanges": len(changes),
+        }
+
     # ── Team Members ─────────────────────────────────────────────────────────
 
     _VALID_AVAILABILITY = frozenset({"available", "busy", "off"})
@@ -8289,6 +8326,11 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except LookupError as err:
                 self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
             return
+        # Standup: GET /api/v1/projects/:id/standup
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "standup":
+            if not self._require_permission("projectRead"): return
+            data = self.store.build_standup_data(self.organization_id, parts[3])
+            self._json(HTTPStatus.OK, data); return
         # Activity: GET /api/v1/projects/:id/activity
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "activity":
             if not self._require_permission("projectRead"): return
@@ -9190,6 +9232,27 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED, result); return
             except Exception as e:
                 self._error(HTTPStatus.BAD_REQUEST, "import_error", str(e)); return
+        # Standup AI narrative: POST /api/v1/projects/:id/standup
+        if len(parts) == 5 and parts[3] == "projects" and parts[4] == "standup":
+            if not self._require_permission("projectRead"): return
+            data = self.store.build_standup_data(self.organization_id, parts[3])
+            ai = getattr(self.server, "ai_gateway", None)
+            if ai:
+                try:
+                    lines = []
+                    if data["completed"]: lines.append(f"Завершено: {', '.join(data['completed'])}")
+                    if data["moved"]: lines.append(f"Перемещено: {'; '.join(data['moved'])}")
+                    if data["updated"]: lines.append(f"Обновлено: {', '.join(data['updated'])}")
+                    standup_text = "\n".join(lines) or "Сегодня изменений не было."
+                    narrative = ai.complete(
+                        f"Ты ассистент проектного менеджера. Напиши краткий standup-отчёт (3-4 предложения) "
+                        f"на основе следующих изменений за сегодня. Пиши на русском языке.\n\n{standup_text}",
+                        max_tokens=200, org=self.organization_id, purpose="standup"
+                    ) or standup_text
+                    data["narrative"] = narrative
+                except Exception:
+                    data["narrative"] = None
+            self._json(HTTPStatus.OK, data); return
         # AI work item generation: POST /api/v1/projects/:id/work-items/ai-generate
         if len(parts) == 7 and parts[3] == "projects" and parts[5] == "work-items" and parts[6] == "ai-generate":
             project_id = parts[4]
