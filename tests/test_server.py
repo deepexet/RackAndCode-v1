@@ -123,7 +123,7 @@ class WorkspaceStoreTests(unittest.TestCase):
     def test_migrations_are_idempotent(self):
         first = self.store.migration_result
         second = MigrationRunner(self.store.db_path, Path(__file__).parent.parent / "server" / "migrations").apply()
-        self.assertEqual(first.current_version, "063")
+        self.assertEqual(first.current_version, "064")
         self.assertEqual(second.applied, ())
 
     def test_migration_checksum_change_is_rejected(self):
@@ -1039,6 +1039,55 @@ class WorkspaceStoreTests(unittest.TestCase):
         results = self.store.poll_all_due_inboxes(DEFAULT_ORGANIZATION_ID, ai_gateway=None)
         self.assertEqual(results, [])
 
+    # ── Material Reservations ────────────────────────────────────────────────
+
+    def _make_reservation_prereqs(self):
+        """Returns (project_id, warehouse_id, sku_id) with stock pre-loaded."""
+        proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "RES", "name": "Reservation Project"})
+        wh = self.store.create_warehouse(DEFAULT_ORGANIZATION_ID, {"name": "Reserve WH", "location": "Test"})
+        sku = self.store.create_sku(DEFAULT_ORGANIZATION_ID, {
+            "skuCode": "CABLE-01", "name": "Test Cable", "unit": "m", "category": "cables"
+        })
+        # Add stock
+        self.store.record_movement(DEFAULT_ORGANIZATION_ID, {
+            "warehouseId": wh["id"], "skuId": sku["id"],
+            "movementType": "receive", "quantity": 500, "reference": "PO-1", "note": "",
+        })
+        return proj["id"], wh["id"], sku["id"]
+
+    def test_reservation_create_and_list(self):
+        pid, wid, sid = self._make_reservation_prereqs()
+        r = self.store.create_reservation(DEFAULT_ORGANIZATION_ID, pid, wid, sid, 100.0, "initial reserve")
+        self.assertEqual(r["status"], "active")
+        self.assertEqual(r["quantity"], 100.0)
+        self.assertEqual(r["consumed"], 0.0)
+        lst = self.store.list_reservations(DEFAULT_ORGANIZATION_ID, project_id=pid)
+        self.assertEqual(len(lst), 1)
+        self.assertEqual(lst[0]["id"], r["id"])
+
+    def test_reservation_consume_and_auto_complete(self):
+        pid, wid, sid = self._make_reservation_prereqs()
+        r = self.store.create_reservation(DEFAULT_ORGANIZATION_ID, pid, wid, sid, 50.0)
+        result = self.store.consume_from_reservation(DEFAULT_ORGANIZATION_ID, r["id"], 50.0)
+        self.assertIn("movementId", result)
+        # Should be fully consumed now
+        reservations = self.store.list_reservations(DEFAULT_ORGANIZATION_ID, project_id=pid, status="consumed")
+        self.assertEqual(len(reservations), 1)
+        self.assertEqual(reservations[0]["consumed"], 50.0)
+
+    def test_reservation_release(self):
+        pid, wid, sid = self._make_reservation_prereqs()
+        r = self.store.create_reservation(DEFAULT_ORGANIZATION_ID, pid, wid, sid, 200.0)
+        self.store.release_reservation(DEFAULT_ORGANIZATION_ID, r["id"])
+        lst_active = self.store.list_reservations(DEFAULT_ORGANIZATION_ID, project_id=pid, status="active")
+        self.assertEqual(len(lst_active), 0)
+        lst_released = self.store.list_reservations(DEFAULT_ORGANIZATION_ID, project_id=pid, status="released")
+        self.assertEqual(len(lst_released), 1)
+
+    def test_reservation_insufficient_stock_raises(self):
+        pid, wid, sid = self._make_reservation_prereqs()
+        with self.assertRaises(ValueError):
+            self.store.create_reservation(DEFAULT_ORGANIZATION_ID, pid, wid, sid, 99999.0)
 
     def test_issue_list_by_project(self):
         proj = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "ISS", "name": "Issue Test"})

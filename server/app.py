@@ -4352,6 +4352,133 @@ Rules:
         )
         return pending
 
+    # ── Material Reservations ─────────────────────────────────────────────────
+
+    def list_reservations(self, org: str, project_id: str | None = None,
+                           sku_id: str | None = None, status: str = "active") -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            clauses = ["r.organization_id=?"]
+            params: list[Any] = [org]
+            if project_id:
+                clauses.append("r.project_id=?"); params.append(project_id)
+            if sku_id:
+                clauses.append("r.sku_id=?"); params.append(sku_id)
+            if status != "all":
+                clauses.append("r.status=?"); params.append(status)
+            rows = conn.execute(
+                f"""SELECT r.*, s.name as sku_name, s.sku_code, s.unit,
+                           w.name as warehouse_name
+                    FROM material_reservations r
+                    LEFT JOIN inventory_skus s ON s.id=r.sku_id
+                    LEFT JOIN warehouses w ON w.id=r.warehouse_id
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY r.created_at DESC""", params
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_reservation(self, org: str, project_id: str, warehouse_id: str,
+                            sku_id: str, quantity: float, note: str = "",
+                            reserved_by: str | None = None) -> dict[str, Any]:
+        with self._connect() as conn:
+            # Validate project, warehouse, sku exist in org
+            proj = conn.execute(
+                "SELECT id FROM projects WHERE organization_id=? AND id=?", (org, project_id)
+            ).fetchone()
+            if not proj:
+                raise ValueError("Project not found")
+            avail = conn.execute(
+                "SELECT quantity - reserved FROM inventory_stock WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                (org, warehouse_id, sku_id)
+            ).fetchone()
+            if avail is None or (avail[0] is not None and avail[0] < quantity):
+                raise ValueError("Insufficient available stock for reservation")
+            rid = str(uuid.uuid4())
+            now = utc_now()
+            conn.execute(
+                """INSERT INTO material_reservations
+                   (id,organization_id,project_id,warehouse_id,sku_id,quantity,consumed,status,note,reserved_by,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,0,'active',?,?,?,?)""",
+                (rid, org, project_id, warehouse_id, sku_id, quantity, note, reserved_by, now, now)
+            )
+            # Mark reserved in stock table
+            conn.execute(
+                """UPDATE inventory_stock SET reserved=reserved+?, updated_at=?
+                   WHERE organization_id=? AND warehouse_id=? AND sku_id=?""",
+                (quantity, now, org, warehouse_id, sku_id)
+            )
+            row = conn.execute(
+                """SELECT r.*, s.name as sku_name, s.sku_code, s.unit, w.name as warehouse_name
+                   FROM material_reservations r
+                   LEFT JOIN inventory_skus s ON s.id=r.sku_id
+                   LEFT JOIN warehouses w ON w.id=r.warehouse_id
+                   WHERE r.id=?""", (rid,)
+            ).fetchone()
+        self.audit(org, reserved_by, None, "reservation.create", "reservation", rid)
+        return dict(row)
+
+    def release_reservation(self, org: str, reservation_id: str,
+                             actor: str | None = None) -> None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM material_reservations WHERE organization_id=? AND id=? AND status='active'",
+                (org, reservation_id)
+            ).fetchone()
+            if not row:
+                raise ValueError("Reservation not found or not active")
+            now = utc_now()
+            remaining = row["quantity"] - row["consumed"]
+            conn.execute(
+                "UPDATE material_reservations SET status='released', updated_at=? WHERE id=?",
+                (now, reservation_id)
+            )
+            if remaining > 0:
+                conn.execute(
+                    """UPDATE inventory_stock SET reserved=MAX(0, reserved-?), updated_at=?
+                       WHERE organization_id=? AND warehouse_id=? AND sku_id=?""",
+                    (remaining, now, org, row["warehouse_id"], row["sku_id"])
+                )
+        self.audit(org, actor, None, "reservation.release", "reservation", reservation_id)
+
+    def consume_from_reservation(self, org: str, reservation_id: str,
+                                  quantity: float, actor: str | None = None) -> dict[str, Any]:
+        """Record actual consumption from a reservation, creates movement."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM material_reservations WHERE organization_id=? AND id=? AND status='active'",
+                (org, reservation_id)
+            ).fetchone()
+            if not row:
+                raise ValueError("Reservation not found or not active")
+            remaining = row["quantity"] - row["consumed"]
+            if quantity > remaining:
+                raise ValueError(f"Cannot consume {quantity}, only {remaining} remaining in reservation")
+            now = utc_now()
+            new_consumed = row["consumed"] + quantity
+            new_status = "consumed" if new_consumed >= row["quantity"] else "active"
+            conn.execute(
+                "UPDATE material_reservations SET consumed=?, status=?, updated_at=? WHERE id=?",
+                (new_consumed, new_status, now, reservation_id)
+            )
+            # Record movement
+            mid = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO inventory_movements
+                   (id,organization_id,warehouse_id,sku_id,movement_type,quantity,reference,note,source,recorded_by,project_id,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (mid, org, row["warehouse_id"], row["sku_id"], "issue", -quantity,
+                 f"reservation:{reservation_id}", f"Consumed from project reservation",
+                 "manual", actor, row["project_id"], now)
+            )
+            # Update stock (reduce quantity, reduce reserved)
+            conn.execute(
+                """UPDATE inventory_stock
+                   SET quantity=quantity+?, reserved=MAX(0, reserved-?), updated_at=?
+                   WHERE organization_id=? AND warehouse_id=? AND sku_id=?""",
+                (-quantity, quantity, now, org, row["warehouse_id"], row["sku_id"])
+            )
+        self.audit(org, actor, None, "reservation.consume", "reservation", reservation_id)
+        return {"reservationId": reservation_id, "consumed": quantity, "movementId": mid}
+
     # ── Budget Tracking ───────────────────────────────────────────────────────
 
     def get_budget_summary(self, org: str, project_id: str) -> dict[str, Any]:
@@ -7260,6 +7387,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if sub == "pending":
                 status = self.query_params.get("status",["pending"])[0]
                 self._json(HTTPStatus.OK, {"pending": self.store.list_inventory_pending(org, status)}); return
+            if sub == "reservations":
+                project_id = self.query_params.get("projectId",[None])[0]
+                sku_id = self.query_params.get("skuId",[None])[0]
+                status = self.query_params.get("status",["active"])[0]
+                self._json(HTTPStatus.OK, {
+                    "reservations": self.store.list_reservations(org, project_id, sku_id, status)
+                }); return
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Unknown inventory route"); return
         # Budget: GET /api/v1/projects/:id/budget  and  /expenses
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "budget":
@@ -8129,6 +8263,31 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     data = self.rfile.read(content_length)
                     pending = self.store.import_xlsx_inventory(org, data, self.current_role)
                     self._json(HTTPStatus.CREATED, pending); return
+                if sub == "reservations":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    r = self.store.create_reservation(
+                        org,
+                        project_id=payload["projectId"],
+                        warehouse_id=payload["warehouseId"],
+                        sku_id=payload["skuId"],
+                        quantity=float(payload["quantity"]),
+                        note=payload.get("note",""),
+                        reserved_by=payload.get("reservedBy", self.current_role),
+                    )
+                    self._json(HTTPStatus.CREATED, r); return
+                if sub == "reservations" and len(parts) == 7 and parts[6] in ("release","consume"):
+                    if not self._require_permission("projectManage"): return
+                    reservation_id = parts[5]; action = parts[6]
+                    payload = self._read_json()
+                    actor = payload.get("actor", self.current_role)
+                    if action == "release":
+                        self.store.release_reservation(org, reservation_id, actor)
+                        self._json(HTTPStatus.OK, {"released": True}); return
+                    else:
+                        qty = float(payload["quantity"])
+                        result = self.store.consume_from_reservation(org, reservation_id, qty, actor)
+                        self._json(HTTPStatus.OK, result); return
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err)); return
             except LookupError as err:
