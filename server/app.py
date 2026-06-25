@@ -1979,8 +1979,44 @@ class WorkspaceStore:
                    VALUES (?, ?, ?, 'work_item', ?, 'updated', ?, ?, 'api', ?)""",
                 (organization_id, str(uuid.uuid4()), project_id, item_id, json.dumps(old_value), json.dumps(new_value), now),
             )
+        self._auto_update_project_status(organization_id, project_id)
         project = self.get_project(organization_id, project_id)
         return next(item for item in project["workItems"] if item["id"] == item_id)  # type: ignore[index]
+
+    def _auto_update_project_status(self, org: str, project_id: str) -> None:
+        """Automatically set project status based on work item completion percentage."""
+        with self._connect() as conn:
+            proj = conn.execute(
+                "SELECT status FROM projects WHERE organization_id=? AND id=?", (org, project_id)
+            ).fetchone()
+            if not proj:
+                return
+            current_proj_status = proj["status"]
+            # Don't override terminal or manual states
+            if current_proj_status in ("cancelled", "on_hold"):
+                return
+            rows = conn.execute(
+                "SELECT status FROM project_work_items WHERE organization_id=? AND project_id=?",
+                (org, project_id)
+            ).fetchall()
+            if not rows:
+                return
+            total = len(rows)
+            done = sum(1 for r in rows if r["status"] == "done")
+            pct = done / total
+            if pct == 1.0:
+                new_status = "completed"
+            elif pct >= 0.01 and current_proj_status == "planning":
+                new_status = "active"
+            else:
+                return
+            if new_status == current_proj_status:
+                return
+            now = utc_now()
+            conn.execute(
+                "UPDATE projects SET status=?,updated_at=? WHERE organization_id=? AND id=?",
+                (new_status, now, org, project_id)
+            )
 
     # ── Auth / Session ──────────────────────────────────────────────────────
 
