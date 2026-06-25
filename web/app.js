@@ -3835,6 +3835,13 @@ function renderProjectDetail() {
           </div>`).join('') : '<p class="empty-copy">Открытых проблем нет.</p>'}
       </div>
     </article></section>
+    <section class="detail-section" id="reservationsSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">СКЛАД</p><h2>Резервирование материалов</h2></div>
+        ${canManage ? `<button class="button ghost" id="addReservationBtn" type="button" style="font-size:12px">＋ Резерв</button>` : ''}
+      </div>
+      <div id="reservationsList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="budgetSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">БЮДЖЕТ</p><h2>Финансы проекта</h2></div>
@@ -4178,7 +4185,116 @@ function renderProjectDetail() {
   hydrateMilestones(project.id);
   setupIssuesPanel(project.id);
   hydrateBudgetWidget(project.id);
+  hydrateReservations(project.id);
 }
+
+async function hydrateReservations(projectId) {
+  const el = document.getElementById('reservationsList');
+  if (!el) return;
+  try {
+    const r = await apiFetch(`/api/v1/inventory/reservations?projectId=${projectId}&status=all`);
+    const { reservations = [] } = await r.json();
+    if (!reservations.length) {
+      el.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет резервирований.</p>';
+    } else {
+      const STATUS_COLORS = { active:'#4f8ef7', consumed:'#4adc84', released:'#8b95a5', cancelled:'#f46' };
+      const STATUS_LABELS = { active:'Активен', consumed:'Использован', released:'Снят', cancelled:'Отменён' };
+      el.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px">
+        ${reservations.map(res => {
+          const pct = res.quantity > 0 ? Math.round(res.consumed / res.quantity * 100) : 0;
+          const color = STATUS_COLORS[res.status] || '#8b95a5';
+          return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px">
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-size:12px;font-weight:600">${escapeHtml(res.sku_name||res.sku_id)}</span>
+                <span style="font-size:10px;font-family:monospace;color:var(--text-muted)">${escapeHtml(res.sku_code||'')}</span>
+                <span style="font-size:10px;padding:2px 6px;border-radius:8px;background:${color}22;color:${color}">${STATUS_LABELS[res.status]||res.status}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+                ${escapeHtml(res.warehouse_name||'')} · ${res.consumed}/${res.quantity} ${escapeHtml(res.unit||'pcs')}
+                ${res.note ? `· ${escapeHtml(res.note)}` : ''}
+              </div>
+              ${res.status==='active' ? `<div style="background:var(--border);border-radius:3px;height:4px;margin-top:5px">
+                <div style="height:4px;border-radius:3px;background:${color};width:${pct}%"></div>
+              </div>` : ''}
+            </div>
+            ${res.status==='active' ? `<div style="display:flex;gap:4px">
+              <button data-res-consume="${res.id}" data-res-qty="${res.quantity - res.consumed}" data-res-unit="${escapeHtml(res.unit||'pcs')}"
+                class="button ghost" style="font-size:10px;padding:3px 7px">Использовать</button>
+              <button data-res-release="${res.id}" class="button ghost" style="font-size:10px;padding:3px 7px;color:var(--text-muted)">Снять</button>
+            </div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>`;
+      // Bind buttons
+      el.querySelectorAll('[data-res-consume]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const rid = btn.dataset.resConsume;
+          const max = parseFloat(btn.dataset.resQty);
+          const unit = btn.dataset.resUnit;
+          const qty = parseFloat(prompt(`Количество использовано (макс ${max} ${unit}):`, String(max)) || '0');
+          if (!qty || isNaN(qty) || qty <= 0) return;
+          try {
+            const r2 = await apiFetch(`/api/v1/inventory/reservations/${rid}/consume`, {
+              method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({ quantity: qty }),
+            });
+            if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+            toast(`Записано ${qty} ${unit}`); hydrateReservations(projectId);
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      });
+      el.querySelectorAll('[data-res-release]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Снять резервирование?')) return;
+          try {
+            const r2 = await apiFetch(`/api/v1/inventory/reservations/${btn.dataset.resRelease}/release`, {
+              method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({}),
+            });
+            if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+            toast('Резервирование снято'); hydrateReservations(projectId);
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      });
+    }
+
+    // Add reservation button
+    document.getElementById('addReservationBtn')?.removeEventListener('click', _addReservationHandler);
+    _addReservationHandler = async () => {
+      const whR = await apiFetch('/api/v1/inventory/warehouses');
+      const { warehouses = [] } = await whR.json();
+      if (!warehouses.length) { toast('Нет складов. Создайте склад в разделе Склад.'); return; }
+      const whOpts = warehouses.map((w,i) => `${i+1}. ${w.name}`).join('\n');
+      const whIdx = parseInt(prompt(`Выберите склад:\n${whOpts}`, '1') || '0') - 1;
+      if (whIdx < 0 || whIdx >= warehouses.length) return;
+      const wh = warehouses[whIdx];
+
+      const skuR = await apiFetch(`/api/v1/inventory/stock?warehouseId=${wh.id}`);
+      const { stock = [] } = await skuR.json();
+      if (!stock.length) { toast(`На складе ${wh.name} нет SKU.`); return; }
+      const skuOpts = stock.map((s,i) => `${i+1}. ${s.sku_name} (${s.sku_code}) — доступно: ${(s.quantity||0)-(s.reserved||0)} ${s.unit}`).join('\n');
+      const skuIdx = parseInt(prompt(`Выберите материал:\n${skuOpts}`, '1') || '0') - 1;
+      if (skuIdx < 0 || skuIdx >= stock.length) return;
+      const sku = stock[skuIdx];
+
+      const qty = parseFloat(prompt(`Количество для резервирования (${sku.unit}):`) || '0');
+      if (!qty || isNaN(qty) || qty <= 0) return;
+      const note = prompt('Заметка (необязательно):', '') || '';
+
+      try {
+        const r2 = await apiFetch('/api/v1/inventory/reservations', {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ projectId, warehouseId: wh.id, skuId: sku.sku_id, quantity: qty, note }),
+        });
+        if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+        toast('Материал зарезервирован'); hydrateReservations(projectId);
+      } catch(e) { toast(`Ошибка: ${e.message}`); }
+    };
+    document.getElementById('addReservationBtn')?.addEventListener('click', _addReservationHandler);
+  } catch { el.innerHTML = '<p class="empty-copy" style="font-size:13px">Недоступно.</p>'; }
+}
+let _addReservationHandler = null;
 
 async function hydrateBudgetWidget(projectId) {
   const el = document.getElementById('budgetWidget');
