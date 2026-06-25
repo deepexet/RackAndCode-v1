@@ -6919,7 +6919,7 @@ function _bindInventoryEvents() {
   }
 
   function _closeAllInvPanels() {
-    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel']
+    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel']
       .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   }
 
@@ -7003,6 +7003,100 @@ function _bindInventoryEvents() {
     const p = document.getElementById('inventoryReorderPanel'); if (p) p.style.display = 'none';
   });
   document.getElementById('invReorderStatusFilter')?.addEventListener('change', _loadReorders);
+
+  // ── Suppliers panel ────────────────────────────────────────────────────────
+  async function _loadSuppliers() {
+    const list = document.getElementById('inventorySuppliersList');
+    if (!list) return;
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    try {
+      const r = await apiFetch('/api/v1/inventory/suppliers');
+      const { suppliers = [] } = await r.json();
+      if (!suppliers.length) {
+        list.innerHTML = '<p class="empty-copy">Нет поставщиков. Нажмите ＋ Добавить.</p>'; return;
+      }
+      list.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          <th style="padding:6px 8px;text-align:left">Наименование</th>
+          <th style="padding:6px 8px;text-align:left">Контакт</th>
+          <th style="padding:6px 8px;text-align:left">Email</th>
+          <th style="padding:6px 8px;text-align:left">Телефон</th>
+          <th style="padding:6px 8px"></th>
+        </tr></thead>
+        <tbody>${suppliers.map(s => `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:7px 8px;font-weight:600">${escapeHtml(s.name)}</td>
+          <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.contact_name||'—')}</td>
+          <td style="padding:7px 8px;color:var(--text-muted)">${s.email ? `<a href="mailto:${escapeHtml(s.email)}" style="color:var(--accent)">${escapeHtml(s.email)}</a>` : '—'}</td>
+          <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.phone||'—')}</td>
+          <td style="padding:7px 8px;white-space:nowrap;display:flex;gap:4px">
+            <button class="text-button" data-sup-edit="${s.id}"
+              data-sup-name="${escapeHtml(s.name)}" data-sup-contact="${escapeHtml(s.contact_name||'')}"
+              data-sup-email="${escapeHtml(s.email||'')}" data-sup-phone="${escapeHtml(s.phone||'')}"
+              data-sup-address="${escapeHtml(s.address||'')}" data-sup-note="${escapeHtml(s.note||'')}"
+              style="font-size:11px">✏</button>
+            <button class="text-button" data-sup-del="${s.id}" style="font-size:11px;color:var(--text-muted)">✕</button>
+          </td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+      list.querySelectorAll('[data-sup-edit]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.supEdit;
+          const name = prompt('Наименование:', btn.dataset.supName); if (name === null) return;
+          const contactName = prompt('Контактное лицо:', btn.dataset.supContact) ?? '';
+          const email = prompt('Email:', btn.dataset.supEmail) ?? '';
+          const phone = prompt('Телефон:', btn.dataset.supPhone) ?? '';
+          const address = prompt('Адрес:', btn.dataset.supAddress) ?? '';
+          const note = prompt('Заметки:', btn.dataset.supNote) ?? '';
+          try {
+            const r = await apiFetch(`/api/v1/inventory/suppliers/${id}/update`, {
+              method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({ name, contactName, email, phone, address, note }),
+            });
+            if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+            toast('Поставщик обновлён'); _loadSuppliers();
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      });
+      list.querySelectorAll('[data-sup-del]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Удалить поставщика?')) return;
+          try {
+            const r = await apiFetch(`/api/v1/inventory/suppliers/${btn.dataset.supDel}/delete`, {
+              method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({}),
+            });
+            if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+            toast('Поставщик удалён'); _loadSuppliers();
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      });
+    } catch { list.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+  }
+
+  document.getElementById('invSuppliersBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventorySuppliersPanel');
+    const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
+    _closeAllInvPanels();
+    if (wasHidden && panel) { panel.style.display = ''; _loadSuppliers(); }
+  });
+  document.getElementById('invSuppliersCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventorySuppliersPanel'); if (p) p.style.display = 'none';
+  });
+  document.getElementById('invSupplierAddBtn')?.addEventListener('click', async () => {
+    const name = prompt('Наименование поставщика:'); if (!name?.trim()) return;
+    const contactName = prompt('Контактное лицо (пусто = нет):') ?? '';
+    const email = prompt('Email (пусто = нет):') ?? '';
+    const phone = prompt('Телефон (пусто = нет):') ?? '';
+    const address = prompt('Адрес (пусто = нет):') ?? '';
+    try {
+      const r = await apiFetch('/api/v1/inventory/suppliers', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ name: name.trim(), contactName, email, phone, address }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('Поставщик добавлен'); _loadSuppliers();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
 
   document.getElementById('invReorderSuggestBtn')?.addEventListener('click', async () => {
     const list = document.getElementById('inventoryReorderList');

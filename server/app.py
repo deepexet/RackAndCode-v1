@@ -4887,6 +4887,60 @@ Rules:
             if (r["sku_id"], r["warehouse_id"]) not in open_sku_wh
         ]
 
+    # ── Suppliers ─────────────────────────────────────────────────────────────
+
+    def list_suppliers(self, org: str, include_inactive: bool = False) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            q = "SELECT * FROM suppliers WHERE organization_id=?"
+            if not include_inactive:
+                q += " AND active=1"
+            q += " ORDER BY name"
+            rows = conn.execute(q, (org,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_supplier(self, org: str, payload: dict[str, Any],
+                        actor: str | None = None) -> dict[str, Any]:
+        sid = str(uuid.uuid4()); now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO suppliers (id,organization_id,name,contact_name,email,phone,address,note,active,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,1,?,?)",
+                (sid, org, str(payload.get("name",""))[:200],
+                 str(payload.get("contactName",""))[:100],
+                 str(payload.get("email",""))[:200],
+                 str(payload.get("phone",""))[:50],
+                 str(payload.get("address",""))[:500],
+                 str(payload.get("note",""))[:1000], now, now),
+            )
+        self.audit(org, actor, None, "supplier.create", "supplier", sid)
+        return {"id": sid, "created_at": now}
+
+    def update_supplier(self, org: str, supplier_id: str, payload: dict[str, Any],
+                        actor: str | None = None) -> dict[str, Any]:
+        now = utc_now()
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM suppliers WHERE id=? AND organization_id=?",
+                                (supplier_id, org)).fetchone():
+                raise KeyError("supplier not found")
+            fields, vals = [], []
+            for key, col in [("name","name"),("contactName","contact_name"),("email","email"),
+                              ("phone","phone"),("address","address"),("note","note")]:
+                if key in payload:
+                    fields.append(f"{col}=?"); vals.append(str(payload[key])[:500])
+            if not fields:
+                raise ValueError("no fields to update")
+            vals += [now, supplier_id, org]
+            conn.execute(f"UPDATE suppliers SET {','.join(fields)},updated_at=? WHERE id=? AND organization_id=?", vals)
+        self.audit(org, actor, None, "supplier.update", "supplier", supplier_id)
+        return {"id": supplier_id}
+
+    def delete_supplier(self, org: str, supplier_id: str, actor: str | None = None) -> None:
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute("UPDATE suppliers SET active=0,updated_at=? WHERE id=? AND organization_id=?",
+                         (now, supplier_id, org))
+        self.audit(org, actor, None, "supplier.delete", "supplier", supplier_id)
+
     # ── Digest / Reporting ────────────────────────────────────────────────────
 
     def build_digest_data(self, org: str) -> dict[str, Any]:
@@ -7825,6 +7879,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"requests": self.store.list_reorder_requests(org, status)}); return
             if sub == "reorder-suggest":
                 self._json(HTTPStatus.OK, {"suggestions": self.store.auto_suggest_reorders(org)}); return
+            if sub == "suppliers":
+                include_inactive = self.query_params.get("includeInactive",["0"])[0] == "1"
+                self._json(HTTPStatus.OK, {"suppliers": self.store.list_suppliers(org, include_inactive)}); return
             if sub == "export":
                 if not self._require_permission("projectRead"): return
                 wh = self.query_params.get("warehouseId",[None])[0]
@@ -8782,6 +8839,21 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         location_bin=payload.get("locationBin"),
                     )
                     self._json(HTTPStatus.OK, {"stock": result}); return
+                if sub == "suppliers":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    if len(parts) == 6:  # POST /api/v1/inventory/suppliers — create
+                        r = self.store.create_supplier(org, payload, actor=self.current_role)
+                        self._json(HTTPStatus.CREATED, r); return
+                    if len(parts) == 7:  # POST /api/v1/inventory/suppliers/:id
+                        action = parts[6]
+                        sid = parts[5]
+                        if action == "update":
+                            self.store.update_supplier(org, sid, payload, actor=self.current_role)
+                            self._json(HTTPStatus.OK, {"updated": True}); return
+                        if action == "delete":
+                            self.store.delete_supplier(org, sid, actor=self.current_role)
+                            self._json(HTTPStatus.OK, {"deleted": True}); return
                 if sub == "reservations":
                     if not self._require_permission("projectManage"): return
                     payload = self._read_json()
