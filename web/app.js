@@ -7499,6 +7499,25 @@ function _bindInventoryEvents() {
     const p = document.getElementById('inventorySkuPanel'); if (p) p.style.display = 'none';
   });
   // Add SKU
+  document.getElementById('skuCsvInput')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    e.target.value = '';
+    try {
+      const r = await apiFetch('/api/v1/inventory/skus/import-csv', {
+        method: 'POST',
+        headers: apiHeaders({'Content-Type':'text/csv; charset=utf-8'}),
+        body: text,
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error?.message || r.status);
+      toast(`Импорт: создано ${data.created}, обновлено ${data.updated}${data.errors?.length ? `, ошибок: ${data.errors.length}` : ''}`);
+      if (data.errors?.length) console.warn('SKU import errors:', data.errors);
+      _loadSkuCatalog();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
   document.getElementById('invAddSkuBtn')?.addEventListener('click', async () => {
     const code = prompt('Код SKU (уникальный артикул):');
     if (!code?.trim()) return;

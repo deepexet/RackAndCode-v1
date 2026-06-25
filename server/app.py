@@ -4587,6 +4587,43 @@ Rules:
         )
         return pending
 
+    def import_skus_csv(self, org: str, csv_text: str) -> dict[str, Any]:
+        """Parse CSV and bulk-create/update SKUs. Upserts by sku_code."""
+        import csv as _csv, io as _io
+        reader = _csv.DictReader(_io.StringIO(csv_text))
+        created, updated, errors = [], [], []
+        with self._connect() as _c:
+            existing = {r["sku_code"]: r["id"] for r in _c.execute(
+                "SELECT id, sku_code FROM inventory_skus WHERE organization_id=? AND active=1", (org,)
+            ).fetchall()}
+        for i, row in enumerate(reader, start=2):
+            code = (row.get("sku_code") or row.get("Код SKU") or row.get("code") or "").strip().upper()
+            name = (row.get("name") or row.get("Наименование") or row.get("Name") or "").strip()
+            if not code or not name:
+                errors.append({"row": i, "error": "sku_code and name are required"}); continue
+            payload = {
+                "skuCode": code, "name": name,
+                "description": (row.get("description") or row.get("Описание") or "").strip(),
+                "category": (row.get("category") or row.get("Категория") or "general").strip() or "general",
+                "unit": (row.get("unit") or row.get("Ед") or "pcs").strip() or "pcs",
+                "barcode": (row.get("barcode") or row.get("Штрихкод") or "").strip(),
+                "currency": (row.get("currency") or row.get("Валюта") or "USD").strip() or "USD",
+            }
+            cost_raw = (row.get("unit_cost") or row.get("unit cost") or row.get("Цена") or "").strip()
+            if cost_raw:
+                try: payload["unitCost"] = float(cost_raw.replace(",","."))
+                except ValueError: pass
+            try:
+                if code in existing:
+                    self.update_sku(org, existing[code], payload)
+                    updated.append(code)
+                else:
+                    self.create_sku(org, payload)
+                    created.append(code)
+            except Exception as e:
+                errors.append({"row": i, "sku_code": code, "error": str(e)})
+        return {"created": len(created), "updated": len(updated), "errors": errors}
+
     def import_work_items_csv(self, org: str, project_id: str,
                                csv_text: str, recorded_by: str | None = None) -> dict[str, Any]:
         """Parse CSV rows and bulk-create work items. Returns summary."""
@@ -8968,6 +9005,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     if not self._require_permission("adminPanel"): return
                     self.store.delete_warehouse(org, parts[5])
                     self._json(HTTPStatus.OK, {"deleted": True}); return
+                if sub == "skus" and len(parts) == 6 and parts[5] == "import-csv":
+                    if not self._require_permission("projectManage"): return
+                    cl = int(self.headers.get("Content-Length","0"))
+                    if cl > 2_000_000:
+                        self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large", "Max 2 MB"); return
+                    raw = self.rfile.read(cl).decode("utf-8-sig", errors="replace")
+                    try:
+                        result = self.store.import_skus_csv(org, raw)
+                        self._json(HTTPStatus.CREATED, result); return
+                    except Exception as e:
+                        self._error(HTTPStatus.BAD_REQUEST, "import_error", str(e)); return
                 if sub == "skus":
                     if not self._require_permission("projectManage"): return
                     sku = self.store.create_sku(org, self._read_json())
