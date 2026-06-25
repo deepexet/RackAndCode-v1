@@ -4020,6 +4020,44 @@ Rules:
         except Exception: d["tags"] = []
         return d
 
+    def update_sku(self, org: str, sku_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM inventory_skus WHERE id=? AND organization_id=?",
+                                (sku_id, org)).fetchone():
+                raise LookupError("SKU not found")
+            fields, params = [], []
+            for key, col in [("name","name"),("skuCode","sku_code"),("description","description"),
+                              ("category","category"),("unit","unit"),("unitCost","unit_cost"),
+                              ("currency","currency")]:
+                if key in payload:
+                    val = payload[key]
+                    if col == "sku_code": val = str(val).strip().upper()
+                    fields.append(f"{col}=?"); params.append(val)
+            if "tags" in payload:
+                fields.append("tags=?")
+                params.append(json.dumps(payload["tags"] if isinstance(payload["tags"], list) else []))
+            if not fields:
+                raise ValueError("No fields to update")
+            now = utc_now()
+            fields.append("updated_at=?"); params.append(now)
+            params += [sku_id, org]
+            conn.execute(f"UPDATE inventory_skus SET {', '.join(fields)} WHERE id=? AND organization_id=?", params)
+            row = conn.execute("SELECT * FROM inventory_skus WHERE id=?", (sku_id,)).fetchone()
+        d = dict(row)
+        try: d["tags"] = json.loads(d.get("tags") or "[]")
+        except Exception: d["tags"] = []
+        return d
+
+    def delete_sku(self, org: str, sku_id: str) -> None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT 1 FROM inventory_skus WHERE id=? AND organization_id=?",
+                               (sku_id, org)).fetchone()
+            if not row:
+                raise LookupError("SKU not found")
+            # Soft-delete
+            conn.execute("UPDATE inventory_skus SET active=0, updated_at=? WHERE id=?",
+                         (utc_now(), sku_id))
+
     def search_skus(self, org: str, q: str) -> list[dict[str, Any]]:
         pattern = f"%{q}%"
         with self._connect() as conn:
@@ -8462,6 +8500,15 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     data = self.rfile.read(content_length)
                     pending = self.store.import_xlsx_inventory(org, data, self.current_role)
                     self._json(HTTPStatus.CREATED, pending); return
+                if sub == "skus" and len(parts) == 7 and parts[6] in ("update","delete"):
+                    sku_id = parts[5]; action = parts[6]
+                    if not self._require_permission("projectManage"): return
+                    if action == "update":
+                        sku = self.store.update_sku(org, sku_id, self._read_json())
+                        self._json(HTTPStatus.OK, {"sku": sku}); return
+                    else:
+                        self.store.delete_sku(org, sku_id)
+                        self._json(HTTPStatus.OK, {"deleted": True}); return
                 if sub == "transfer":
                     if not self._require_permission("projectManage"): return
                     payload = self._read_json()

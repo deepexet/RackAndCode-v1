@@ -6626,14 +6626,59 @@ async function _loadSkuCatalog() {
       <thead><tr style="color:var(--text-muted);text-align:left">
         <th style="padding:6px 8px">Код</th><th style="padding:6px 8px">Наименование</th>
         <th style="padding:6px 8px">Категория</th><th style="padding:6px 8px">Ед.</th>
+        <th style="padding:6px 8px">Цена</th><th style="padding:6px 8px"></th>
       </tr></thead>
       <tbody>${skus.map(s => `<tr style="border-top:1px solid var(--border)">
         <td style="padding:7px 8px;font-family:monospace">${escapeHtml(s.sku_code)}</td>
         <td style="padding:7px 8px"><strong>${escapeHtml(s.name)}</strong></td>
         <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.category)}</td>
         <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.unit)}</td>
+        <td style="padding:7px 8px;color:var(--text-muted)">${s.unit_cost != null ? `${s.unit_cost} ${s.currency||''}` : '—'}</td>
+        <td style="padding:7px 8px;white-space:nowrap;display:flex;gap:4px">
+          <button class="text-button" data-sku-edit="${s.id}"
+            data-sku-code="${escapeHtml(s.sku_code)}" data-sku-name="${escapeHtml(s.name)}"
+            data-sku-cat="${escapeHtml(s.category)}" data-sku-unit="${escapeHtml(s.unit)}"
+            data-sku-cost="${s.unit_cost??''}" data-sku-cur="${escapeHtml(s.currency||'USD')}"
+            style="font-size:11px">✏</button>
+          <button class="text-button" data-sku-del="${s.id}" style="font-size:11px;color:var(--text-muted)">✕</button>
+        </td>
       </tr>`).join('')}</tbody>
     </table>`;
+    list.querySelectorAll('[data-sku-edit]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.skuEdit;
+        const name = prompt('Наименование:', btn.dataset.skuName);
+        if (name === null) return;
+        const skuCode = prompt('Код SKU:', btn.dataset.skuCode);
+        if (skuCode === null) return;
+        const category = prompt('Категория:', btn.dataset.skuCat) ?? btn.dataset.skuCat;
+        const unit = prompt('Единица измерения:', btn.dataset.skuUnit) ?? btn.dataset.skuUnit;
+        const costStr = prompt('Цена за единицу (пусто = нет):', btn.dataset.skuCost);
+        const currency = prompt('Валюта:', btn.dataset.skuCur) ?? 'USD';
+        const unitCost = costStr?.trim() ? parseFloat(costStr) : null;
+        try {
+          const r = await apiFetch(`/api/v1/inventory/skus/${id}/update`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ name, skuCode, category, unit, unitCost, currency }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          toast('SKU обновлён'); _loadSkuCatalog();
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+    list.querySelectorAll('[data-sku-del]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить SKU (деактивировать)?')) return;
+        try {
+          const r = await apiFetch(`/api/v1/inventory/skus/${btn.dataset.skuDel}/delete`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: '{}',
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          toast('SKU удалён'); _loadSkuCatalog();
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
   } catch { list.innerHTML = '<p class="empty-copy">Ошибка.</p>'; }
 }
 
