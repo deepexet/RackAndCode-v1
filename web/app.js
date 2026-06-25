@@ -3875,6 +3875,17 @@ function renderProjectDetail() {
       </div>
       <div id="milestonesList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
     </section>
+    <section class="detail-section" id="projectCommentsSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">ОБСУЖДЕНИЕ</p><h2>Комментарии к проекту</h2></div>
+      </div>
+      <div id="projectCommentsList" style="margin-bottom:12px"></div>
+      <div style="display:flex;gap:8px;align-items:flex-end">
+        <textarea id="projectCommentInput" placeholder="Написать комментарий…" rows="2"
+          style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;resize:vertical"></textarea>
+        <button class="button primary" id="projectCommentSendBtn" type="button" style="font-size:12px;height:36px">Отправить</button>
+      </div>
+    </section>
     <section class="detail-section" id="workloadWidgetSection">
       <div class="detail-section-title"><div><p class="eyebrow">НАГРУЗКА</p><h2>Распределение задач</h2></div></div>
       <div id="workloadSection"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
@@ -4203,6 +4214,63 @@ function renderProjectDetail() {
   hydrateBudgetWidget(project.id);
   hydrateReservations(project.id);
   hydrateGantt(project);
+  hydrateProjectComments(project.id);
+}
+
+async function hydrateProjectComments(projectId) {
+  const list = document.getElementById('projectCommentsList');
+  const input = document.getElementById('projectCommentInput');
+  const sendBtn = document.getElementById('projectCommentSendBtn');
+  if (!list) return;
+
+  async function loadComments() {
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    try {
+      const r = await apiFetch(`/api/v1/projects/${projectId}/comments`);
+      const { comments = [] } = await r.json();
+      if (!comments.length) {
+        list.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет комментариев.</p>'; return;
+      }
+      list.innerHTML = comments.map(c => `
+        <div style="border-left:2px solid var(--border);padding:8px 12px;margin-bottom:8px;${c.deleted?'opacity:.4':''}">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <strong style="font-size:12px">${escapeHtml(c.author_name || 'Аноним')}</strong>
+            <span style="font-size:10px;color:var(--text-muted)">${(c.created_at||'').slice(0,16).replace('T',' ')}</span>
+            ${!c.deleted ? `<button data-comment-del="${c.id}" class="text-button" style="margin-left:auto;font-size:10px;color:var(--text-muted)">✕</button>` : ''}
+          </div>
+          <p style="font-size:13px;margin:0;line-height:1.5">${c.deleted ? '[удалён]' : escapeHtml(c.body)}</p>
+        </div>`).join('');
+      list.querySelectorAll('[data-comment-del]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          try {
+            const r2 = await apiFetch(`/api/v1/projects/${projectId}/comments/${btn.dataset.commentDel}`, {
+              method: 'DELETE', headers: apiHeaders({}),
+            });
+            if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+            loadComments();
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      });
+    } catch { list.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+  }
+
+  loadComments();
+  sendBtn?.addEventListener('click', async () => {
+    const body = input?.value.trim();
+    if (!body) return;
+    try {
+      const r = await apiFetch(`/api/v1/projects/${projectId}/comments`, {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ body }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      if (input) input.value = '';
+      loadComments();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+  input?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendBtn?.click();
+  });
 }
 
 function hydrateGantt(project) {
