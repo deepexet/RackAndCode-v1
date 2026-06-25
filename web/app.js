@@ -6709,6 +6709,60 @@ function _bindInventoryEvents() {
   });
   // XLSX import
   // Photo analysis
+  // Voice note — Web Speech API transcription → AI inventory parse
+  document.getElementById('invVoiceBtn')?.addEventListener('click', () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      toast('Браузер не поддерживает голосовой ввод. Используйте Chrome/Edge.');
+      return;
+    }
+    const btn = document.getElementById('invVoiceBtn');
+    const rec = new SpeechRecognition();
+    rec.lang = 'ru-RU';
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    rec.continuous = false;
+    btn.textContent = '⏹ Остановить';
+    btn.style.color = '#f46';
+    toast('Говорите… нажмите кнопку ещё раз для остановки');
+
+    let stopped = false;
+    const stop = () => { if (!stopped) { stopped = true; rec.stop(); } };
+    btn.onclick = stop;
+
+    rec.onresult = async (e) => {
+      const text = e.results[0][0].transcript.trim();
+      btn.textContent = '🎙 Голос';
+      btn.style.color = '';
+      btn.onclick = null;
+      // Re-bind original click
+      document.getElementById('invVoiceBtn')?.addEventListener('click', arguments.callee?.caller);
+      if (!text) { toast('Ничего не распознано.'); return; }
+      toast(`Распознано: «${text.slice(0, 60)}…» — отправляю в AI…`);
+      try {
+        const r = await apiFetch('/api/v1/inventory/ai-parse', {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ text, warehouseId: _invSelectedWarehouse }),
+        });
+        const res = await r.json();
+        if (!r.ok) { toast(`Ошибка AI: ${res.error?.message||r.status}`); return; }
+        const count = res.suggested_movements?.length || 0;
+        toast(`AI предложил ${count} движений. Проверьте очередь одобрения.`);
+        _loadPendingCount();
+        const panel = document.getElementById('inventoryPendingPanel');
+        if (panel) { panel.style.display = ''; _loadPendingList(); }
+      } catch(e) { toast(`Ошибка: ${e.message}`); }
+    };
+    rec.onerror = (e) => {
+      btn.textContent = '🎙 Голос'; btn.style.color = ''; btn.onclick = null;
+      toast(`Ошибка распознавания: ${e.error}`);
+    };
+    rec.onend = () => {
+      btn.textContent = '🎙 Голос'; btn.style.color = ''; btn.onclick = null;
+    };
+    rec.start();
+  });
+
   document.getElementById('invAiPhotoBtn')?.addEventListener('click', () => {
     document.getElementById('invPhotoInput')?.click();
   });
