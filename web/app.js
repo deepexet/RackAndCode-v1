@@ -3828,6 +3828,7 @@ function renderProjectDetail() {
             <button type="button" class="wi-view-btn" data-wi-view="kanban" style="padding:4px 9px;font-size:11px;background:var(--surface);border:none;cursor:pointer;color:var(--text-muted);border-left:1px solid var(--border)">⊞ Kanban</button>
           </div>
           ${canManage ? `<button class="button ghost" id="wiImportCsvBtn" type="button" style="font-size:11px">⬆ CSV</button>` : ''}
+          ${canManage ? `<button class="button ghost" id="wiAiGenerateBtn" type="button" style="font-size:11px">✦ AI задачи</button>` : ''}
           ${canManage ? `<button class="button ghost" id="wiBulkDoneBtn" type="button" style="font-size:11px;display:none">✓ Bulk done</button>` : ''}
         </div>
       </div>
@@ -4827,6 +4828,25 @@ function setupWorkItemsBulkList(project) {
   if (!listEl) return;
 
   // CSV import
+  document.getElementById('wiAiGenerateBtn')?.addEventListener('click', async () => {
+    const text = prompt('Опишите задачи проекта свободным текстом.\nAI создаст 3-7 задач автоматически:');
+    if (!text?.trim()) return;
+    const btn = document.getElementById('wiAiGenerateBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '✦ Генерирую…'; }
+    try {
+      const r = await apiFetch(`/api/v1/projects/${project.id}/work-items/ai-generate`, {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ text: text.trim() }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error?.message || r.status);
+      toast(`✦ AI создал ${data.created} задач${data.errors?.length ? `. Ошибок: ${data.errors.length}` : ''}`);
+      if (data.errors?.length) console.warn('AI generate errors:', data.errors);
+      await fetchProjects();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = '✦ AI задачи'; } }
+  });
+
   document.getElementById('wiImportCsvBtn')?.addEventListener('click', () => {
     const hint = 'Формат CSV: title,status,priority,description,workType,startDate,dueDate,estimatedMinutes\n' +
       'title (обязательно), остальные — опционально.\n\nВыберите CSV файл для импорта.';
@@ -6728,8 +6748,21 @@ async function loadTemplates() {
 let _invSelectedWarehouse = null;
 
 async function hydrateInventory() {
-  await Promise.all([_loadWarehouses(), _loadPendingCount()]);
+  await Promise.all([_loadWarehouses(), _loadPendingCount(), _loadReorderBadge()]);
   _bindInventoryEvents();
+}
+
+async function _loadReorderBadge() {
+  try {
+    const r = await apiFetch('/api/v1/inventory/reorder-requests?status=open');
+    const { requests = [] } = await r.json();
+    const btn = document.getElementById('invReorderBtn');
+    if (btn) {
+      const count = requests.length;
+      btn.textContent = count > 0 ? `Заявки на пополнение (${count})` : 'Заявки на пополнение';
+      btn.style.color = count > 0 ? '#e8a84c' : '';
+    }
+  } catch { /* silent */ }
 }
 
 async function _loadWarehouses() {

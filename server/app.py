@@ -9190,6 +9190,50 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED, result); return
             except Exception as e:
                 self._error(HTTPStatus.BAD_REQUEST, "import_error", str(e)); return
+        # AI work item generation: POST /api/v1/projects/:id/work-items/ai-generate
+        if len(parts) == 7 and parts[3] == "projects" and parts[5] == "work-items" and parts[6] == "ai-generate":
+            project_id = parts[4]
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                text = str(payload.get("text","")).strip()
+                if not text:
+                    self._error(HTTPStatus.BAD_REQUEST, "missing_text", "text required"); return
+                ai = getattr(self.server, "ai_gateway", None)
+                if not ai:
+                    self._error(HTTPStatus.SERVICE_UNAVAILABLE, "no_ai", "AI gateway not configured"); return
+                project = self.store.get_project(self.organization_id, project_id)
+                if not project:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", "Project not found"); return
+                work_types = [wt["name"] for wt in project.get("workTypeProgress",[])[:10]]
+                work_type_ids = [wt["id"] for wt in project.get("workTypeProgress",[])[:10]]
+                prompt_text = (
+                    f"You are a project assistant for a construction/field operations project called '{project['name']}'.\n"
+                    f"Available work types: {', '.join(work_types) or 'general'}.\n"
+                    f"Generate 3-7 work items from the following description. "
+                    f"Return ONLY a JSON array like: "
+                    f'[{{"title":"...", "description":"...", "priority":"low|medium|high", "workTypeId":"{work_type_ids[0] if work_type_ids else "other"}"}}].\n'
+                    f"No extra text, just valid JSON.\n\nDescription:\n{text}"
+                )
+                ai_raw = ai.complete(prompt_text, max_tokens=800, org=self.organization_id, purpose="work_item_generation") or "[]"
+                # Extract JSON array from response
+                match = re.search(r'\[.*\]', ai_raw, re.DOTALL)
+                if not match:
+                    self._error(HTTPStatus.BAD_GATEWAY, "parse_error", "AI did not return valid JSON"); return
+                items_raw: list[dict[str, Any]] = json.loads(match.group())
+                created, errors = [], []
+                for item in items_raw[:10]:
+                    if not isinstance(item, dict) or not item.get("title"):
+                        errors.append("skipped invalid item"); continue
+                    item["workTypeId"] = item.get("workTypeId", work_type_ids[0] if work_type_ids else "other")
+                    try:
+                        wi = self.store.create_work_item(self.organization_id, project_id, item)
+                        created.append(wi)
+                    except Exception as exc:
+                        errors.append(str(exc))
+                self._json(HTTPStatus.CREATED, {"created": len(created), "items": created, "errors": errors}); return
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc)); return
         # Milestones: POST /api/v1/projects/:id/milestones  and  /:id/milestones/:mid/update|delete
         if len(parts) >= 6 and parts[3] == "projects" and parts[5] == "milestones":
             project_id = parts[4]
