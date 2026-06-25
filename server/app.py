@@ -1919,6 +1919,21 @@ class WorkspaceStore:
             raise ValueError("Dependency already exists") from error
         return next(item for item in self.get_project(organization_id, project_id)["workItems"] if item["id"] == item_id)  # type: ignore[index]
 
+    def remove_work_item_dependency(self, organization_id: str, project_id: str, item_id: str, predecessor_id: str) -> None:
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_item_dependencies WHERE organization_id=? AND project_id=? "
+                "AND dependent_item_id=? AND predecessor_item_id=?",
+                (organization_id, project_id, item_id, predecessor_id),
+            )
+            conn.execute(
+                "INSERT INTO project_change_log (organization_id,id,project_id,entity_type,entity_id,action,old_value,new_value,source,created_at) "
+                "VALUES (?,?,?,'work_item',?,'dependency_removed',?,?,'api',?)",
+                (organization_id, str(uuid.uuid4()), project_id, item_id,
+                 json.dumps({"predecessorId": predecessor_id}), "{}", now),
+            )
+
     def update_work_item(self, organization_id: str, project_id: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         expected_version = payload.get("expectedVersion")
         if not isinstance(expected_version, int) or expected_version < 1:
@@ -8355,6 +8370,37 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         self._serve_static(path)
+
+    def do_DELETE(self) -> None:
+        try:
+            self._start_request()
+        except _RateLimited:
+            return
+        path = urlparse(self.path).path
+        parts = path.strip("/").split("/")
+        # DELETE /api/v1/projects/:proj/work-items/:item/dependencies/:pred
+        if (len(parts) == 8 and parts[1] == "api" and parts[2] == "v1"
+                and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "dependencies"):
+            if not self._require_permission("projectManage"): return
+            proj_id, item_id, pred_id = parts[4], parts[6], self.query_params.get("predecessorId", [None])[0]
+            if not pred_id:
+                self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "predecessorId query param required"); return
+            try:
+                self.store.remove_work_item_dependency(self.organization_id, proj_id, item_id, pred_id)
+                self._json(HTTPStatus.OK, {"removed": True})
+            except LookupError as e:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(e))
+            return
+        # DELETE /api/v1/projects/:id/comments/:cid
+        if (len(parts) == 7 and parts[3] == "projects" and parts[5] == "comments"):
+            if not self._require_permission("projectManage"): return
+            try:
+                self.store.delete_comment(self.organization_id, parts[6], self.current_role)
+                self._json(HTTPStatus.OK, {"deleted": True})
+            except LookupError as e:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(e))
+            return
+        self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found")
 
     def do_PUT(self) -> None:
         try:

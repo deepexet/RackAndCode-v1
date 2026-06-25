@@ -4282,7 +4282,7 @@ async function hydrateProjectComments(projectId) {
         btn.addEventListener('click', async () => {
           try {
             const r2 = await apiFetch(`/api/v1/projects/${projectId}/comments/${btn.dataset.commentDel}`, {
-              method: 'DELETE', headers: apiHeaders({}),
+              method: 'DELETE', headers: apiHeaders({'Content-Type':'application/json'}),
             });
             if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
             loadComments();
@@ -4909,6 +4909,9 @@ function setupWorkItemsBulkList(project) {
         <button class="text-button wi-date-btn" data-wi-date-id="${wi.id}" data-wi-ver="${wi.version}"
           data-wi-start="${wi.startDate||''}" data-wi-due="${wi.dueDate||''}"
           style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0" title="Даты">📅</button>
+        <button class="text-button wi-dep-btn" data-wi-dep-id="${wi.id}" data-wi-dep-on="${(wi.dependsOn||[]).join(',')}"
+          style="font-size:11px;color:${(wi.dependsOn||[]).length?'var(--accent)':'var(--text-muted)'};padding:0 4px;flex-shrink:0"
+          title="Зависимости (${(wi.dependsOn||[]).length})">${(wi.dependsOn||[]).length?'🔗':'⛓'}</button>
       </label>`;
     }).join('');
 
@@ -4951,6 +4954,56 @@ function setupWorkItemsBulkList(project) {
           if (wi) { wi.startDate = startDate||null; wi.dueDate = dueDate||null; wi.version = updated.version || ver+1; }
           toast('Даты обновлены'); render();
         } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+
+    listEl.querySelectorAll('.wi-dep-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const wiId = btn.dataset.wiDepId;
+        const currentDeps = (btn.dataset.wiDepOn||'').split(',').filter(Boolean);
+        const allItems = project.workItems || [];
+        const depNames = currentDeps.map(id => {
+          const w = allItems.find(x => x.id === id);
+          return w ? `${w.code||w.id}: ${w.title}` : id;
+        });
+        const action = prompt(
+          `Зависимости задачи:\n${depNames.length ? depNames.join('\n') : '(нет)'}\n\n` +
+          `1 — добавить блокировщика\n2 — удалить блокировщика`,
+          '1'
+        );
+        if (!action) return;
+        if (action === '1') {
+          const others = allItems.filter(w => w.id !== wiId && !currentDeps.includes(w.id));
+          if (!others.length) { toast('Нет доступных задач для добавления'); return; }
+          const choices = others.map((w,i) => `${i+1} — ${w.code||''} ${w.title}`).join('\n');
+          const pick = prompt(`Выберите блокировщика (номер):\n${choices}`, '1');
+          const idx = parseInt(pick||'0') - 1;
+          if (idx < 0 || idx >= others.length) return;
+          const predId = others[idx].id;
+          try {
+            const r = await apiFetch(`/api/v1/projects/${project.id}/work-items/${wiId}/dependencies`, {
+              method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({ predecessorId: predId }),
+            });
+            if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+            toast('Зависимость добавлена'); await fetchProjects();
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        } else if (action === '2') {
+          if (!currentDeps.length) { toast('Нет зависимостей для удаления'); return; }
+          const rmChoices = depNames.map((n,i) => `${i+1} — ${n}`).join('\n');
+          const rmPick = prompt(`Удалить зависимость (номер):\n${rmChoices}`, '1');
+          const rmIdx = parseInt(rmPick||'0') - 1;
+          if (rmIdx < 0 || rmIdx >= currentDeps.length) return;
+          const predId = currentDeps[rmIdx];
+          try {
+            const r = await apiFetch(`/api/v1/projects/${project.id}/work-items/${wiId}/dependencies?predecessorId=${encodeURIComponent(predId)}`, {
+              method: 'DELETE', headers: apiHeaders({}),
+            });
+            if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+            toast('Зависимость удалена'); await fetchProjects();
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        }
       });
     });
 
