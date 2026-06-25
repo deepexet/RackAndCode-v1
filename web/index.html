@@ -235,6 +235,7 @@
           </div>
           <button class="button ghost" id="invPendingBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start">Очередь одобрения</button>
           <button class="button ghost" id="invHistoryBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">История движений</button>
+          <button class="button ghost" id="invReorderBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">Заявки на пополнение</button>
         </aside>
 
         <!-- Main: stock table -->
@@ -245,6 +246,25 @@
           </div>
           <div id="inventoryStockTable"><p class="empty-copy">Выберите склад или загрузите данные.</p></div>
         </div>
+      </div>
+
+      <!-- Reorder requests panel -->
+      <div id="inventoryReorderPanel" style="display:none;margin-top:20px">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">ПОПОЛНЕНИЕ</p><h2>Заявки на пополнение</h2></div>
+          <div style="display:flex;gap:6px">
+            <select id="invReorderStatusFilter" style="padding:4px 8px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+              <option value="open">Открытые</option>
+              <option value="ordered">Заказаны</option>
+              <option value="received">Получены</option>
+              <option value="all">Все</option>
+            </select>
+            <button class="button ghost" id="invReorderSuggestBtn" type="button" style="font-size:11px">✦ Предложения</button>
+            <button class="button ghost" id="invReorderAddBtn" type="button" style="font-size:11px">＋ Заявка</button>
+            <button class="button ghost" id="invReorderCloseBtn" type="button">✕</button>
+          </div>
+        </div>
+        <div id="inventoryReorderList"></div>
       </div>
 
       <!-- Movement history panel -->

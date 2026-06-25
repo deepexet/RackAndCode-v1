@@ -4781,6 +4781,112 @@ Rules:
             if result.rowcount == 0:
                 raise LookupError("Expense not found")
 
+    # ── Reorder Requests ──────────────────────────────────────────────────────
+
+    def list_reorder_requests(self, org: str, status: str = "open") -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            q = "SELECT r.*, s.name as sku_name, s.sku_code, s.unit, w.name as warehouse_name " \
+                "FROM inventory_reorder_requests r " \
+                "JOIN inventory_skus s ON s.id=r.sku_id " \
+                "JOIN warehouses w ON w.id=r.warehouse_id " \
+                "WHERE r.organization_id=?"
+            params: list[Any] = [org]
+            if status != "all":
+                q += " AND r.status=?"; params.append(status)
+            q += " ORDER BY r.created_at DESC"
+            rows = conn.execute(q, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_reorder_request(self, org: str, sku_id: str, warehouse_id: str,
+                                quantity: float, unit_cost: float | None = None,
+                                supplier_ref: str = "", note: str = "",
+                                requested_by: str | None = None) -> dict[str, Any]:
+        now = utc_now(); rid = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO inventory_reorder_requests "
+                "(id,organization_id,sku_id,warehouse_id,quantity,unit_cost,supplier_ref,note,status,requested_by,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,'open',?,?,?)",
+                (rid, org, sku_id, warehouse_id, quantity, unit_cost, supplier_ref, note, requested_by, now, now)
+            )
+            row = conn.execute(
+                "SELECT r.*, s.name as sku_name, s.sku_code, s.unit, w.name as warehouse_name "
+                "FROM inventory_reorder_requests r "
+                "JOIN inventory_skus s ON s.id=r.sku_id "
+                "JOIN warehouses w ON w.id=r.warehouse_id WHERE r.id=?", (rid,)
+            ).fetchone()
+        self.audit(org, requested_by, None, "reorder.create", "reorder_request", rid)
+        return dict(row)
+
+    def update_reorder_status(self, org: str, request_id: str, status: str,
+                               actor: str | None = None) -> dict[str, Any]:
+        VALID = {"open","ordered","received","cancelled"}
+        if status not in VALID:
+            raise ValueError(f"status must be one of {VALID}")
+        now = utc_now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM inventory_reorder_requests WHERE id=? AND organization_id=?",
+                (request_id, org)
+            ).fetchone()
+            if not row:
+                raise LookupError("Reorder request not found")
+            conn.execute(
+                "UPDATE inventory_reorder_requests SET status=?, updated_at=? WHERE id=? AND organization_id=?",
+                (status, now, request_id, org)
+            )
+            # If received, create a receive movement for the ordered quantity
+            if status == "received":
+                req = conn.execute("SELECT * FROM inventory_reorder_requests WHERE id=?", (request_id,)).fetchone()
+                if req:
+                    mid = str(uuid.uuid4())
+                    conn.execute(
+                        "INSERT INTO inventory_stock (id,organization_id,warehouse_id,sku_id,quantity,reserved,updated_at) "
+                        "VALUES (?,?,?,?,?,0,?) ON CONFLICT(warehouse_id,sku_id) DO UPDATE SET quantity=quantity+?, updated_at=?",
+                        (str(uuid.uuid4()), org, req["warehouse_id"], req["sku_id"], req["quantity"], now, req["quantity"], now)
+                    )
+                    conn.execute(
+                        "INSERT INTO inventory_movements (id,organization_id,warehouse_id,sku_id,movement_type,quantity,reference,note,source,recorded_by,created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (mid, org, req["warehouse_id"], req["sku_id"], "receive", req["quantity"],
+                         f"reorder:{request_id}", req["note"], "reorder", actor, now)
+                    )
+            updated = conn.execute(
+                "SELECT r.*, s.name as sku_name, s.sku_code, s.unit, w.name as warehouse_name "
+                "FROM inventory_reorder_requests r "
+                "JOIN inventory_skus s ON s.id=r.sku_id "
+                "JOIN warehouses w ON w.id=r.warehouse_id WHERE r.id=?", (request_id,)
+            ).fetchone()
+        self.audit(org, actor, None, f"reorder.{status}", "reorder_request", request_id)
+        return dict(updated)
+
+    def auto_suggest_reorders(self, org: str) -> list[dict[str, Any]]:
+        """Return stock items below min_quantity that don't have an open reorder request."""
+        with self._connect() as conn:
+            open_sku_wh = {
+                (r["sku_id"], r["warehouse_id"])
+                for r in conn.execute(
+                    "SELECT sku_id, warehouse_id FROM inventory_reorder_requests "
+                    "WHERE organization_id=? AND status IN ('open','ordered')", (org,)
+                ).fetchall()
+            }
+            low = conn.execute(
+                "SELECT s.quantity, s.min_quantity, s.sku_id, s.warehouse_id, "
+                "sk.name as sku_name, sk.sku_code, sk.unit, sk.unit_cost, "
+                "w.name as warehouse_name "
+                "FROM inventory_stock s "
+                "JOIN inventory_skus sk ON sk.id=s.sku_id "
+                "JOIN warehouses w ON w.id=s.warehouse_id "
+                "WHERE s.organization_id=? AND s.min_quantity IS NOT NULL "
+                "AND s.quantity <= s.min_quantity AND sk.active=1",
+                (org,)
+            ).fetchall()
+        return [
+            dict(r) | {"suggestedQty": max(0, r["min_quantity"] * 2 - r["quantity"])}
+            for r in low
+            if (r["sku_id"], r["warehouse_id"]) not in open_sku_wh
+        ]
+
     # ── Digest / Reporting ────────────────────────────────────────────────────
 
     def build_digest_data(self, org: str) -> dict[str, Any]:
@@ -7714,6 +7820,11 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {
                     "reservations": self.store.list_reservations(org, project_id, sku_id, status)
                 }); return
+            if sub == "reorder-requests":
+                status = self.query_params.get("status",["open"])[0]
+                self._json(HTTPStatus.OK, {"requests": self.store.list_reorder_requests(org, status)}); return
+            if sub == "reorder-suggest":
+                self._json(HTTPStatus.OK, {"suggestions": self.store.auto_suggest_reorders(org)}); return
             if sub == "export":
                 if not self._require_permission("projectRead"): return
                 wh = self.query_params.get("warehouseId",[None])[0]
@@ -8619,6 +8730,24 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     data = self.rfile.read(content_length)
                     pending = self.store.import_xlsx_inventory(org, data, self.current_role)
                     self._json(HTTPStatus.CREATED, pending); return
+                if sub == "reorder-requests":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    r = self.store.create_reorder_request(
+                        org,
+                        sku_id=payload["skuId"],
+                        warehouse_id=payload["warehouseId"],
+                        quantity=float(payload["quantity"]),
+                        unit_cost=payload.get("unitCost"),
+                        supplier_ref=str(payload.get("supplierRef","")),
+                        note=str(payload.get("note","")),
+                        requested_by=payload.get("requestedBy", self.current_role),
+                    )
+                    self._json(HTTPStatus.CREATED, r); return
+                if sub == "reorder-requests" and len(parts) == 7 and parts[6] in ("ordered","received","cancelled"):
+                    if not self._require_permission("projectManage"): return
+                    result = self.store.update_reorder_status(org, parts[5], parts[6], self.current_role)
+                    self._json(HTTPStatus.OK, result); return
                 if sub == "skus" and len(parts) == 7 and parts[6] in ("update","delete"):
                     sku_id = parts[5]; action = parts[6]
                     if not self._require_permission("projectManage"): return

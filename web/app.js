@@ -6813,18 +6813,163 @@ function _bindInventoryEvents() {
     } catch { list.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
   }
 
+  function _closeAllInvPanels() {
+    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  }
+
   document.getElementById('invHistoryBtn')?.addEventListener('click', () => {
     const panel = document.getElementById('inventoryHistoryPanel');
-    const pendingPanel = document.getElementById('inventoryPendingPanel');
-    const skuPanel = document.getElementById('inventorySkuPanel');
-    if (pendingPanel) pendingPanel.style.display = 'none';
-    if (skuPanel) skuPanel.style.display = 'none';
-    if (panel) { panel.style.display = panel.style.display === 'none' ? '' : 'none'; if (panel.style.display !== 'none') _loadHistory(); }
+    const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
+    _closeAllInvPanels();
+    if (wasHidden && panel) { panel.style.display = ''; _loadHistory(); }
   });
   document.getElementById('invHistoryCloseBtn')?.addEventListener('click', () => {
     const p = document.getElementById('inventoryHistoryPanel'); if (p) p.style.display = 'none';
   });
   document.getElementById('invHistoryTypeFilter')?.addEventListener('change', _loadHistory);
+
+  // Reorder requests panel
+  const _RO_STATUS = { open:'Открыта', ordered:'Заказана', received:'Получена', cancelled:'Отменена' };
+  const _RO_COLORS = { open:'#e8a84c', ordered:'#4f8ef7', received:'#4adc84', cancelled:'#8b95a5' };
+
+  async function _loadReorders() {
+    const list = document.getElementById('inventoryReorderList');
+    if (!list) return;
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    const status = document.getElementById('invReorderStatusFilter')?.value || 'open';
+    try {
+      const r = await apiFetch(`/api/v1/inventory/reorder-requests?status=${status}`);
+      const { requests = [] } = await r.json();
+      if (!requests.length) {
+        list.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет заявок.</p>'; return;
+      }
+      list.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px">
+        ${requests.map(req => {
+          const color = _RO_COLORS[req.status] || '#8b95a5';
+          const actions = req.status === 'open'
+            ? `<button data-ro-id="${req.id}" data-ro-action="ordered" class="text-button" style="font-size:10px">Заказано</button>
+               <button data-ro-id="${req.id}" data-ro-action="cancelled" class="text-button" style="font-size:10px;color:var(--text-muted)">Отменить</button>`
+            : req.status === 'ordered'
+            ? `<button data-ro-id="${req.id}" data-ro-action="received" class="text-button" style="font-size:10px;color:#4adc84">Получено ✓</button>`
+            : '';
+          return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;display:flex;align-items:flex-start;gap:10px">
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                <strong style="font-size:12px">${escapeHtml(req.sku_name)}</strong>
+                <code style="font-size:10px;color:var(--text-muted)">${escapeHtml(req.sku_code)}</code>
+                <span style="font-size:10px;padding:2px 7px;border-radius:8px;background:${color}22;color:${color}">${_RO_STATUS[req.status]||req.status}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:3px">
+                ${escapeHtml(req.warehouse_name)} · ${req.quantity} ${escapeHtml(req.unit||'')}
+                ${req.unit_cost ? ` · ${req.unit_cost} ×${req.quantity} = ${(req.unit_cost*req.quantity).toFixed(2)}` : ''}
+                ${req.supplier_ref ? ` · ${escapeHtml(req.supplier_ref)}` : ''}
+              </div>
+              ${req.note ? `<div style="font-size:11px;color:var(--text-muted)">${escapeHtml(req.note)}</div>` : ''}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">${actions}</div>
+          </div>`;
+        }).join('')}
+      </div>`;
+      list.querySelectorAll('[data-ro-id]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          try {
+            const r2 = await apiFetch(`/api/v1/inventory/reorder-requests/${btn.dataset.roId}/${btn.dataset.roAction}`, {
+              method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+            });
+            if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+            const label = { ordered:'Статус: заказано', received:'Получено — остатки обновлены', cancelled:'Заявка отменена' };
+            toast(label[btn.dataset.roAction] || 'Обновлено');
+            _loadReorders();
+            if (btn.dataset.roAction === 'received' && _invSelectedWarehouse) _loadStock(_invSelectedWarehouse);
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      });
+    } catch { list.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+  }
+
+  document.getElementById('invReorderBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventoryReorderPanel');
+    const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
+    _closeAllInvPanels();
+    if (wasHidden && panel) { panel.style.display = ''; _loadReorders(); }
+  });
+  document.getElementById('invReorderCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventoryReorderPanel'); if (p) p.style.display = 'none';
+  });
+  document.getElementById('invReorderStatusFilter')?.addEventListener('change', _loadReorders);
+
+  document.getElementById('invReorderSuggestBtn')?.addEventListener('click', async () => {
+    const list = document.getElementById('inventoryReorderList');
+    if (list) list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Анализ остатков…</p>';
+    try {
+      const r = await apiFetch('/api/v1/inventory/reorder-suggest');
+      const { suggestions = [] } = await r.json();
+      if (!suggestions.length) {
+        if (list) list.innerHTML = '<p class="empty-copy">Нет позиций ниже минимума или все заявки уже открыты.</p>'; return;
+      }
+      if (list) list.innerHTML = `<p style="font-size:12px;font-weight:600;margin-bottom:8px">Предлагается заказать (${suggestions.length} позиций):</p>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${suggestions.map(s => `
+            <div style="background:var(--surface);border:1px solid #e8a84c44;border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px">
+              <div style="flex:1">
+                <strong style="font-size:12px">${escapeHtml(s.sku_name)}</strong>
+                <code style="font-size:10px;margin-left:6px;color:var(--text-muted)">${escapeHtml(s.sku_code)}</code>
+                <div style="font-size:11px;color:var(--text-muted)">${escapeHtml(s.warehouse_name)} · есть: ${s.quantity} / мин: ${s.min_quantity} ${escapeHtml(s.unit||'')}</div>
+              </div>
+              <button data-suggest-sku="${s.sku_id}" data-suggest-wh="${s.warehouse_id}"
+                data-suggest-qty="${s.suggestedQty}" data-suggest-unit="${escapeHtml(s.unit||'')}"
+                class="button ghost" style="font-size:11px;white-space:nowrap">
+                ＋ Заказать ${s.suggestedQty} ${escapeHtml(s.unit||'')}
+              </button>
+            </div>`).join('')}
+        </div>`;
+      list?.querySelectorAll('[data-suggest-sku]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const qty = parseFloat(prompt(`Количество для заказа (${btn.dataset.suggestUnit}):`, btn.dataset.suggestQty) || '0');
+          if (!qty || isNaN(qty)) return;
+          const ref = prompt('Поставщик / ссылка (опционально):', '') || '';
+          try {
+            const r2 = await apiFetch('/api/v1/inventory/reorder-requests', {
+              method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({ skuId: btn.dataset.suggestSku, warehouseId: btn.dataset.suggestWh, quantity: qty, supplierRef: ref }),
+            });
+            if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+            toast('Заявка создана'); _loadReorders();
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      });
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
+  document.getElementById('invReorderAddBtn')?.addEventListener('click', async () => {
+    const whR = await apiFetch('/api/v1/inventory/warehouses');
+    const { warehouses = [] } = await whR.json();
+    if (!warehouses.length) { toast('Нет складов.'); return; }
+    const whOpts = warehouses.map((w,i) => `${i+1}. ${w.name}`).join('\n');
+    const whIdx = parseInt(prompt(`Склад:\n${whOpts}`, '1') || '0') - 1;
+    if (whIdx < 0 || whIdx >= warehouses.length) return;
+    const wh = warehouses[whIdx];
+    const skuR = await apiFetch('/api/v1/inventory/skus');
+    const { skus = [] } = await skuR.json();
+    if (!skus.length) { toast('Нет SKU.'); return; }
+    const skuOpts = skus.map((s,i) => `${i+1}. ${s.name} (${s.sku_code})`).join('\n');
+    const skuIdx = parseInt(prompt(`Материал:\n${skuOpts}`, '1') || '0') - 1;
+    if (skuIdx < 0 || skuIdx >= skus.length) return;
+    const sku = skus[skuIdx];
+    const qty = parseFloat(prompt(`Количество для заказа (${sku.unit||'pcs'}):`) || '0');
+    if (!qty || isNaN(qty)) return;
+    const ref = prompt('Поставщик / ссылка:', '') || '';
+    const note = prompt('Заметка:', '') || '';
+    try {
+      const r = await apiFetch('/api/v1/inventory/reorder-requests', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ skuId: sku.id, warehouseId: wh.id, quantity: qty, supplierRef: ref, note }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('Заявка на пополнение создана'); _loadReorders();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
 
   // SKU catalog
   document.getElementById('invManageSkusBtn')?.addEventListener('click', () => {
