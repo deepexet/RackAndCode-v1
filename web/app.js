@@ -6798,6 +6798,7 @@ async function _loadSkuCatalog() {
             data-sku-cost="${s.unit_cost??''}" data-sku-cur="${escapeHtml(s.currency||'USD')}"
             data-sku-barcode="${escapeHtml(s.barcode||'')}"
             style="font-size:11px">✏</button>
+          <button class="text-button" data-sku-label="${s.id}" style="font-size:11px" title="Печать этикетки">🏷</button>
           <button class="text-button" data-sku-del="${s.id}" style="font-size:11px;color:var(--text-muted)">✕</button>
         </td>
       </tr>`).join('')}</tbody>
@@ -6825,6 +6826,12 @@ async function _loadSkuCatalog() {
         } catch(e) { toast(`Ошибка: ${e.message}`); }
       });
     });
+    list.querySelectorAll('[data-sku-label]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        window.open(`/api/v1/inventory/skus/${btn.dataset.skuLabel}/label`, '_blank', 'width=400,height=300');
+      });
+    });
+
     list.querySelectorAll('[data-sku-del]').forEach(btn => {
       btn.addEventListener('click', async () => {
         if (!confirm('Удалить SKU (деактивировать)?')) return;

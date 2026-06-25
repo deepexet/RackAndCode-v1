@@ -7918,6 +7918,42 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if sub == "suppliers":
                 include_inactive = self.query_params.get("includeInactive",["0"])[0] == "1"
                 self._json(HTTPStatus.OK, {"suppliers": self.store.list_suppliers(org, include_inactive)}); return
+            if sub == "skus" and len(parts) == 6 and parts[5] == "label":
+                # Printable label for a SKU: GET /api/v1/inventory/skus/:id/label
+                sku_id = parts[4]
+                with self.store._connect() as conn:
+                    sku = conn.execute("SELECT * FROM inventory_skus WHERE id=? AND organization_id=?",
+                                       (sku_id, org)).fetchone()
+                if not sku:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", "SKU not found"); return
+                barcode = sku["barcode"] or sku["sku_code"]
+                html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Этикетка: {sku['sku_code']}</title>
+<style>
+  body{{margin:0;font-family:Arial,sans-serif;background:#fff;color:#000}}
+  .label{{width:62mm;min-height:30mm;border:1px solid #ccc;padding:4mm;display:flex;flex-direction:column;gap:2mm;box-sizing:border-box}}
+  .sku{{font-size:8pt;color:#555}}
+  .name{{font-size:11pt;font-weight:bold;line-height:1.2}}
+  .cat{{font-size:7pt;color:#888;text-transform:uppercase;letter-spacing:.5px}}
+  .bc{{font-family:monospace;font-size:14pt;letter-spacing:2px;border:1px solid #000;padding:1mm 2mm;display:inline-block;background:#fff}}
+  .bc-text{{font-size:7pt;text-align:center;color:#333}}
+  @media print{{body{{margin:0}} button{{display:none}}}}
+</style></head><body>
+<div class="label">
+  <div class="sku">{sku['sku_code']}</div>
+  <div class="name">{sku['name']}</div>
+  <div class="cat">{sku['category']} · {sku['unit']}</div>
+  {'<div class="bc">' + barcode + '</div><div class="bc-text">' + barcode + '</div>' if barcode else ''}
+  {'<div style="font-size:8pt;color:#555">₽ ' + str(sku['unit_cost']) + ' / ' + sku['unit'] + '</div>' if sku['unit_cost'] else ''}
+</div>
+<br><button onclick="window.print()">🖨 Печать</button>
+</body></html>"""
+                body = html.encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body); return
             if sub == "export":
                 if not self._require_permission("projectRead"): return
                 wh = self.query_params.get("warehouseId",[None])[0]
