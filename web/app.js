@@ -4686,10 +4686,24 @@ async function hydrateBudgetWidget(projectId) {
         <div style="height:6px;border-radius:4px;background:${barColor};width:${Math.min(100,pct)}%;transition:width .4s"></div>
       </div>` : ''}
       <div id="expensesList">
-        ${Object.keys(b.byCategory||{}).length ? `<p style="font-size:12px;color:var(--text-muted);margin-bottom:6px">По категориям:</p>
-        <div style="display:flex;flex-wrap:wrap;gap:6px">${Object.entries(b.byCategory||{}).map(([cat,amt]) =>
-          `<span style="font-size:11px;padding:3px 8px;border-radius:8px;background:rgba(79,142,247,.1);color:var(--accent)">${escapeHtml(cat)}: ${amt.toLocaleString()}</span>`
-        ).join('')}</div>` : '<p class="empty-copy" style="font-size:13px">Расходов нет.</p>'}
+        ${Object.keys(b.byCategory||{}).length ? (() => {
+          const cats = Object.entries(b.byCategory||{}).sort((a,b) => b[1]-a[1]);
+          const total = cats.reduce((s,[,v]) => s+v, 0);
+          const CAT_COLORS = {materials:'#4f8ef7',labour:'#3bb969',equipment:'#e8a84c',other:'#a78bfa',transport:'#f46',design:'#22d3ee'};
+          return `<p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Расходы по категориям</p>
+          <div style="display:flex;flex-direction:column;gap:6px">${cats.map(([cat,amt]) => {
+            const pctCat = total > 0 ? Math.round(amt/total*100) : 0;
+            const color = CAT_COLORS[cat] || '#778195';
+            return `<div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                <span style="font-size:11px;color:var(--text)">${escapeHtml(cat)}</span>
+                <span style="font-size:11px;color:var(--text-muted)">${amt.toLocaleString()} <small>${pctCat}%</small></span>
+              </div>
+              <div style="height:5px;border-radius:3px;background:var(--border)">
+                <div style="height:100%;width:${pctCat}%;background:${color};border-radius:3px;transition:width .3s"></div>
+              </div></div>`;
+          }).join('')}</div>`;
+        })() : '<p class="empty-copy" style="font-size:13px">Расходов нет.</p>'}
       </div>`;
 
     document.getElementById('addExpenseBtn')?.addEventListener('click', async () => {
