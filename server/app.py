@@ -4062,6 +4062,38 @@ Rules:
                 item["belowMin"] = item["quantity"] < item["min_quantity"]
         return result
 
+    def update_stock_settings(self, org: str, warehouse_id: str, sku_id: str,
+                               min_quantity: float | None = None,
+                               location_bin: str | None = None) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM inventory_stock WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                (org, warehouse_id, sku_id)
+            ).fetchone()
+            if not row:
+                raise LookupError("Stock record not found for this warehouse/SKU")
+            now = utc_now()
+            if min_quantity is not None and location_bin is not None:
+                conn.execute(
+                    "UPDATE inventory_stock SET min_quantity=?, location_bin=?, updated_at=? WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                    (min_quantity, location_bin, now, org, warehouse_id, sku_id)
+                )
+            elif min_quantity is not None:
+                conn.execute(
+                    "UPDATE inventory_stock SET min_quantity=?, updated_at=? WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                    (min_quantity, now, org, warehouse_id, sku_id)
+                )
+            elif location_bin is not None:
+                conn.execute(
+                    "UPDATE inventory_stock SET location_bin=?, updated_at=? WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                    (location_bin, now, org, warehouse_id, sku_id)
+                )
+            updated = conn.execute(
+                "SELECT * FROM inventory_stock WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                (org, warehouse_id, sku_id)
+            ).fetchone()
+        return dict(updated)
+
     def record_movement(self, org: str, payload: dict[str, Any],
                         source: str = "manual", source_ref: str | None = None) -> dict[str, Any]:
         """Apply a stock movement and update inventory_stock in one transaction."""
@@ -8374,6 +8406,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     data = self.rfile.read(content_length)
                     pending = self.store.import_xlsx_inventory(org, data, self.current_role)
                     self._json(HTTPStatus.CREATED, pending); return
+                if sub == "stock-settings":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    result = self.store.update_stock_settings(
+                        org,
+                        warehouse_id=payload["warehouseId"],
+                        sku_id=payload["skuId"],
+                        min_quantity=payload.get("minQuantity"),
+                        location_bin=payload.get("locationBin"),
+                    )
+                    self._json(HTTPStatus.OK, {"stock": result}); return
                 if sub == "reservations":
                     if not self._require_permission("projectManage"): return
                     payload = self._read_json()

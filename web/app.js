@@ -6357,13 +6357,34 @@ async function _loadStock(warehouseId) {
         <td style="padding:7px 8px"><strong style="color:${s.belowMin?'#f46':'inherit'}">${s.quantity}</strong>${s.belowMin?'<span style="font-size:10px;color:#f46;margin-left:4px">⚠ min</span>':''}</td>
         <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.unit)}</td>
         <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(s.location_bin||'—')}</td>
-        <td style="padding:7px 8px">
+        <td style="padding:7px 8px;display:flex;gap:4px">
           <button type="button" class="text-button" style="font-size:11px" data-quick-mv="${s.sku_id}" data-sku-name="${escapeHtml(s.sku_name)}">＋/−</button>
+          <button type="button" class="text-button" style="font-size:11px;color:var(--text-muted)" data-stock-settings="${s.sku_id}" data-min-qty="${s.min_quantity??''}" data-bin="${escapeHtml(s.location_bin||'')}">⚙</button>
         </td>
       </tr>`).join('')}</tbody>
     </table>`;
     table.querySelectorAll('[data-quick-mv]').forEach(btn => {
       btn.addEventListener('click', () => _quickMovement(warehouseId, btn.dataset.quickMv, btn.dataset.skuName));
+    });
+    table.querySelectorAll('[data-stock-settings]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const skuId = btn.dataset.stockSettings;
+        const curMin = btn.dataset.minQty;
+        const curBin = btn.dataset.bin;
+        const minQtyStr = prompt('Минимальный остаток (порог оповещения):', curMin);
+        if (minQtyStr === null) return;
+        const locationBin = prompt('Расположение на складе (бин/полка):', curBin);
+        if (locationBin === null) return;
+        const minQty = minQtyStr === '' ? null : parseFloat(minQtyStr);
+        try {
+          const r2 = await apiFetch('/api/v1/inventory/stock-settings', {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ warehouseId, skuId, minQuantity: minQty, locationBin }),
+          });
+          if (!r2.ok) throw new Error((await r2.json()).error?.message || r2.status);
+          toast('Настройки обновлены'); _loadStock(warehouseId);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
     });
   } catch { table.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
 }
