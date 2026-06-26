@@ -5631,6 +5631,114 @@ Rules:
                 skipped += len(items)
         return {"created": len(created), "orders": created, "skipped": skipped}
 
+    # ── Cycle counts ─────────────────────────────────────────────────────
+    def list_cycle_counts(self, org: str, warehouse_id: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            q = "SELECT * FROM cycle_counts WHERE organization_id=?"
+            args: list[Any] = [org]
+            if warehouse_id: q += " AND warehouse_id=?"; args.append(warehouse_id)
+            q += " ORDER BY started_at DESC LIMIT 50"
+            rows = conn.execute(q, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_cycle_count(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        wh = str(payload.get("warehouseId","")).strip()
+        if not wh: raise ValueError("warehouseId required")
+        name = str(payload.get("name","")).strip() or f"Инвентаризация {utc_now()[:10]}"
+        actor = str(payload.get("countedBy",""))
+        cid = _uid(); now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO cycle_counts (id,organization_id,warehouse_id,name,status,counted_by,started_at,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (cid, org, wh, name, "open", actor, now, now)
+            )
+            # Pre-populate lines with current book quantities
+            stock_rows = conn.execute(
+                "SELECT s.sku_id, s.quantity, sk.sku_code, sk.name FROM inventory_stock s "
+                "JOIN inventory_skus sk ON sk.id=s.sku_id "
+                "WHERE s.organization_id=? AND s.warehouse_id=?", (org, wh)
+            ).fetchall()
+            for sr in stock_rows:
+                conn.execute(
+                    "INSERT INTO cycle_count_lines (id,count_id,organization_id,sku_id,book_qty) VALUES (?,?,?,?,?)",
+                    (_uid(), cid, org, sr["sku_id"], sr["quantity"])
+                )
+            row = conn.execute("SELECT * FROM cycle_counts WHERE id=?", (cid,)).fetchone()
+        return dict(row)
+
+    def get_cycle_count(self, org: str, count_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM cycle_counts WHERE id=? AND organization_id=?", (count_id, org)).fetchone()
+            if not row: return None
+            lines = conn.execute(
+                "SELECT l.*, sk.sku_code, sk.name as sku_name, sk.unit "
+                "FROM cycle_count_lines l JOIN inventory_skus sk ON sk.id=l.sku_id "
+                "WHERE l.count_id=? ORDER BY sk.sku_code", (count_id,)
+            ).fetchall()
+        result = dict(row)
+        result["lines"] = [dict(l) for l in lines]
+        return result
+
+    def record_count_line(self, org: str, count_id: str, sku_id: str, counted_qty: float, note: str = "") -> dict[str, Any]:
+        now = utc_now()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM cycle_count_lines WHERE count_id=? AND sku_id=?", (count_id, sku_id)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE cycle_count_lines SET counted_qty=?,note=?,counted_at=? WHERE id=?",
+                    (counted_qty, note, now, existing["id"])
+                )
+                lid = existing["id"]
+            else:
+                lid = _uid()
+                conn.execute(
+                    "INSERT INTO cycle_count_lines (id,count_id,organization_id,sku_id,book_qty,counted_qty,note,counted_at) VALUES (?,?,?,?,0,?,?,?)",
+                    (lid, count_id, org, sku_id, counted_qty, note, now)
+                )
+            row = conn.execute("SELECT l.*, sk.sku_code, sk.name as sku_name FROM cycle_count_lines l JOIN inventory_skus sk ON sk.id=l.sku_id WHERE l.id=?", (lid,)).fetchone()
+        return dict(row)
+
+    def close_cycle_count(self, org: str, count_id: str, apply_adjustments: bool = False, actor: str = "") -> dict[str, Any]:
+        """Close a cycle count and optionally apply variance adjustments to stock."""
+        with self._connect() as conn:
+            cc = conn.execute("SELECT * FROM cycle_counts WHERE id=? AND organization_id=?", (count_id, org)).fetchone()
+            if not cc: raise LookupError("Cycle count not found")
+            if cc["status"] == "closed": raise ValueError("Already closed")
+            now = utc_now()
+            if apply_adjustments:
+                lines = conn.execute(
+                    "SELECT * FROM cycle_count_lines WHERE count_id=? AND counted_qty IS NOT NULL", (count_id,)
+                ).fetchall()
+                for line in lines:
+                    variance = line["counted_qty"] - line["book_qty"]
+                    if abs(variance) < 0.0001: continue
+                    mv_type = "adjustment"
+                    qty = abs(variance)
+                    if variance > 0:
+                        conn.execute(
+                            "INSERT INTO inventory_movements (id,organization_id,warehouse_id,sku_id,movement_type,quantity,reference,note,created_by,moved_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (_uid(), org, cc["warehouse_id"], line["sku_id"], mv_type, qty, f"CYCLECOUNT:{count_id}", "Инвентаризация +", actor, now)
+                        )
+                        conn.execute(
+                            "INSERT INTO inventory_stock (id,organization_id,warehouse_id,sku_id,quantity) VALUES (?,?,?,?,?) "
+                            "ON CONFLICT(organization_id,warehouse_id,sku_id) DO UPDATE SET quantity=quantity+?",
+                            (_uid(), org, cc["warehouse_id"], line["sku_id"], qty, qty)
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT INTO inventory_movements (id,organization_id,warehouse_id,sku_id,movement_type,quantity,reference,note,created_by,moved_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (_uid(), org, cc["warehouse_id"], line["sku_id"], "loss", qty, f"CYCLECOUNT:{count_id}", "Инвентаризация −", actor, now)
+                        )
+                        conn.execute(
+                            "UPDATE inventory_stock SET quantity=MAX(0,quantity-?) WHERE organization_id=? AND warehouse_id=? AND sku_id=?",
+                            (qty, org, cc["warehouse_id"], line["sku_id"])
+                        )
+            conn.execute("UPDATE cycle_counts SET status='closed',closed_at=? WHERE id=?", (now, count_id))
+            row = conn.execute("SELECT * FROM cycle_counts WHERE id=?", (count_id,)).fetchone()
+        return dict(row)
+
     def list_expiring_lots(self, org: str, days: int = 30) -> list[dict[str, Any]]:
         """Return lots expiring within `days` days, ordered by expiry date."""
         cutoff = (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
@@ -9190,6 +9298,16 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Cycle counts: GET /api/v1/inventory/cycle-counts  and /:id
+        if sub == "cycle-counts":
+            if not self._require_permission("projectRead"): return
+            if len(parts) == 5:  # /api/v1/inventory/cycle-counts
+                wh = self.query_params.get("warehouseId", [None])[0]
+                self._json(HTTPStatus.OK, {"counts": self.store.list_cycle_counts(self.organization_id, wh)}); return
+            if len(parts) == 6:  # /api/v1/inventory/cycle-counts/:id
+                cc = self.store.get_cycle_count(self.organization_id, parts[5])
+                if not cc: self._error(HTTPStatus.NOT_FOUND, "not_found", "Cycle count not found"); return
+                self._json(HTTPStatus.OK, {"count": cc}); return
         # WI Templates: GET /api/v1/wi-templates
         if path == "/api/v1/wi-templates":
             if not self._require_permission("projectRead"): return
@@ -10495,7 +10613,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if len(parts) == 5 and parts[3] == "wi-templates" and parts[4] == "delete":
             if not self._require_permission("projectManage"): return
             self.store.delete_wi_template(self.organization_id, parts[3]); self._json(HTTPStatus.OK, {"deleted": True}); return
-        if len(parts) == 5 and parts[3] == "wi-templates" and parts[5] in ("delete","apply"):
+        if len(parts) == 6 and parts[3] == "wi-templates" and parts[5] in ("delete","apply"):
             template_id = parts[4]; action = parts[5]
             if not self._require_permission("projectManage"): return
             if action == "delete":
@@ -10512,6 +10630,37 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 except (ValueError, LookupError, json.JSONDecodeError) as err:
                     status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status, "invalid_request", str(err)); return
+        # Cycle counts POST endpoints: /api/v1/inventory/cycle-counts[/:id/line|close]
+        if len(parts) >= 5 and parts[3] == "inventory" and parts[4] == "cycle-counts":
+            if not self._require_permission("projectManage"): return
+            if len(parts) == 5:  # POST /api/v1/inventory/cycle-counts
+                try:
+                    cc = self.store.create_cycle_count(self.organization_id, self._read_json())
+                    self._json(HTTPStatus.CREATED, {"count": cc}); return
+                except (ValueError, LookupError) as e:
+                    status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                    self._error(status, "invalid_request", str(e)); return
+            if len(parts) == 7 and parts[6] == "line":  # POST /api/v1/inventory/cycle-counts/:id/line
+                count_id = parts[5]
+                try:
+                    payload = self._read_json()
+                    sku_id = str(payload.get("skuId","")).strip()
+                    if not sku_id: raise ValueError("skuId required")
+                    counted_qty = float(payload.get("countedQty", 0))
+                    line = self.store.record_count_line(self.organization_id, count_id, sku_id, counted_qty, str(payload.get("note","")))
+                    self._json(HTTPStatus.OK, {"line": line}); return
+                except (ValueError, LookupError) as e:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+            if len(parts) == 7 and parts[6] == "close":  # POST /api/v1/inventory/cycle-counts/:id/close
+                count_id = parts[5]
+                try:
+                    payload = self._read_json() if self.headers.get("Content-Length","0") != "0" else {}
+                    apply = bool(payload.get("applyAdjustments", False)) if isinstance(payload, dict) else False
+                    cc = self.store.close_cycle_count(self.organization_id, count_id, apply, actor=self.current_role)
+                    self._json(HTTPStatus.OK, {"count": cc}); return
+                except (ValueError, LookupError) as e:
+                    status2 = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                    self._error(status2, "invalid_request", str(e)); return
         # Webhooks POST endpoints
         if path == "/api/v1/webhooks":
             if not self._require_permission("adminPanel"): return

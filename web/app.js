@@ -1845,6 +1845,98 @@ function setupFieldNote() {
 }
 
 // ── Webhooks ──────────────────────────────────────────────────────────────
+function _showCycleCountPanel(count) {
+  const existing = document.getElementById('cycleCountOverlay');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'cycleCountOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+  const lines = count.lines || [];
+  const counted = lines.filter(l => l.counted_qty != null);
+  const variants = lines.filter(l => l.counted_qty != null && Math.abs(l.counted_qty - l.book_qty) > 0.0001);
+  overlay.innerHTML = `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:700px;max-height:85vh;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border)">
+        <div>
+          <h3 style="margin:0;font-size:15px">${escapeHtml(count.name)}</h3>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+            ${counted.length}/${lines.length} позиций отсчитано · ${variants.length} расхождений
+            · статус: <strong style="color:${count.status==='open'?'#4adc84':'#778195'}">${count.status}</strong>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${count.status === 'open' ? `
+            <button id="ccApplyClose" class="button ghost" style="font-size:11px;color:#e8a84c">✓ Закрыть + применить</button>
+            <button id="ccClose" class="button ghost" style="font-size:11px">Закрыть без изменений</button>
+          ` : ''}
+          <button id="ccDismiss" class="button ghost" style="font-size:11px">✕</button>
+        </div>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:16px 20px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="color:var(--text-muted)">
+            <th style="text-align:left;padding:4px 6px">SKU</th>
+            <th style="text-align:left;padding:4px 6px">Название</th>
+            <th style="text-align:right;padding:4px 6px">По книге</th>
+            <th style="text-align:right;padding:4px 6px">Факт</th>
+            <th style="text-align:right;padding:4px 6px">Δ</th>
+            ${count.status === 'open' ? '<th style="padding:4px 6px"></th>' : ''}
+          </tr></thead>
+          <tbody id="ccLines">
+          ${lines.map(l => {
+            const delta = l.counted_qty != null ? l.counted_qty - l.book_qty : null;
+            const color = delta == null ? '' : Math.abs(delta) < 0.0001 ? '#4adc84' : delta > 0 ? '#4adc84' : '#f46';
+            return `<tr data-sku="${escapeHtml(l.sku_id)}" style="border-top:1px solid var(--border)">
+              <td style="padding:4px 6px;font-family:monospace">${escapeHtml(l.sku_code||'')}</td>
+              <td style="padding:4px 6px">${escapeHtml(l.sku_name||'')}</td>
+              <td style="padding:4px 6px;text-align:right">${l.book_qty}</td>
+              <td style="padding:4px 6px;text-align:right;color:${l.counted_qty!=null?'inherit':'var(--text-muted)'}">${l.counted_qty ?? '—'}</td>
+              <td style="padding:4px 6px;text-align:right;color:${color}">${delta != null ? (delta >= 0 ? '+' : '') + delta.toFixed(2) : '—'}</td>
+              ${count.status === 'open' ? `<td style="padding:4px 6px"><button class="button ghost cc-enter-qty" data-sku="${escapeHtml(l.sku_id)}" data-book="${l.book_qty}" data-name="${escapeHtml(l.sku_name||'')}" style="font-size:10px;padding:2px 6px">✎</button></td>` : ''}
+            </tr>`;
+          }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#ccDismiss')?.addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#ccClose')?.addEventListener('click', async () => {
+    if (!confirm('Закрыть инвентаризацию без применения корректировок?')) return;
+    const r = await apiFetch(`/api/v1/inventory/cycle-counts/${count.id}/close`, {
+      method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ applyAdjustments: false }),
+    });
+    if (r.ok) { toast('Инвентаризация закрыта'); overlay.remove(); }
+    else toast('Ошибка закрытия');
+  });
+  overlay.querySelector('#ccApplyClose')?.addEventListener('click', async () => {
+    if (!confirm(`Применить ${variants.length} корректировок и закрыть?`)) return;
+    const r = await apiFetch(`/api/v1/inventory/cycle-counts/${count.id}/close`, {
+      method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ applyAdjustments: true }),
+    });
+    if (r.ok) { toast(`✓ Применено ${variants.length} корректировок`); overlay.remove(); }
+    else toast('Ошибка применения');
+  });
+  overlay.querySelectorAll('.cc-enter-qty').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const qtyStr = prompt(`Фактический остаток для "${btn.dataset.name}" (по книге: ${btn.dataset.book}):`);
+      if (qtyStr === null) return;
+      const qty = parseFloat(qtyStr);
+      if (isNaN(qty) || qty < 0) { toast('Неверное количество'); return; }
+      const r = await apiFetch(`/api/v1/inventory/cycle-counts/${count.id}/line`, {
+        method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ skuId: btn.dataset.sku, countedQty: qty }),
+      });
+      if (!r.ok) { toast('Ошибка записи'); return; }
+      overlay.remove();
+      const rd = await apiFetch(`/api/v1/inventory/cycle-counts/${count.id}`).then(r2 => r2.json());
+      _showCycleCountPanel(rd.count);
+    });
+  });
+}
+
 async function hydrateWebhooks() {
   const listEl = document.getElementById('webhooksList');
   if (!listEl) return;
@@ -8529,6 +8621,36 @@ function _bindInventoryEvents() {
   document.getElementById('invQuickReceiveBtn')?.addEventListener('click', () => _quickMovementTyped('receive'));
   document.getElementById('invQuickIssueBtn')?.addEventListener('click', () => _quickMovementTyped('issue'));
   document.getElementById('invWriteOffBtn')?.addEventListener('click', () => _quickMovementTyped('loss'));
+
+  document.getElementById('invCycleCountBtn')?.addEventListener('click', async () => {
+    const whId = _invSelectedWarehouse;
+    if (!whId) { toast('Выберите склад перед инвентаризацией'); return; }
+    // List existing open counts for this warehouse first
+    const r0 = await apiFetch(`/api/v1/inventory/cycle-counts?warehouseId=${whId}`).catch(() => null);
+    const { counts = [] } = r0?.ok ? await r0.json() : {};
+    const open = counts.filter(c => c.status === 'open');
+    let countId;
+    if (open.length) {
+      const choice = confirm(`Открыта инвентаризация "${open[0].name}". Продолжить её? Нажмите Отмена чтобы создать новую.`);
+      if (choice) { countId = open[0].id; }
+    }
+    if (!countId) {
+      const name = prompt('Название инвентаризации:', `Инвентаризация ${new Date().toLocaleDateString('ru')}`);
+      if (!name) return;
+      const rc = await apiFetch('/api/v1/inventory/cycle-counts', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ warehouseId: whId, name }),
+      });
+      if (!rc.ok) { toast(`Ошибка: ${(await rc.json()).error?.message || rc.status}`); return; }
+      countId = (await rc.json()).count.id;
+      toast(`✓ Инвентаризация создана`);
+    }
+    // Load and show cycle count detail
+    const rd = await apiFetch(`/api/v1/inventory/cycle-counts/${countId}`).catch(() => null);
+    if (!rd?.ok) { toast('Ошибка загрузки'); return; }
+    const { count } = await rd.json();
+    _showCycleCountPanel(count);
+  });
 
   document.getElementById('invAutoReorderBtn')?.addEventListener('click', async () => {
     if (!confirm('Создать черновики заказов для всех SKU с низким остатком (по настроенным поставщикам)?')) return;
