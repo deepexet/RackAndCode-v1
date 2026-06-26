@@ -4615,8 +4615,9 @@ function hydrateGantt(project) {
     }
 
     const ROW_H = 28, LABEL_W = 160, HEADER_H = 40, MILESTONE_ROW = ROW_H;
+    const stagesWithDates = (project.stages || []).filter(s => s.startDate || s.targetDate || s.target_date);
     const totalRows = [...groups.values()].reduce((s, g) => s + g.length, 0) + groups.size;
-    const svgH = HEADER_H + totalRows * ROW_H + MILESTONE_ROW + 20;
+    const svgH = HEADER_H + (stagesWithDates.length ? stagesWithDates.length * ROW_H + 8 : 0) + totalRows * ROW_H + MILESTONE_ROW + 20;
     const svgW = Math.max(900, container.clientWidth - 24);
     const chartW = svgW - LABEL_W;
 
@@ -4648,7 +4649,30 @@ function hydrateGantt(project) {
         <text x="${(todayX+4).toFixed(1)}" y="14" fill="#4f8ef7" font-size="9">сегодня</text>` : '',
     ];
 
+    // Project stages row
+    const stages = (project.stages || []).filter(s => s.startDate || s.targetDate || s.target_date);
     let y = HEADER_H;
+    if (stages.length) {
+      svgLines.push(`<text x="8" y="${y + ROW_H/2 + 4}" fill="var(--text-muted)" font-size="10" font-weight="700">ЭТАПЫ</text>`);
+      const STAGE_COLORS = { planned:'#778', active:'#4f8ef7', done:'#4adc84', on_hold:'#e8a84c' };
+      for (const st of stages) {
+        const s = st.startDate ? new Date(st.startDate).getTime() : null;
+        const e = (st.targetDate || st.target_date) ? new Date(st.targetDate || st.target_date).getTime() : null;
+        const x1 = s ? xPct(s) : (e ? xPct(e) - 30 : LABEL_W);
+        const x2 = e ? xPct(e) : (s ? xPct(s) + 30 : LABEL_W + 30);
+        const bw = Math.max(6, x2 - x1);
+        const sc = STAGE_COLORS[st.status] || '#778';
+        svgLines.push(
+          `<text x="${LABEL_W - 6}" y="${y + ROW_H/2 + 4}" fill="var(--text-muted)" font-size="10" text-anchor="end">${escapeHtml((st.name||'').slice(0,20))}</text>
+          <rect x="${x1.toFixed(1)}" y="${y+6}" width="${bw.toFixed(1)}" height="${ROW_H-12}" rx="3" fill="${sc}" opacity=".5"/>
+          <line x1="0" y1="${y}" x2="${svgW}" y2="${y}" stroke="var(--border)" stroke-width=".5" opacity=".3"/>`
+        );
+        y += ROW_H;
+      }
+      svgLines.push(`<line x1="0" y1="${y}" x2="${svgW}" y2="${y}" stroke="var(--border)" stroke-width="1" opacity=".5"/>`);
+      y += 4;
+    }
+
     for (const [group, groupItems] of groups) {
       // Group header row
       svgLines.push(`<rect x="0" y="${y}" width="${svgW}" height="${ROW_H}" fill="rgba(79,142,247,.05)"/>
