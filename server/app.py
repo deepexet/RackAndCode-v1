@@ -5555,6 +5555,45 @@ Rules:
                 "DELETE FROM work_item_checklist WHERE id=? AND organization_id=?", (item_id, org)
             )
 
+    def auto_reorder(self, org: str, warehouse_id: str | None, actor: str = "") -> dict[str, Any]:
+        """Create draft purchase orders for each low-stock SKU that has a preferred supplier."""
+        with self._connect() as conn:
+            q = """SELECT s.sku_id, s.warehouse_id, s.quantity, s.min_quantity,
+                          sk.name as sku_name, sk.sku_code,
+                          sr.supplier_id, sr.reorder_quantity
+                   FROM inventory_stock s
+                   JOIN inventory_skus sk ON sk.id=s.sku_id
+                   LEFT JOIN inventory_sku_reorder sr ON sr.sku_id=s.sku_id AND sr.organization_id=s.organization_id
+                   WHERE s.organization_id=? AND s.min_quantity IS NOT NULL AND s.quantity <= s.min_quantity
+                     AND sr.supplier_id IS NOT NULL"""
+            args: list[Any] = [org]
+            if warehouse_id:
+                q += " AND s.warehouse_id=?"; args.append(warehouse_id)
+            rows = conn.execute(q, args).fetchall()
+        if not rows:
+            return {"created": 0, "orders": [], "skipped": 0}
+        # Group by supplier_id + warehouse_id
+        from collections import defaultdict
+        groups: dict[tuple[str, str], list[Any]] = defaultdict(list)
+        for r in rows:
+            groups[(r["supplier_id"], r["warehouse_id"])].append(r)
+        created = []
+        skipped = 0
+        for (supplier_id, wh_id), items in groups.items():
+            lines = []
+            for item in items:
+                reorder_qty = item["reorder_quantity"] or max(item["min_quantity"] * 2, 1)
+                lines.append({"skuId": item["sku_id"], "quantity": reorder_qty})
+            try:
+                order = self.create_supplier_order(org, {
+                    "supplierId": supplier_id, "warehouseId": wh_id,
+                    "reference": f"AUTO-{utc_now()[:10]}", "lines": lines,
+                }, actor=actor)
+                created.append(order.get("id",""))
+            except Exception:
+                skipped += len(items)
+        return {"created": len(created), "orders": created, "skipped": skipped}
+
     def list_expiring_lots(self, org: str, days: int = 30) -> list[dict[str, Any]]:
         """Return lots expiring within `days` days, ordered by expiry date."""
         cutoff = (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
@@ -8871,24 +8910,48 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 if not sku:
                     self._error(HTTPStatus.NOT_FOUND, "not_found", "SKU not found"); return
                 barcode = sku["barcode"] or sku["sku_code"]
+                # Generate a simple visual QR-like data matrix as SVG (URL-encoded content)
+                qr_data = f"SKU:{sku['sku_code']}|{sku['id']}"
+                # Simple hash-based visual pattern (not a real QR — use for visual ID only)
+                import hashlib
+                h = hashlib.md5(qr_data.encode()).hexdigest()
+                cells = [int(h[i], 16) % 2 for i in range(min(len(h), 16))]
+                dim = 4
+                qr_size = 20
+                qr_cells = []
+                for r2 in range(dim):
+                    for c2 in range(dim):
+                        idx = r2 * dim + c2
+                        if idx < len(cells) and cells[idx]:
+                            x2 = c2 * qr_size; y2 = r2 * qr_size
+                            qr_cells.append(f'<rect x="{x2}" y="{y2}" width="{qr_size}" height="{qr_size}" fill="#000"/>')
+                qr_svg = f'<svg width="{dim*qr_size}" height="{dim*qr_size}" xmlns="http://www.w3.org/2000/svg" style="border:1px solid #ccc">{"".join(qr_cells)}</svg>'
                 html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Этикетка: {sku['sku_code']}</title>
 <style>
   body{{margin:0;font-family:Arial,sans-serif;background:#fff;color:#000}}
   .label{{width:62mm;min-height:30mm;border:1px solid #ccc;padding:4mm;display:flex;flex-direction:column;gap:2mm;box-sizing:border-box}}
+  .label-top{{display:flex;gap:4mm;align-items:flex-start}}
+  .label-info{{flex:1}}
   .sku{{font-size:8pt;color:#555}}
   .name{{font-size:11pt;font-weight:bold;line-height:1.2}}
   .cat{{font-size:7pt;color:#888;text-transform:uppercase;letter-spacing:.5px}}
-  .bc{{font-family:monospace;font-size:14pt;letter-spacing:2px;border:1px solid #000;padding:1mm 2mm;display:inline-block;background:#fff}}
+  .bc{{font-family:monospace;font-size:12pt;letter-spacing:2px;border:1px solid #000;padding:1mm 2mm;display:inline-block;background:#fff}}
   .bc-text{{font-size:7pt;text-align:center;color:#333}}
   @media print{{body{{margin:0}} button{{display:none}}}}
 </style></head><body>
 <div class="label">
-  <div class="sku">{sku['sku_code']}</div>
-  <div class="name">{sku['name']}</div>
-  <div class="cat">{sku['category']} · {sku['unit']}</div>
+  <div class="label-top">
+    <div class="label-info">
+      <div class="sku">{sku['sku_code']}</div>
+      <div class="name">{sku['name']}</div>
+      <div class="cat">{sku['category']} · {sku['unit']}</div>
+      {'<div style="font-size:8pt;color:#555">₽ ' + str(sku['unit_cost']) + ' / ' + sku['unit'] + '</div>' if sku['unit_cost'] else ''}
+    </div>
+    {qr_svg}
+  </div>
   {'<div class="bc">' + barcode + '</div><div class="bc-text">' + barcode + '</div>' if barcode else ''}
-  {'<div style="font-size:8pt;color:#555">₽ ' + str(sku['unit_cost']) + ' / ' + sku['unit'] + '</div>' if sku['unit_cost'] else ''}
+  <div style="font-size:6pt;color:#aaa">{sku['id'][:16]}</div>
 </div>
 <br><button onclick="window.print()">🖨 Печать</button>
 </body></html>"""
@@ -10094,6 +10157,31 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     except (ValueError, LookupError) as e:
                         status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(e)); return
+                if sub == "auto-reorder":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json() if self.headers.get("Content-Length","0") != "0" else {}
+                    wh = payload.get("warehouseId") if isinstance(payload, dict) else None
+                    try:
+                        result = self.store.auto_reorder(org, wh, actor=self.current_role)
+                        self._json(HTTPStatus.OK, result); return
+                    except Exception as e:
+                        self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "server_error", str(e)); return
+                if sub == "reorder-config":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    sku_id = str(payload.get("skuId",""))
+                    supplier_id = payload.get("supplierId")
+                    reorder_qty = float(payload.get("reorderQuantity", 0))
+                    if not sku_id: self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "skuId required"); return
+                    now = utc_now()
+                    with self.store._connect() as conn:
+                        conn.execute(
+                            "INSERT INTO inventory_sku_reorder (id,organization_id,sku_id,supplier_id,reorder_quantity,created_at,updated_at) "
+                            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(organization_id,sku_id) "
+                            "DO UPDATE SET supplier_id=?,reorder_quantity=?,updated_at=?",
+                            (_uid(), org, sku_id, supplier_id, reorder_qty, now, now, supplier_id, reorder_qty, now)
+                        )
+                    self._json(HTTPStatus.OK, {"ok": True}); return
                 if sub == "orders":
                     if not self._require_permission("projectManage"): return
                     payload = self._read_json()

@@ -8420,6 +8420,24 @@ function _bindInventoryEvents() {
   document.getElementById('invQuickIssueBtn')?.addEventListener('click', () => _quickMovementTyped('issue'));
   document.getElementById('invWriteOffBtn')?.addEventListener('click', () => _quickMovementTyped('loss'));
 
+  document.getElementById('invAutoReorderBtn')?.addEventListener('click', async () => {
+    if (!confirm('Создать черновики заказов для всех SKU с низким остатком (по настроенным поставщикам)?')) return;
+    try {
+      toast('Запуск авто-дозаказа…');
+      const r = await apiFetch('/api/v1/inventory/auto-reorder', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ warehouseId: _invSelectedWarehouse || null }),
+      });
+      const res = await r.json();
+      if (!r.ok) { toast(`Ошибка: ${res.error?.message || r.status}`); return; }
+      toast(`✓ Создано ${res.created} заказов${res.skipped ? ` (пропущено ${res.skipped})` : ''}`);
+      if (res.created > 0) {
+        const panel = document.getElementById('inventorySuppliersPanel');
+        if (panel) { panel.style.display = ''; _loadSupplierOrders(); }
+      }
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
   document.getElementById('invExpiryBtn')?.addEventListener('click', () => {
     const panel = document.getElementById('inventoryExpiryPanel');
     const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
