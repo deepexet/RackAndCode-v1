@@ -639,7 +639,7 @@ function renderRoute() {
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
-  if (route === 'overview') { hydrateGrowthChart(); hydrateOverviewKpi(); }
+  if (route === 'overview') { hydrateGrowthChart(); hydrateOverviewKpi(); hydrateOverviewSla(); }
   if (route === 'inventory') { hydrateInventory(); }
   if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels(),hydrateWiTemplatesAdmin()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
@@ -3660,6 +3660,47 @@ async function hydrateOverviewKpi() {
         <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escapeHtml(k.label)}</div>
       </div>`).join('');
     if (ts) ts.textContent = `обновлено ${new Date().toLocaleTimeString('ru')}`;
+    section.style.display = '';
+  } catch { section.style.display = 'none'; }
+}
+
+async function hydrateOverviewSla() {
+  const section = document.getElementById('overviewSlaSection');
+  const list = document.getElementById('overviewSlaList');
+  const summaryEl = document.getElementById('overviewSlaSummary');
+  if (!section || !list) return;
+  try {
+    const r = await apiFetch('/api/v1/projects/sla-report');
+    if (!r.ok) { section.style.display = 'none'; return; }
+    const { items = [], summary = {} } = await r.json();
+    if (!items.length) { section.style.display = 'none'; return; }
+    const SLA_COLOR = { overdue: '#f46', at_risk: '#e8a84c', on_time: '#4adc84', no_date: '#778195' };
+    const SLA_LABEL = { overdue: 'Просрочен', at_risk: 'Риск', on_time: 'В срок', no_date: 'Без даты' };
+    if (summaryEl) {
+      summaryEl.innerHTML = [
+        summary.overdue && `<span style="color:#f46">⚠ ${summary.overdue} просрочен</span>`,
+        summary.atRisk && `<span style="color:#e8a84c">⏳ ${summary.atRisk} под риском</span>`,
+        summary.onTime && `<span style="color:#4adc84">✓ ${summary.onTime} в срок</span>`,
+        summary.noDate && `<span style="color:#778195">— ${summary.noDate} без даты</span>`,
+      ].filter(Boolean).join('');
+    }
+    list.innerHTML = items.slice(0, 12).map(item => {
+      const color = SLA_COLOR[item.sla] || '#778195';
+      const label = SLA_LABEL[item.sla] || item.sla;
+      const daysText = item.daysLeft == null ? '' : item.daysLeft < 0
+        ? `(просрочен на ${-item.daysLeft} дн.)`
+        : item.daysLeft === 0 ? '(сегодня!)' : `(${item.daysLeft} дн.)`;
+      return `<div style="background:var(--surface);border:1px solid ${color}40;border-left:3px solid ${color};border-radius:8px;padding:10px 14px;cursor:pointer"
+               onclick="location.hash='project/${encodeURIComponent(item.id)}'">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+          <strong style="font-size:13px;flex:1">${escapeHtml(item.name)}</strong>
+          <span style="font-size:10px;color:${color};white-space:nowrap;font-weight:600">${label}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
+          ${item.targetDate ? item.targetDate.slice(0,10) : '—'} ${daysText}
+        </div>
+      </div>`;
+    }).join('');
     section.style.display = '';
   } catch { section.style.display = 'none'; }
 }

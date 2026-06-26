@@ -2040,6 +2040,43 @@ class WorkspaceStore:
                 (new_status, now, org, project_id)
             )
 
+    def project_sla_report(self, org: str) -> dict[str, Any]:
+        """Return SLA metrics: on-time, at-risk, overdue counts per active project."""
+        import datetime as _dt
+        with self._connect() as conn:
+            projs = conn.execute(
+                "SELECT id, name, status, target_date FROM projects WHERE organization_id=? AND status NOT IN ('done','cancelled')",
+                (org,)
+            ).fetchall()
+        today = _dt.date.fromisoformat(utc_now()[:10])
+        report = []
+        on_time = at_risk = overdue_count = no_date = 0
+        for p in projs:
+            td = p["target_date"]
+            if not td:
+                no_date += 1
+                report.append({"id": p["id"], "name": p["name"], "status": p["status"],
+                                "targetDate": None, "sla": "no_date", "daysLeft": None})
+                continue
+            try:
+                days_left = (_dt.date.fromisoformat(td[:10]) - today).days
+            except ValueError:
+                no_date += 1
+                report.append({"id": p["id"], "name": p["name"], "status": p["status"],
+                                "targetDate": td, "sla": "no_date", "daysLeft": None})
+                continue
+            if days_left < 0:
+                sla = "overdue"; overdue_count += 1
+            elif days_left <= 7:
+                sla = "at_risk"; at_risk += 1
+            else:
+                sla = "on_time"; on_time += 1
+            report.append({"id": p["id"], "name": p["name"], "status": p["status"],
+                           "targetDate": td, "sla": sla, "daysLeft": days_left})
+        report.sort(key=lambda r: ({"overdue": 0, "at_risk": 1, "on_time": 2, "no_date": 3}.get(r["sla"], 4),
+                                    r.get("daysLeft") or 9999))
+        return {"items": report, "summary": {"onTime": on_time, "atRisk": at_risk, "overdue": overdue_count, "noDate": no_date}}
+
     def update_project_meta(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Update editable project fields: name, description, status, priority, startDate, targetDate, tags."""
         with self._connect() as conn:
@@ -8448,6 +8485,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK, _build_platform_growth())
             return
+        if path == "/api/v1/projects/sla-report":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, self.store.project_sla_report(self.organization_id)); return
         if path == "/api/v1/admin/feature-docs":
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK, {"features": self.store.list_feature_docs()})
