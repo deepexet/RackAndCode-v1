@@ -7934,6 +7934,33 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             limit = min(int(self.query_params.get("limit", ["100"])[0]), 500)
             self._json(HTTPStatus.OK, {"entries": self.store.list_audit_log(self.organization_id, limit)})
             return
+        if path == "/api/v1/admin/user-activity":
+            if not self._require_permission("adminPanel"): return
+            days = min(int(self.query_params.get("days", ["30"])[0]), 90)
+            since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+            with self.store._connect() as conn:
+                rows = conn.execute(
+                    "SELECT actor_id, COUNT(*) as total_actions, "
+                    "COUNT(DISTINCT substr(created_at,1,10)) as active_days, "
+                    "MAX(created_at) as last_seen, "
+                    "GROUP_CONCAT(DISTINCT action) as action_types "
+                    "FROM audit_log WHERE organization_id=? AND created_at>=? "
+                    "GROUP BY actor_id ORDER BY total_actions DESC LIMIT 50",
+                    (self.organization_id, since)
+                ).fetchall()
+                # Get display names from users
+                users = {u["id"]: u.get("name", u["email"]) for u in conn.execute(
+                    "SELECT id, email, name FROM users WHERE organization_id=?",
+                    (self.organization_id,)
+                ).fetchall()}
+            report = []
+            for r in rows:
+                actor = dict(r)
+                actor["display_name"] = users.get(r["actor_id"], r["actor_id"] or "system")
+                actor["action_types"] = (r["action_types"] or "").split(",")[:8]
+                report.append(actor)
+            self._json(HTTPStatus.OK, {"report": report, "days": days, "since": since})
+            return
         if path == "/api/v1/admin/retrieval-eval":
             if not self._require_permission("adminPanel"): return
             cases = self.store.list_eval_cases(self.organization_id)

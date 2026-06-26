@@ -1257,8 +1257,47 @@ const PURPOSE_LABELS = {
 const OUTCOME_STYLE = { ok: 'color:#31d4a2', denied: 'color:#e05353', error: 'color:#f59e0b' };
 
 async function hydratePrivacy() {
-  await Promise.all([hydratePrivacySettings(), hydrateAuditLog()]);
+  await Promise.all([hydratePrivacySettings(), hydrateAuditLog(), hydrateUserActivityReport()]);
 }
+
+async function hydrateUserActivityReport() {
+  const el = document.getElementById('userActivityReport');
+  if (!el) return;
+  const days = document.getElementById('userActivityDays')?.value || '30';
+  el.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+  try {
+    const { report = [] } = await apiFetch(`/api/v1/admin/user-activity?days=${days}`).then(r => r.json());
+    if (!report.length) { el.innerHTML = '<p class="empty-copy" style="font-size:13px">Нет данных за период.</p>'; return; }
+    const maxActions = Math.max(...report.map(r => r.total_actions));
+    el.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px">
+      ${report.map(r => {
+        const pct = maxActions > 0 ? Math.round(r.total_actions / maxActions * 100) : 0;
+        const lastDate = (r.last_seen||'').slice(0,16).replace('T',' ');
+        return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-size:13px;font-weight:600">${escapeHtml(r.display_name)}</span>
+            <div style="display:flex;gap:12px;font-size:11px;color:var(--text-muted)">
+              <span>${r.total_actions} действий</span>
+              <span>${r.active_days} дн. активен</span>
+              <span>последний: ${lastDate}</span>
+            </div>
+          </div>
+          <div style="height:4px;border-radius:2px;background:var(--border);margin-bottom:6px">
+            <div style="height:100%;width:${pct}%;background:var(--accent);border-radius:2px;transition:width .3s"></div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${(r.action_types||[]).map(a => `<span style="font-size:10px;padding:1px 6px;border-radius:6px;background:rgba(79,142,247,.1);color:var(--accent)">${escapeHtml(a)}</span>`).join('')}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+  } catch(e) { el.innerHTML = `<p class="empty-copy">${e.message}</p>`; }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('userActivityDays')?.addEventListener('change', hydrateUserActivityReport);
+  document.getElementById('userActivityRefreshBtn')?.addEventListener('click', hydrateUserActivityReport);
+});
 
 async function hydratePrivacySettings() {
   const el = document.getElementById('privacySettingsList');
