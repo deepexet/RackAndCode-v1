@@ -5086,6 +5086,10 @@ function setupWorkItemsBulkList(project) {
         <button class="text-button wi-dep-btn" data-wi-dep-id="${wi.id}" data-wi-dep-on="${(wi.dependsOn||[]).join(',')}"
           style="font-size:11px;color:${(wi.dependsOn||[]).length?'var(--accent)':'var(--text-muted)'};padding:0 4px;flex-shrink:0"
           title="Зависимости (${(wi.dependsOn||[]).length})">${(wi.dependsOn||[]).length?'🔗':'⛓'}</button>
+        <button class="text-button wi-desc-btn" data-wi-desc-id="${wi.id}" data-wi-desc-ver="${wi.version}"
+          data-wi-desc-val="${escapeHtml(wi.description||'')}"
+          style="font-size:11px;color:${wi.description?'var(--accent)':'var(--text-muted)'};padding:0 4px;flex-shrink:0"
+          title="Описание">✎</button>
       </label>`;
     }).join('');
 
@@ -5200,6 +5204,31 @@ function setupWorkItemsBulkList(project) {
             toast('Зависимость удалена'); await fetchProjects();
           } catch(e) { toast(`Ошибка: ${e.message}`); }
         }
+      });
+    });
+
+    listEl.querySelectorAll('.wi-desc-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const wiId = btn.dataset.wiDescId;
+        const ver = parseInt(btn.dataset.wiDescVer);
+        const current = btn.dataset.wiDescVal || '';
+        const newDesc = prompt('Описание задачи:', current);
+        if (newDesc === null) return;
+        try {
+          const r = await apiFetch(`/api/v1/projects/${project.id}/work-items/${wiId}`, {
+            method: 'PUT', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ description: newDesc, expectedVersion: ver }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          const updated = await r.json();
+          const wi = (project.workItems||[]).find(w => w.id === wiId);
+          if (wi) { wi.description = newDesc; wi.version = updated.version || ver+1; }
+          btn.dataset.wiDescVal = newDesc;
+          btn.dataset.wiDescVer = wi?.version || ver+1;
+          btn.style.color = newDesc ? 'var(--accent)' : 'var(--text-muted)';
+          toast('Описание обновлено');
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
       });
     });
 
@@ -7224,6 +7253,34 @@ function _bindInventoryEvents() {
   const _MT_COLORS = { receive:'#4adc84', issue:'#f46', transfer:'#4f8ef7',
     adjustment:'#e8a84c', return:'#a78bfa', loss:'#f46' };
 
+  async function _loadMovementSparkline() {
+    const el = document.getElementById('invMovementSparkline');
+    if (!el) return;
+    const whParam = _invSelectedWarehouse ? `?warehouseId=${_invSelectedWarehouse}` : '';
+    try {
+      const { days = [] } = await apiFetch(`/api/v1/inventory/movements-summary${whParam}&days=14`).then(r => r.json());
+      if (!days.length) { el.innerHTML = ''; return; }
+      const maxVal = Math.max(...days.flatMap(d => [d.receive||0, d.issue||0]));
+      const W = 340, H = 50, PAD = 4;
+      const bw = (W - PAD*2) / (days.length * 2 + days.length - 1);
+      const bars = days.map((d, i) => {
+        const x = PAD + i * (bw * 3);
+        const rh = maxVal > 0 ? (d.receive||0) / maxVal * (H - PAD*2) : 0;
+        const ih = maxVal > 0 ? (d.issue||0) / maxVal * (H - PAD*2) : 0;
+        return `<rect x="${x.toFixed(1)}" y="${(H - PAD - rh).toFixed(1)}" width="${bw.toFixed(1)}" height="${rh.toFixed(1)}" fill="#4adc84" opacity=".7" rx="1"/>
+                <rect x="${(x+bw+1).toFixed(1)}" y="${(H - PAD - ih).toFixed(1)}" width="${bw.toFixed(1)}" height="${ih.toFixed(1)}" fill="#f46" opacity=".7" rx="1"/>
+                <text x="${(x + bw).toFixed(1)}" y="${H}" fill="#445" font-size="7" text-anchor="middle">${d.date.slice(5)}</text>`;
+      }).join('');
+      el.innerHTML = `<svg viewBox="0 0 ${W} ${H+8}" style="width:100%;height:58px;overflow:visible">
+        ${bars}
+        <rect x="0" y="6" width="10" height="8" fill="#4adc84" opacity=".7" rx="1"/>
+        <text x="13" y="14" fill="#778" font-size="9">приход</text>
+        <rect x="60" y="6" width="10" height="8" fill="#f46" opacity=".7" rx="1"/>
+        <text x="73" y="14" fill="#778" font-size="9">расход</text>
+      </svg>`;
+    } catch { el.innerHTML = ''; }
+  }
+
   async function _loadHistory() {
     const list = document.getElementById('inventoryHistoryList');
     if (!list) return;
@@ -7231,6 +7288,7 @@ function _bindInventoryEvents() {
     const typeFilter = document.getElementById('invHistoryTypeFilter')?.value || '';
     const whParam = _invSelectedWarehouse ? `&warehouseId=${_invSelectedWarehouse}` : '';
     const typeParam = typeFilter ? `&type=${typeFilter}` : '';
+    _loadMovementSparkline();
     try {
       const r = await apiFetch(`/api/v1/inventory/movements?limit=200${whParam}${typeParam}`);
       const { movements = [] } = await r.json();

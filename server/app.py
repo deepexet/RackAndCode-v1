@@ -8152,6 +8152,27 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if sub == "stock":
                 wh = self.query_params.get("warehouseId",[None])[0]
                 self._json(HTTPStatus.OK, {"stock": self.store.get_stock_levels(org, wh)}); return
+            if sub == "movements-summary":
+                days = max(1, min(90, int(self.query_params.get("days", ["14"])[0])))
+                wh = self.query_params.get("warehouseId", [None])[0]
+                since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+                where = "organization_id=? AND moved_at>=?"
+                params: list[Any] = [org, since]
+                if wh:
+                    where += " AND warehouse_id=?"; params.append(wh)
+                with self.store._connect() as conn:
+                    rows = conn.execute(
+                        f"SELECT substr(moved_at,1,10) as day, movement_type, SUM(quantity) as total "
+                        f"FROM inventory_movements WHERE {where} GROUP BY day, movement_type ORDER BY day",
+                        params
+                    ).fetchall()
+                by_day: dict[str, dict] = {}
+                for r in rows:
+                    d = r["day"]; t = r["movement_type"]
+                    if d not in by_day: by_day[d] = {"receive": 0, "issue": 0, "adjust": 0}
+                    by_day[d][t] = by_day[d].get(t, 0) + (r["total"] or 0)
+                result = [{"date": d, **by_day[d]} for d in sorted(by_day)]
+                self._json(HTTPStatus.OK, {"days": result, "since": since}); return
             if sub == "movements":
                 sku_id = self.query_params.get("skuId",[None])[0]
                 wh = self.query_params.get("warehouseId",[None])[0]
