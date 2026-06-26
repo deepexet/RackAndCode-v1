@@ -639,7 +639,7 @@ function renderRoute() {
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
-  if (route === 'overview') hydrateGrowthChart();
+  if (route === 'overview') { hydrateGrowthChart(); hydrateOverviewKpi(); }
   if (route === 'inventory') { hydrateInventory(); }
   if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
@@ -3574,6 +3574,50 @@ function setupCodexDialog() {
 async function hydrateAgentStatus(){try{const response=await fetch('/api/v1/development-agent/status',{headers:apiHeaders()});if(!response.ok)throw new Error('status unavailable');const payload=await response.json();renderAgentStatus(payload.agent);}catch{renderAgentStatus({status:'blocked',message:'Статус недоступен',needsAction:true});}}
 
 // ── Platform Growth Chart ──────────────────────────────────────────────────
+
+async function hydrateOverviewKpi() {
+  const section = document.getElementById('overviewKpiSection');
+  const el = document.getElementById('overviewKpiContent');
+  const ts = document.getElementById('overviewKpiTimestamp');
+  if (!section || !el) return;
+  try {
+    const [projData, invData] = await Promise.all([
+      apiFetch('/api/v1/projects').then(r => r.json()).catch(() => ({})),
+      apiFetch('/api/v1/inventory/stock?limit=1000').then(r => r.json()).catch(() => ({})),
+    ]);
+    const projects = projData.projects || [];
+    const stock = invData.stock || [];
+    const activeProjects = projects.filter(p => p.status === 'active').length;
+    const overdueMS = [];
+    for (const p of projects) {
+      for (const wi of p.workItems||[]) {
+        if (wi.dueDate && wi.status !== 'done' && new Date(wi.dueDate) < new Date()) overdueMS.push(wi);
+      }
+    }
+    const blockedWI = projects.reduce((s, p) => s + (p.workItems||[]).filter(w => w.status === 'blocked').length, 0);
+    const totalHours = projects.reduce((s, p) => s + (p.workItems||[]).reduce((ss, w) => ss + (w.actualMinutes||0), 0), 0);
+    const lowStock = stock.filter(s => s.min_quantity != null && s.quantity <= s.min_quantity).length;
+    const totalValue = stock.reduce((s, s2) => s + ((s2.unit_cost||0) * (s2.quantity||0)), 0);
+
+    const kpis = [
+      { label: 'Активных проектов', value: activeProjects, color: '#4f8ef7', icon: '📁' },
+      { label: 'Просроченных задач', value: overdueMS.length, color: overdueMS.length ? '#f46' : '#4adc84', icon: '⚠' },
+      { label: 'Заблокировано WI', value: blockedWI, color: blockedWI ? '#e8a84c' : '#4adc84', icon: '🔒' },
+      { label: 'Фактич. часов', value: `${Math.round(totalHours/60*10)/10}ч`, color: '#a78bfa', icon: '⏱' },
+      { label: 'Low stock SKU', value: lowStock, color: lowStock ? '#e8a84c' : '#4adc84', icon: '📦' },
+      { label: 'Стоимость склада', value: `$${totalValue.toLocaleString('ru', {maximumFractionDigits:0})}`, color: '#4adc84', icon: '💰' },
+    ];
+
+    el.innerHTML = kpis.map(k => `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px">
+        <div style="font-size:20px;margin-bottom:6px">${k.icon}</div>
+        <div style="font-size:24px;font-weight:700;color:${k.color}">${k.value}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escapeHtml(k.label)}</div>
+      </div>`).join('');
+    if (ts) ts.textContent = `обновлено ${new Date().toLocaleTimeString('ru')}`;
+    section.style.display = '';
+  } catch { section.style.display = 'none'; }
+}
 
 async function hydrateGrowthChart() {
   const wrap = document.getElementById('growthChart');
