@@ -6069,7 +6069,35 @@ Rules:
                 "SELECT * FROM project_milestones WHERE organization_id=? AND project_id=? ORDER BY target_date",
                 (org, project_id),
             ).fetchall()
-        return [dict(r) for r in rows]
+            deps = conn.execute(
+                "SELECT predecessor_id, successor_id FROM milestone_dependencies WHERE organization_id=? AND project_id=?",
+                (org, project_id)
+            ).fetchall()
+        dep_map: dict[str, list[str]] = {}
+        for d in deps:
+            dep_map.setdefault(d["successor_id"], []).append(d["predecessor_id"])
+        result = []
+        for r in rows:
+            m = dict(r)
+            m["predecessors"] = dep_map.get(r["id"], [])
+            result.append(m)
+        return result
+
+    def add_milestone_dep(self, org: str, project_id: str, predecessor_id: str, successor_id: str) -> None:
+        if predecessor_id == successor_id: raise ValueError("Self-dependency not allowed")
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO milestone_dependencies (id,organization_id,project_id,predecessor_id,successor_id,created_at) VALUES (?,?,?,?,?,?)",
+                (_uid(), org, project_id, predecessor_id, successor_id, now)
+            )
+
+    def remove_milestone_dep(self, org: str, predecessor_id: str, successor_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM milestone_dependencies WHERE organization_id=? AND predecessor_id=? AND successor_id=?",
+                (org, predecessor_id, successor_id)
+            )
 
     def create_milestone(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         name = payload.get("name")
@@ -10912,6 +10940,28 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # Milestone deps: POST /api/v1/projects/:pid/milestones/:mid/deps  and  /deps/:pred_id/delete
+        if len(parts) >= 8 and parts[3] == "projects" and parts[5] == "milestones" and parts[7] == "deps":
+            project_id = parts[4]; mid = parts[6]
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                pred_id = str(payload.get("predecessorId","")).strip()
+                if not pred_id: raise ValueError("predecessorId required")
+                self.store.add_milestone_dep(self.organization_id, project_id, pred_id, mid)
+                self._json(HTTPStatus.OK, {"added": True}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+        if len(parts) == 9 and parts[3] == "projects" and parts[5] == "milestones" and parts[7] == "deps" and parts[8] == "delete":
+            project_id = parts[4]; mid = parts[6]
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                pred_id = str(payload.get("predecessorId","")).strip()
+                self.store.remove_milestone_dep(self.organization_id, pred_id, mid)
+                self._json(HTTPStatus.OK, {"removed": True}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
         # Project documents: POST /api/v1/projects/:id/documents (upload base64)
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "documents":
             if not self._require_permission("projectManage"): return

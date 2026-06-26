@@ -5506,7 +5506,8 @@ async function hydrateMilestones(projectId) {
           </div>
           <span style="font-size:11px;color:${isOverdue?'#f46':_MILESTONE_STATUS_COLORS[m.status]};background:${isOverdue?'rgba(255,68,68,.12)':_MILESTONE_STATUS_COLORS[m.status]+'1a'};padding:2px 7px;border-radius:10px">${_MILESTONE_STATUS_LABELS[m.status]||m.status}</span>
           <span style="font-size:11px;color:${dateColor};font-weight:${isOverdue?700:400}">${m.target_date}</span>
-          ${canManage ? `<button type="button" class="text-button" style="font-size:11px" data-ms-id="${m.id}" data-ms-action="edit">•••</button>` : ''}
+          ${m.predecessors?.length ? `<span title="${m.predecessors.length} предш." style="font-size:10px;color:#a78bfa">⛓${m.predecessors.length}</span>` : ''}
+          ${canManage ? `<button type="button" class="text-button" style="font-size:11px" data-ms-id="${m.id}" data-ms-action="dep" title="Зависимости">⛓</button><button type="button" class="text-button" style="font-size:11px" data-ms-id="${m.id}" data-ms-action="edit">•••</button>` : ''}
         </div>`;
       }).join('');
     }
@@ -5531,6 +5532,34 @@ async function hydrateMilestones(projectId) {
         const mid = btn.dataset.msId;
         const ms = milestones.find(m => m.id === mid);
         if (!ms) return;
+        const action = btn.dataset.msAction || 'edit';
+        if (action === 'dep') {
+          const otherMilestones = milestones.filter(m => m.id !== mid);
+          if (!otherMilestones.length) { toast('Нет других вех для зависимости'); return; }
+          const preds = ms.predecessors || [];
+          const listStr = otherMilestones.map((m, i) => `${i+1}. ${m.name}${preds.includes(m.id)?' ✓':''}`).join('\n');
+          const choice = prompt(`Добавить предшественника для "${ms.name}":\n${listStr}\n\nВведите номер (или 0 для снятия выбранного):`);
+          if (!choice) return;
+          const idx = parseInt(choice) - 1;
+          if (idx < 0 || idx >= otherMilestones.length) return;
+          const predMs = otherMilestones[idx];
+          const alreadySet = preds.includes(predMs.id);
+          if (alreadySet) {
+            const r2 = await apiFetch(`/api/v1/projects/${projectId}/milestones/${mid}/deps/delete`, {
+              method:'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({ predecessorId: predMs.id }),
+            });
+            if (r2.ok) { toast(`Зависимость от "${predMs.name}" удалена`); hydrateMilestones(projectId); }
+          } else {
+            const r2 = await apiFetch(`/api/v1/projects/${projectId}/milestones/${mid}/deps`, {
+              method:'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({ predecessorId: predMs.id }),
+            });
+            if (r2.ok) { toast(`"${predMs.name}" → "${ms.name}" добавлена`); hydrateMilestones(projectId); }
+            else toast(`Ошибка: ${(await r2.json()).error?.message || r2.status}`);
+          }
+          return;
+        }
         const choices = Object.keys(_MILESTONE_STATUS_LABELS).map(k => `${k}: ${_MILESTONE_STATUS_LABELS[k]}`).join('\n');
         const newStatus = prompt(`Статус вехи:\n${choices}\n\nТекущий: ${ms.status}`, ms.status);
         if (!newStatus || !_MILESTONE_STATUS_LABELS[newStatus]) return;
