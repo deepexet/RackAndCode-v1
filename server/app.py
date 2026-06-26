@@ -5554,6 +5554,59 @@ Rules:
                 "DELETE FROM work_item_checklist WHERE id=? AND organization_id=?", (item_id, org)
             )
 
+    def list_time_log(self, org: str, work_item_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM work_item_time_log WHERE organization_id=? AND work_item_id=? ORDER BY spent_at DESC",
+                (org, work_item_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_time_log(self, org: str, work_item_id: str, project_id: str,
+                     minutes: int, worker_name: str, note: str, spent_at: str | None) -> dict[str, Any]:
+        if not isinstance(minutes, int) or minutes <= 0:
+            raise ValueError("minutes must be a positive integer")
+        now = utc_now()
+        tid = _uid()
+        if not spent_at:
+            spent_at = now[:10]
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM work_items WHERE id=? AND organization_id=?", (work_item_id, org)).fetchone():
+                raise LookupError("Work item not found")
+            conn.execute(
+                "INSERT INTO work_item_time_log (id,organization_id,work_item_id,project_id,minutes,worker_name,note,spent_at,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (tid, org, work_item_id, project_id, minutes, str(worker_name)[:100], str(note)[:500], spent_at, now),
+            )
+            conn.execute(
+                "UPDATE work_items SET actual_minutes=COALESCE(actual_minutes,0)+?,updated_at=? WHERE id=?",
+                (minutes, now, work_item_id),
+            )
+            row = conn.execute("SELECT * FROM work_item_time_log WHERE id=?", (tid,)).fetchone()
+        return dict(row)
+
+    def delete_time_log(self, org: str, entry_id: str) -> None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM work_item_time_log WHERE id=? AND organization_id=?", (entry_id, org)).fetchone()
+            if not row: raise LookupError("Time log entry not found")
+            conn.execute(
+                "UPDATE work_items SET actual_minutes=MAX(0,COALESCE(actual_minutes,0)-?),updated_at=? WHERE id=?",
+                (row["minutes"], utc_now(), row["work_item_id"]),
+            )
+            conn.execute("DELETE FROM work_item_time_log WHERE id=?", (entry_id,))
+
+    def list_project_time_log(self, org: str, project_id: str, days: int = 30) -> list[dict[str, Any]]:
+        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT tl.*, wi.title as wi_title FROM work_item_time_log tl "
+                "JOIN work_items wi ON wi.id=tl.work_item_id "
+                "WHERE tl.organization_id=? AND tl.project_id=? AND tl.spent_at>=? "
+                "ORDER BY tl.spent_at DESC LIMIT 200",
+                (org, project_id, cutoff),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def list_wi_comments(self, org: str, work_item_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -8815,6 +8868,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"items": self.store.list_checklist(self.organization_id, wi_id)})
             return
+        # Time log: GET /api/v1/projects/:pid/work-items/:wid/time-log
+        if len(parts) == 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "time-log":
+            if not self._require_permission("projectRead"): return
+            wi_id = parts[6]
+            self._json(HTTPStatus.OK, {"entries": self.store.list_time_log(self.organization_id, wi_id)})
+            return
+        # Project time log: GET /api/v1/projects/:id/time-log
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "time-log":
+            if not self._require_permission("projectRead"): return
+            project_id = parts[4]
+            days = int(self.query_params.get("days",["30"])[0])
+            self._json(HTTPStatus.OK, {"entries": self.store.list_project_time_log(self.organization_id, project_id, days)})
+            return
         if path == "/api/v1/admin/smtp-config":
             if not self._require_permission("admin"): return
             cfg = self.store.get_smtp_config(self.organization_id)
@@ -10045,6 +10111,33 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # Time log: POST /api/v1/projects/:pid/work-items/:wid/time-log  and  /time-log/:eid/delete
+        if len(parts) >= 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "time-log":
+            project_id = parts[4]; wi_id = parts[6]
+            if len(parts) == 8:
+                if not self._require_permission("fieldProgress"): return
+                try:
+                    payload = self._read_json()
+                    entry = self.store.add_time_log(
+                        self.organization_id, wi_id, project_id,
+                        int(payload.get("minutes", 0)),
+                        str(payload.get("workerName", self.current_role)),
+                        str(payload.get("note", "")),
+                        payload.get("spentAt"),
+                    )
+                    self._json(HTTPStatus.CREATED, {"entry": entry})
+                except (ValueError, LookupError, json.JSONDecodeError) as err:
+                    status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                    self._error(status, "invalid_request", str(err))
+                return
+            if len(parts) == 10 and parts[9] == "delete":
+                if not self._require_permission("projectManage"): return
+                try:
+                    self.store.delete_time_log(self.organization_id, parts[8])
+                    self._json(HTTPStatus.OK, {"deleted": True})
+                except LookupError as err:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+                return
         # Checklist: POST /api/v1/projects/:pid/work-items/:wid/checklist  and  /checklist/:cid/toggle|delete
         if len(parts) >= 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "checklist":
             project_id = parts[4]; wi_id = parts[6]

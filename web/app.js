@@ -5410,6 +5410,9 @@ function setupWorkItemsBulkList(project) {
         <button class="text-button wi-checklist-btn" data-wi-checklist-id="${wi.id}" data-project-id="${project.id}"
           style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0"
           title="Чеклист подзадач">☑</button>
+        <button class="text-button wi-timelog-btn" data-wi-id="${wi.id}" data-project-id="${project.id}"
+          style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0"
+          title="Лог времени">⏱</button>
       </label>`;
     }).join('');
 
@@ -5580,6 +5583,13 @@ function setupWorkItemsBulkList(project) {
         const wiId = btn.dataset.wiChecklistId;
         const projId = btn.dataset.projectId;
         await _openWiChecklist(projId, wiId, btn);
+      });
+    });
+
+    listEl.querySelectorAll('.wi-timelog-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await _openWiTimelog(btn.dataset.projectId, btn.dataset.wiId, btn);
       });
     });
 
@@ -6247,6 +6257,92 @@ async function _openWiChecklist(projId, wiId, anchorBtn) {
   document.body.appendChild(popup);
   refreshList();
 
+  const dismiss = (ev) => { if (!popup.contains(ev.target) && ev.target !== anchorBtn) { popup.remove(); document.removeEventListener('mousedown', dismiss); } };
+  setTimeout(() => document.addEventListener('mousedown', dismiss), 100);
+}
+
+async function _openWiTimelog(projId, wiId, anchorBtn) {
+  let existing = document.getElementById('wi-timelog-popup');
+  if (existing && existing.dataset.wiId === wiId) { existing.remove(); return; }
+  if (existing) existing.remove();
+
+  const popup = document.createElement('div');
+  popup.id = 'wi-timelog-popup';
+  popup.dataset.wiId = wiId;
+  popup.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-card,#1a1f2e);border:1px solid var(--border);border-radius:8px;padding:14px 16px;min-width:300px;max-width:360px;box-shadow:0 8px 32px #0006';
+  const rect = anchorBtn.getBoundingClientRect();
+  popup.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - 340)}px`;
+  popup.style.left = `${Math.max(4, Math.min(rect.left, window.innerWidth - 370))}px`;
+
+  const header = document.createElement('div');
+  header.style.cssText = 'font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px';
+  header.textContent = 'Лог времени';
+  popup.appendChild(header);
+
+  const list = document.createElement('div');
+  popup.appendChild(list);
+
+  async function refreshList() {
+    const { entries = [] } = await apiFetch(`/api/v1/projects/${projId}/work-items/${wiId}/time-log`).then(r => r.json());
+    const total = entries.reduce((s, e) => s + e.minutes, 0);
+    header.textContent = `Лог времени ${entries.length ? `· ${Math.round(total/6)/10}ч` : ''}`;
+    list.innerHTML = entries.length ? entries.map(e =>
+      `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-top:1px solid var(--border);font-size:12px">
+        <span style="color:var(--accent);font-weight:600;min-width:36px">${Math.round(e.minutes/6)/10}ч</span>
+        <span style="flex:1;color:var(--text-muted)">${escapeHtml(e.spent_at?.slice(0,10))} ${escapeHtml(e.worker_name||'')}</span>
+        <span style="color:var(--text-muted);font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(e.note||'')}</span>
+        <button class="text-button" data-del-tl="${e.id}" style="font-size:10px;color:var(--text-muted)">✕</button>
+      </div>`
+    ).join('') : '<p style="font-size:11px;color:var(--text-muted);margin:4px 0">Нет записей.</p>';
+    list.querySelectorAll('[data-del-tl]').forEach(b => {
+      b.addEventListener('click', async () => {
+        await apiFetch(`/api/v1/projects/${projId}/work-items/${wiId}/time-log/${b.dataset.delTl}/delete`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+        });
+        refreshList();
+      });
+    });
+  }
+
+  // Add form
+  const addRow = document.createElement('div');
+  addRow.style.cssText = 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap';
+  addRow.innerHTML = `
+    <input type="number" id="tl-min" min="1" placeholder="мин" style="width:60px;background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:4px;padding:5px;font-size:12px;color:var(--text)">
+    <input type="text" id="tl-worker" placeholder="Исполнитель" style="flex:1;background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:4px;padding:5px;font-size:12px;color:var(--text)">
+    <input type="date" id="tl-date" style="background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:4px;padding:5px;font-size:12px;color:var(--text)">
+    <input type="text" id="tl-note" placeholder="Заметка" style="flex:1;background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:4px;padding:5px;font-size:12px;color:var(--text)">
+  `;
+  addRow.querySelector('#tl-date').value = new Date().toISOString().slice(0,10);
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '＋ Записать'; addBtn.className = 'button ghost';
+  addBtn.style.cssText = 'font-size:12px;width:100%;margin-top:4px';
+  addBtn.addEventListener('click', async () => {
+    const min = parseInt(addRow.querySelector('#tl-min').value || '0');
+    if (!min || min <= 0) { toast('Укажите минуты'); return; }
+    await apiFetch(`/api/v1/projects/${projId}/work-items/${wiId}/time-log`, {
+      method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({
+        minutes: min,
+        workerName: addRow.querySelector('#tl-worker').value || '',
+        note: addRow.querySelector('#tl-note').value || '',
+        spentAt: addRow.querySelector('#tl-date').value || null,
+      }),
+    });
+    addRow.querySelector('#tl-min').value = '';
+    addRow.querySelector('#tl-note').value = '';
+    refreshList();
+  });
+  popup.appendChild(addRow); popup.appendChild(addBtn);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.style.cssText = 'position:absolute;top:8px;right:10px;background:none;border:none;font-size:14px;color:var(--text-muted);cursor:pointer';
+  closeBtn.addEventListener('click', () => popup.remove());
+  popup.appendChild(closeBtn);
+
+  document.body.appendChild(popup);
+  refreshList();
   const dismiss = (ev) => { if (!popup.contains(ev.target) && ev.target !== anchorBtn) { popup.remove(); document.removeEventListener('mousedown', dismiss); } };
   setTimeout(() => document.addEventListener('mousedown', dismiss), 100);
 }
