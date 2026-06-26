@@ -4120,8 +4120,10 @@ container.innerHTML = `<header class="detail-header"><div><a href="#projects">�
             <option value="milestone">Вехи</option>
           </select>
           <button class="button ghost" id="activityRefreshBtn" type="button" style="font-size:11px">↻</button>
+          <button class="button ghost" id="timeReportBtn" type="button" style="font-size:11px" title="Отчёт по времени">⏱ Отчёт</button>
         </div>
       </div>
+      <div id="projectTimeReport" style="display:none;margin-bottom:16px"></div>
       <div id="projectActivityFeed" class="activity-feed"><p class="empty-copy">Загрузка…</p></div>
       <div class="comment-compose" id="commentCompose">
         <textarea id="commentBody" rows="2" maxlength="4000" placeholder="Оставьте комментарий… (@упоминание поддерживается)" style="width:100%;resize:vertical;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;box-sizing:border-box"></textarea>
@@ -4478,6 +4480,49 @@ container.innerHTML = `<header class="detail-header"><div><a href="#projects">�
   hydrateProjectComments(project.id);
   hydrateProjectStandup(project.id);
   document.getElementById('activityTypeFilter')?.addEventListener('change', () => hydrateProjectActivity(project.id));
+  document.getElementById('timeReportBtn')?.addEventListener('click', async () => {
+    const panel = document.getElementById('projectTimeReport');
+    if (!panel) return;
+    if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+    panel.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    panel.style.display = '';
+    try {
+      const { entries = [] } = await apiFetch(`/api/v1/projects/${project.id}/time-log?days=30`).then(r => r.json());
+      if (!entries.length) { panel.innerHTML = '<p class="empty-copy" style="font-size:12px">Нет записей за 30 дней.</p>'; return; }
+      const byWorker = new Map();
+      const byWI = new Map();
+      let total = 0;
+      for (const e of entries) {
+        total += e.minutes;
+        byWorker.set(e.worker_name||'—', (byWorker.get(e.worker_name||'—')||0) + e.minutes);
+        byWI.set(e.wi_title||e.work_item_id, (byWI.get(e.wi_title||e.work_item_id)||0) + e.minutes);
+      }
+      const maxW = Math.max(...byWorker.values());
+      const maxT = Math.max(...byWI.values());
+      const fmt = m => `${Math.round(m/6)/10}ч`;
+      panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:10px">Отчёт по времени · 30 дней · итого ${fmt(total)}</div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap">
+          <div style="flex:1;min-width:140px">
+            <div style="font-size:10px;color:var(--text-muted);font-weight:600;margin-bottom:6px;text-transform:uppercase">По исполнителям</div>
+            ${[...byWorker.entries()].sort((a,b)=>b[1]-a[1]).map(([w,m])=>`
+              <div style="margin-bottom:4px">
+                <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span>${escapeHtml(w)}</span><span style="color:var(--accent)">${fmt(m)}</span></div>
+                <div style="height:4px;background:var(--border);border-radius:2px"><div style="width:${Math.round(m/maxW*100)}%;height:100%;background:var(--accent);border-radius:2px"></div></div>
+              </div>`).join('')}
+          </div>
+          <div style="flex:1;min-width:180px">
+            <div style="font-size:10px;color:var(--text-muted);font-weight:600;margin-bottom:6px;text-transform:uppercase">По задачам (топ 5)</div>
+            ${[...byWI.entries()].sort((a,b)=>b[1]-a[1]).slice(0,5).map(([t,m])=>`
+              <div style="margin-bottom:4px">
+                <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${escapeHtml(t)}</span><span style="color:#4adc84;flex-shrink:0;margin-left:4px">${fmt(m)}</span></div>
+                <div style="height:4px;background:var(--border);border-radius:2px"><div style="width:${Math.round(m/maxT*100)}%;height:100%;background:#4adc84;border-radius:2px"></div></div>
+              </div>`).join('')}
+          </div>
+        </div>
+      </div>`;
+    } catch(e) { panel.innerHTML = `<p class="empty-copy" style="font-size:12px">Ошибка: ${e.message}</p>`; }
+  });
   document.getElementById('activityRefreshBtn')?.addEventListener('click', () => hydrateProjectActivity(project.id));
 }
 
