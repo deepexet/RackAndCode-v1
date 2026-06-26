@@ -5720,6 +5720,54 @@ Rules:
                 skipped += len(items)
         return {"created": len(created), "orders": created, "skipped": skipped}
 
+    # ── Work orders ──────────────────────────────────────────────────────
+    def list_work_orders(self, org: str, status: str | None = None, asset_id: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            q = "SELECT * FROM work_orders WHERE organization_id=?"
+            args: list[Any] = [org]
+            if status: q += " AND status=?"; args.append(status)
+            if asset_id: q += " AND asset_id=?"; args.append(asset_id)
+            q += " ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, due_date NULLS LAST"
+            return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+    def create_work_order(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        title = str(payload.get("title","")).strip()
+        if not title: raise ValueError("title required")
+        now = utc_now(); woid = _uid()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO work_orders (id,organization_id,title,description,status,priority,asset_id,sku_id,warehouse_id,assigned_to,due_date,notes,created_by,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (woid, org, title, str(payload.get("description",""))[:2000],
+                 str(payload.get("status","open")), str(payload.get("priority","medium")),
+                 payload.get("assetId"), payload.get("skuId"), payload.get("warehouseId"),
+                 str(payload.get("assignedTo","")), payload.get("dueDate"),
+                 str(payload.get("notes","")), str(payload.get("createdBy","")), now, now)
+            )
+            row = conn.execute("SELECT * FROM work_orders WHERE id=?", (woid,)).fetchone()
+        return dict(row)
+
+    def update_work_order(self, org: str, wo_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM work_orders WHERE id=? AND organization_id=?", (wo_id, org)).fetchone()
+            if not row: raise LookupError("Work order not found")
+            now = utc_now()
+            new_status = str(payload.get("status", row["status"]))
+            completed_at = now if new_status == "done" and row["status"] != "done" else row["completed_at"]
+            conn.execute(
+                "UPDATE work_orders SET title=?,description=?,status=?,priority=?,assigned_to=?,due_date=?,notes=?,completed_at=?,updated_at=? "
+                "WHERE id=? AND organization_id=?",
+                (str(payload.get("title", row["title"])).strip() or row["title"],
+                 str(payload.get("description", row["description"]))[:2000],
+                 new_status, str(payload.get("priority", row["priority"])),
+                 str(payload.get("assignedTo", row["assigned_to"])),
+                 payload.get("dueDate", row["due_date"]),
+                 str(payload.get("notes", row["notes"])),
+                 completed_at, now, wo_id, org)
+            )
+            row = conn.execute("SELECT * FROM work_orders WHERE id=?", (wo_id,)).fetchone()
+        return dict(row)
+
     # ── Cycle counts ─────────────────────────────────────────────────────
     def list_cycle_counts(self, org: str, warehouse_id: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -9440,6 +9488,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Work orders: GET /api/v1/work-orders
+        if path == "/api/v1/work-orders":
+            if not self._require_permission("projectRead"): return
+            status_f = self.query_params.get("status",[None])[0]
+            asset_f = self.query_params.get("assetId",[None])[0]
+            self._json(HTTPStatus.OK, {"workOrders": self.store.list_work_orders(self.organization_id, status_f, asset_f)}); return
+        if path.startswith("/api/v1/work-orders/") and len(path.strip("/").split("/")) == 4:
+            wo_id = path.strip("/").split("/")[3]
+            if not self._require_permission("projectRead"): return
+            orders = self.store.list_work_orders(self.organization_id)
+            wo = next((o for o in orders if o["id"] == wo_id), None)
+            if not wo: self._error(HTTPStatus.NOT_FOUND, "not_found", "Work order not found"); return
+            self._json(HTTPStatus.OK, {"workOrder": wo}); return
         # Cycle counts: GET /api/v1/inventory/cycle-counts  and /:id
         if sub == "cycle-counts":
             if not self._require_permission("projectRead"): return
@@ -10880,6 +10941,23 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 except (ValueError, LookupError) as e:
                     status2 = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status2, "invalid_request", str(e)); return
+        # Work orders POST: /api/v1/work-orders and /:id/update
+        if path == "/api/v1/work-orders":
+            if not self._require_permission("projectManage"): return
+            try:
+                wo = self.store.create_work_order(self.organization_id, self._read_json())
+                self._json(HTTPStatus.CREATED, {"workOrder": wo}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+        wo_parts = path.strip("/").split("/")
+        if len(wo_parts) == 5 and wo_parts[2] == "work-orders" and wo_parts[4] == "update":
+            if not self._require_permission("projectManage"): return
+            try:
+                wo = self.store.update_work_order(self.organization_id, wo_parts[3], self._read_json())
+                self._json(HTTPStatus.OK, {"workOrder": wo}); return
+            except (ValueError, LookupError, json.JSONDecodeError) as e:
+                status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(e)); return
         # Webhooks POST endpoints
         if path == "/api/v1/webhooks":
             if not self._require_permission("adminPanel"): return

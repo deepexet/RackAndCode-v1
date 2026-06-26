@@ -57,7 +57,7 @@
       <span class="brand-mark">V</span>
       <span><strong>RackPilot</strong><small>by Valeronix</small></span>
     </a>
-    <nav class="primary-nav" aria-label="Platform navigation"><a href="#overview" data-route-link="overview" data-i18n="NAV_OVERVIEW">Overview</a><a href="#projects" data-route-link="projects" data-i18n="NAV_PROJECTS">Projects</a><a href="#inventory" data-route-link="inventory">Склад</a><a href="#tech" data-route-link="tech" data-i18n="NAV_TECH">Field</a><a href="#logs" data-route-link="logs" data-i18n="NAV_LOGS">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin" data-i18n="NAV_ADMIN">Admin</a></nav>
+    <nav class="primary-nav" aria-label="Platform navigation"><a href="#overview" data-route-link="overview" data-i18n="NAV_OVERVIEW">Overview</a><a href="#projects" data-route-link="projects" data-i18n="NAV_PROJECTS">Projects</a><a href="#inventory" data-route-link="inventory">Склад</a><a href="#work-orders" data-route-link="work-orders">Наряды</a><a href="#tech" data-route-link="tech" data-i18n="NAV_TECH">Field</a><a href="#logs" data-route-link="logs" data-i18n="NAV_LOGS">Logs</a><a href="#api" data-route-link="api">API</a><a href="#admin" data-route-link="admin" data-i18n="NAV_ADMIN">Admin</a></nav>
     <div class="header-right">
       <div class="global-search-wrap" style="position:relative">
         <input id="globalSearchInput" type="search" placeholder="⌕ Поиск…" autocomplete="off"
@@ -433,6 +433,23 @@
 
       <input type="file" id="invXlsxInput" accept=".xlsx" style="display:none">
       <input type="file" id="invPhotoInput" accept="image/*" capture="environment" style="display:none">
+    </section>
+
+    <section class="app-view" data-view="work-orders" id="work-orders">
+      <header class="page-header">
+        <div><p class="eyebrow">MAINTENANCE</p><h1>Наряды на работы</h1><p>Наряды на техническое обслуживание, ремонт и осмотры оборудования и складских позиций.</p></div>
+        <div style="display:flex;gap:8px">
+          <select id="woStatusFilter" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+            <option value="">Все статусы</option>
+            <option value="open">Открытые</option>
+            <option value="in_progress">В работе</option>
+            <option value="done">Выполнено</option>
+            <option value="cancelled">Отменено</option>
+          </select>
+          <button class="button primary" id="addWorkOrderBtn" type="button">＋ Наряд</button>
+        </div>
+      </header>
+      <div id="workOrdersList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;padding:0 20px 20px"></div>
     </section>
 
     <section class="app-view logs-page" data-view="logs" id="logs">

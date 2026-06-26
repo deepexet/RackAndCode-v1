@@ -637,6 +637,7 @@ function renderRoute() {
   $('#projectsListView')?.classList.toggle('hidden', Boolean(selectedProjectId));
   $('#projectDetailView')?.classList.toggle('hidden', !selectedProjectId);
   if (selectedProjectId) selectedLocationId ? renderLocationDetail() : renderProjectDetail();
+  if (route === 'work-orders') hydrateWorkOrders();
   if (route === 'logs') hydrateLogs();
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') { hydrateGrowthChart(); hydrateOverviewKpi(); hydrateOverviewSla(); }
@@ -3795,6 +3796,88 @@ async function hydrateOverviewSla() {
     }).join('');
     section.style.display = '';
   } catch { section.style.display = 'none'; }
+}
+
+async function hydrateWorkOrders() {
+  const el = document.getElementById('workOrdersList');
+  if (!el) return;
+  const STATUS_COLOR = { open: '#4f8ef7', in_progress: '#e8a84c', done: '#4adc84', cancelled: '#778195' };
+  const STATUS_LABEL = { open: 'Открыт', in_progress: 'В работе', done: 'Готово', cancelled: 'Отменён' };
+  const PRI_COLOR = { critical: '#f46', high: '#e8a84c', medium: '#4f8ef7', low: '#778195' };
+
+  async function load() {
+    const status = document.getElementById('woStatusFilter')?.value || '';
+    const r = await apiFetch(`/api/v1/work-orders${status ? `?status=${status}` : ''}`).catch(() => null);
+    if (!r?.ok) { el.innerHTML = '<p class="empty-copy">Ошибка загрузки нарядов.</p>'; return; }
+    const { workOrders = [] } = await r.json();
+    if (!workOrders.length) {
+      el.innerHTML = '<p class="empty-copy" style="padding:20px">Нет нарядов. Нажмите ＋ Наряд чтобы создать.</p>';
+      return;
+    }
+    el.innerHTML = workOrders.map(wo => {
+      const sColor = STATUS_COLOR[wo.status] || '#778195';
+      const pColor = PRI_COLOR[wo.priority] || '#778195';
+      const overdue = wo.due_date && wo.status !== 'done' && wo.status !== 'cancelled' && wo.due_date < new Date().toISOString().slice(0,10);
+      return `<div style="background:var(--surface);border:1px solid ${overdue?'#f46':sColor}40;border-left:3px solid ${sColor};border-radius:10px;padding:14px 16px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">
+          <strong style="font-size:13px;flex:1">${escapeHtml(wo.title)}</strong>
+          <span style="font-size:10px;padding:2px 7px;border-radius:8px;background:${sColor}20;color:${sColor};white-space:nowrap;font-weight:600">${STATUS_LABEL[wo.status]||wo.status}</span>
+        </div>
+        ${wo.description ? `<p style="font-size:12px;color:var(--text-muted);margin:0 0 8px">${escapeHtml(wo.description.slice(0,120))}${wo.description.length>120?'…':''}</p>` : ''}
+        <div style="display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--text-muted)">
+          <span style="color:${pColor};font-weight:600">↑ ${wo.priority}</span>
+          ${wo.assigned_to ? `<span>👤 ${escapeHtml(wo.assigned_to)}</span>` : ''}
+          ${wo.due_date ? `<span style="color:${overdue?'#f46':'var(--text-muted)'}">📅 ${wo.due_date}${overdue?' ⚠':''}</span>` : ''}
+          ${wo.completed_at ? `<span style="color:#4adc84">✓ ${wo.completed_at.slice(0,10)}</span>` : ''}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="button ghost wo-edit" data-wo='${JSON.stringify({id:wo.id,title:wo.title,status:wo.status,priority:wo.priority,assignedTo:wo.assigned_to,dueDate:wo.due_date||'',notes:wo.notes||''}).replace(/'/g,"&#39;")}' style="font-size:11px">✎ Изменить</button>
+          ${wo.status !== 'done' && wo.status !== 'cancelled' ? `<button class="button ghost wo-done" data-wo-id="${wo.id}" style="font-size:11px;color:#4adc84">✓ Готово</button>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    el.querySelectorAll('.wo-done').forEach(btn => btn.addEventListener('click', async () => {
+      const r2 = await apiFetch(`/api/v1/work-orders/${btn.dataset.woId}/update`, {
+        method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ status: 'done' }),
+      });
+      if (r2.ok) { toast('✓ Наряд закрыт'); load(); }
+      else toast('Ошибка');
+    }));
+
+    el.querySelectorAll('.wo-edit').forEach(btn => btn.addEventListener('click', async () => {
+      const wo = JSON.parse(btn.dataset.wo.replace(/&#39;/g,"'"));
+      const title = prompt('Название:', wo.title); if (!title?.trim()) return;
+      const status = prompt('Статус (open/in_progress/done/cancelled):', wo.status) || wo.status;
+      const priority = prompt('Приоритет (low/medium/high/critical):', wo.priority) || wo.priority;
+      const assignedTo = prompt('Назначен:', wo.assignedTo) ?? wo.assignedTo;
+      const dueDate = prompt('Срок (YYYY-MM-DD или пусто):', wo.dueDate) ?? wo.dueDate;
+      const r2 = await apiFetch(`/api/v1/work-orders/${wo.id}/update`, {
+        method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ title: title.trim(), status, priority, assignedTo, dueDate: dueDate || null }),
+      });
+      if (r2.ok) { toast('Сохранено'); load(); }
+      else toast(`Ошибка: ${(await r2.json()).error?.message || r2.status}`);
+    }));
+  }
+
+  document.getElementById('woStatusFilter')?.addEventListener('change', load);
+  document.getElementById('addWorkOrderBtn')?.addEventListener('click', async () => {
+    const title = prompt('Название наряда:'); if (!title?.trim()) return;
+    const description = prompt('Описание (необязательно):') || '';
+    const priority = prompt('Приоритет (low/medium/high/critical):', 'medium') || 'medium';
+    const assignedTo = prompt('Назначен (имя / ID):') || '';
+    const dueDate = prompt('Срок (YYYY-MM-DD или пусто):') || '';
+    const r = await apiFetch('/api/v1/work-orders', {
+      method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ title: title.trim(), description, priority, assignedTo, dueDate: dueDate||null }),
+    });
+    if (r.ok) { toast('Наряд создан'); load(); }
+    else toast(`Ошибка: ${(await r.json()).error?.message || r.status}`);
+  });
+
+  await load();
 }
 
 async function hydrateGrowthChart() {
