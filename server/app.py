@@ -4126,11 +4126,14 @@ Rules:
         except Exception: d["tags"] = []
         return d
 
-    def update_sku(self, org: str, sku_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_sku(self, org: str, sku_id: str, payload: dict[str, Any],
+                    actor: str = "") -> dict[str, Any]:
         with self._connect() as conn:
-            if not conn.execute("SELECT 1 FROM inventory_skus WHERE id=? AND organization_id=?",
-                                (sku_id, org)).fetchone():
+            existing = conn.execute("SELECT * FROM inventory_skus WHERE id=? AND organization_id=?",
+                                    (sku_id, org)).fetchone()
+            if not existing:
                 raise LookupError("SKU not found")
+            old_cost = existing["unit_cost"]
             fields, params = [], []
             for key, col in [("name","name"),("skuCode","sku_code"),("description","description"),
                               ("category","category"),("unit","unit"),("unitCost","unit_cost"),
@@ -4149,6 +4152,15 @@ Rules:
             params += [sku_id, org]
             conn.execute(f"UPDATE inventory_skus SET {', '.join(fields)} WHERE id=? AND organization_id=?", params)
             row = conn.execute("SELECT * FROM inventory_skus WHERE id=?", (sku_id,)).fetchone()
+            # Record cost change if unitCost was updated
+            if "unitCost" in payload:
+                new_cost = payload["unitCost"]
+                if new_cost != old_cost:
+                    conn.execute(
+                        "INSERT INTO sku_cost_history(id,organization_id,sku_id,old_cost,new_cost,changed_by,created_at) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (_uid(), org, sku_id, old_cost, new_cost, actor, now)
+                    )
         d = dict(row)
         try: d["tags"] = json.loads(d.get("tags") or "[]")
         except Exception: d["tags"] = []
@@ -8451,6 +8463,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if sub == "suppliers":
                 include_inactive = self.query_params.get("includeInactive",["0"])[0] == "1"
                 self._json(HTTPStatus.OK, {"suppliers": self.store.list_suppliers(org, include_inactive)}); return
+            if sub == "skus" and len(parts) == 7 and parts[6] == "cost-history":
+                sku_id = parts[5]
+                with self.store._connect() as conn:
+                    rows = conn.execute(
+                        "SELECT * FROM sku_cost_history WHERE sku_id=? AND organization_id=? ORDER BY created_at DESC LIMIT 50",
+                        (sku_id, org)
+                    ).fetchall()
+                self._json(HTTPStatus.OK, {"history": [dict(r) for r in rows]}); return
             if sub == "skus" and len(parts) == 6 and parts[5] == "label":
                 # Printable label for a SKU: GET /api/v1/inventory/skus/:id/label
                 sku_id = parts[4]
@@ -9516,7 +9536,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     sku_id = parts[5]; action = parts[6]
                     if not self._require_permission("projectManage"): return
                     if action == "update":
-                        sku = self.store.update_sku(org, sku_id, self._read_json())
+                        sku = self.store.update_sku(org, sku_id, self._read_json(), actor=self.current_role)
                         self._json(HTTPStatus.OK, {"sku": sku}); return
                     else:
                         self.store.delete_sku(org, sku_id)

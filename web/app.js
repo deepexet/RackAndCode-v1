@@ -7466,6 +7466,7 @@ async function _loadSkuCatalog() {
             data-sku-barcode="${escapeHtml(s.barcode||'')}"
             style="font-size:11px">✏</button>
           <button class="text-button" data-sku-label="${s.id}" style="font-size:11px" title="Печать этикетки">🏷</button>
+          <button class="text-button" data-sku-cost-hist="${s.id}" style="font-size:11px;color:var(--text-muted)" title="История цены">📈</button>
           <button class="text-button" data-sku-del="${s.id}" style="font-size:11px;color:var(--text-muted)">✕</button>
         </td>
       </tr>`).join('')}</tbody>
@@ -7496,6 +7497,20 @@ async function _loadSkuCatalog() {
     list.querySelectorAll('[data-sku-label]').forEach(btn => {
       btn.addEventListener('click', () => {
         window.open(`/api/v1/inventory/skus/${btn.dataset.skuLabel}/label`, '_blank', 'width=400,height=300');
+      });
+    });
+
+    list.querySelectorAll('[data-sku-cost-hist]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const skuId = btn.dataset.skuCostHist;
+        try {
+          const { history = [] } = await apiFetch(`/api/v1/inventory/skus/${skuId}/cost-history`).then(r => r.json());
+          if (!history.length) { toast('История цен пуста'); return; }
+          const rows = history.map(h =>
+            `${h.created_at.slice(0,10)}: ${h.old_cost??'—'} → ${h.new_cost} (${escapeHtml(h.changed_by||'—')})`
+          ).join('\n');
+          alert(`История изменений цены:\n\n${rows}`);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
       });
     });
 
