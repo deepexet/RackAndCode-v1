@@ -4340,6 +4340,58 @@ Rules:
             "createdAt": now,
         }
 
+    def batch_record_movements(self, org: str, items: list[dict[str, Any]],
+                               source: str = "manual") -> dict[str, Any]:
+        """Record multiple movements in a single transaction. All or nothing."""
+        if not items:
+            raise ValueError("items list is empty")
+        if len(items) > 200:
+            raise ValueError("Batch size exceeds 200 items")
+        results = []
+        errors = []
+        with self._connect() as conn:
+            for idx, item in enumerate(items):
+                try:
+                    warehouse_id = str(item.get("warehouseId", ""))
+                    sku_id = str(item.get("skuId", ""))
+                    movement_type = str(item.get("movementType", "receive"))
+                    quantity = item.get("quantity")
+                    if not warehouse_id or not sku_id:
+                        raise ValueError("warehouseId and skuId required")
+                    if not isinstance(quantity, (int, float)) or quantity == 0:
+                        raise ValueError("quantity must be a non-zero number")
+                    if movement_type not in ("receive","issue","transfer","adjustment","return","loss"):
+                        raise ValueError(f"Invalid movement type: {movement_type}")
+                    delta = float(quantity)
+                    if movement_type in ("issue", "loss"):
+                        delta = -abs(delta)
+                    else:
+                        delta = abs(delta)
+                    if not conn.execute("SELECT 1 FROM warehouses WHERE id=? AND organization_id=?", (warehouse_id, org)).fetchone():
+                        raise LookupError("Warehouse not found")
+                    if not conn.execute("SELECT 1 FROM inventory_skus WHERE id=? AND organization_id=?", (sku_id, org)).fetchone():
+                        raise LookupError("SKU not found")
+                    now = utc_now(); mid = _uid()
+                    conn.execute(
+                        "INSERT INTO inventory_stock (id,organization_id,warehouse_id,sku_id,quantity,reserved,updated_at) "
+                        "VALUES (?,?,?,?,MAX(0,?),0,?) "
+                        "ON CONFLICT(warehouse_id,sku_id) DO UPDATE SET quantity=MAX(0,quantity+?),updated_at=?",
+                        (_uid(), org, warehouse_id, sku_id, delta, now, delta, now),
+                    )
+                    conn.execute(
+                        "INSERT INTO inventory_movements "
+                        "(id,organization_id,warehouse_id,sku_id,movement_type,quantity,reference,note,recorded_by,source,source_ref,created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (mid, org, warehouse_id, sku_id, movement_type, abs(delta),
+                         str(item.get("reference",""))[:120], str(item.get("note",""))[:500],
+                         str(item.get("recordedBy",""))[:120], source, None, now),
+                    )
+                    results.append({"index": idx, "id": mid, "skuId": sku_id, "delta": delta})
+                except (ValueError, LookupError) as e:
+                    errors.append({"index": idx, "error": str(e)})
+                    raise  # re-raise to roll back entire transaction
+        return {"created": len(results), "movements": results}
+
     def transfer_stock(self, org: str, from_warehouse_id: str, to_warehouse_id: str,
                        sku_id: str, quantity: float, reference: str = "",
                        note: str = "", recorded_by: str | None = None) -> dict[str, Any]:
@@ -9517,6 +9569,16 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._json(HTTPStatus.CREATED, {"sku": sku}); return
                 if sub == "movements":
                     if not self._require_permission("projectManage"): return
+                    if len(parts) == 7 and parts[6] == "batch":
+                        payload = self._read_json()
+                        items = payload.get("items") if isinstance(payload, dict) else None
+                        if not isinstance(items, list):
+                            self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "items array required"); return
+                        try:
+                            result = self.store.batch_record_movements(org, items)
+                            self._json(HTTPStatus.CREATED, result); return
+                        except (ValueError, LookupError) as e:
+                            self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
                     result = self.store.record_movement(org, self._read_json())
                     self._json(HTTPStatus.CREATED, result); return
                 if sub == "pending" and len(parts) == 7 and parts[6] in ("approve","reject"):

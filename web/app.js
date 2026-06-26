@@ -8042,6 +8042,52 @@ function _bindInventoryEvents() {
   document.getElementById('invQuickIssueBtn')?.addEventListener('click', () => _quickMovementTyped('issue'));
   document.getElementById('invWriteOffBtn')?.addEventListener('click', () => _quickMovementTyped('loss'));
 
+  document.getElementById('invBatchMoveBtn')?.addEventListener('click', async () => {
+    const movementType = prompt('Тип операции (receive/issue/loss/adjustment/return):', 'receive');
+    if (!movementType?.trim()) return;
+    const warehouseId = _invSelectedWarehouse || prompt('ID склада:');
+    if (!warehouseId?.trim()) return;
+    const ref = prompt('Номер накладной / ссылка (необязательно):', '') ?? '';
+    const note = prompt('Описание (необязательно):', '') ?? '';
+    const rawLines = prompt(
+      'Введите строки в формате "skuCode qty" или "skuId qty" (одна на строку):\n\nПример:\nSKU-001 10\nSKU-002 5.5'
+    );
+    if (!rawLines?.trim()) return;
+    const lines = rawLines.trim().split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    // Resolve sku codes to ids
+    try {
+      toast(`Пакетная операция: ${lines.length} позиций…`);
+      const { skus = [] } = await apiFetch('/api/v1/inventory/skus').then(r => r.json());
+      const skuByCode = new Map(skus.map(s => [s.sku_code.toLowerCase(), s.id]));
+      const skuById = new Map(skus.map(s => [s.id, s.id]));
+      const items = [];
+      const parseErrors = [];
+      for (const line of lines) {
+        const parts = line.split(/\s+/);
+        if (parts.length < 2) { parseErrors.push(`Пропущено: "${line}"`); continue; }
+        const [code, qtyStr] = parts;
+        const qty = parseFloat(qtyStr);
+        if (isNaN(qty) || qty === 0) { parseErrors.push(`Неверное кол-во: "${line}"`); continue; }
+        const skuId = skuByCode.get(code.toLowerCase()) || skuById.get(code) || null;
+        if (!skuId) { parseErrors.push(`SKU не найден: "${code}"`); continue; }
+        items.push({ warehouseId, skuId, movementType, quantity: qty, reference: ref, note });
+      }
+      if (parseErrors.length) {
+        if (!confirm(`Ошибки парсинга (${parseErrors.length}):\n${parseErrors.join('\n')}\n\nПродолжить с ${items.length} позиций?`)) return;
+      }
+      if (!items.length) { toast('Нет корректных позиций'); return; }
+      const r = await apiFetch('/api/v1/inventory/movements/batch', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ items }),
+      });
+      const res = await r.json();
+      if (!r.ok) { toast(`Ошибка: ${res.error?.message || r.status}`); return; }
+      toast(`✓ Создано ${res.created} движений`);
+      _loadInventoryStock(); _loadHistory();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
   document.getElementById('invSuppliersBtn')?.addEventListener('click', () => {
     const panel = document.getElementById('inventorySuppliersPanel');
     const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
