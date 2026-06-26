@@ -5640,6 +5640,72 @@ Rules:
             row = conn.execute("SELECT * FROM inventory_lots WHERE id=?", (lid,)).fetchone()
         return dict(row)
 
+    def list_wi_templates(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM work_item_templates WHERE organization_id=? ORDER BY name", (org,)
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["checklistItems"] = json.loads(r["checklist_items"] or "[]")
+            result.append(d)
+        return result
+
+    def create_wi_template(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        name = str(payload.get("name","")).strip()
+        if not name: raise ValueError("Template name required")
+        now = utc_now(); tid = _uid()
+        checklist = json.dumps(payload.get("checklistItems", []))
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO work_item_templates (id,organization_id,name,title_template,description,priority,estimated_minutes,work_type_code,checklist_items,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (tid, org, name, str(payload.get("titleTemplate",""))[:200],
+                 str(payload.get("description",""))[:2000],
+                 str(payload.get("priority","medium")),
+                 payload.get("estimatedMinutes"),
+                 str(payload.get("workTypeCode",""))[:50],
+                 checklist, now, now)
+            )
+            row = conn.execute("SELECT * FROM work_item_templates WHERE id=?", (tid,)).fetchone()
+        d = dict(row)
+        d["checklistItems"] = payload.get("checklistItems", [])
+        return d
+
+    def delete_wi_template(self, org: str, template_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM work_item_templates WHERE id=? AND organization_id=?", (template_id, org))
+
+    def apply_wi_template(self, org: str, project_id: str, template_id: str,
+                          overrides: dict[str, Any], actor: str = "") -> dict[str, Any]:
+        """Create a work item from a template, with optional overrides."""
+        with self._connect() as conn:
+            tmpl = conn.execute("SELECT * FROM work_item_templates WHERE id=? AND organization_id=?",
+                                (template_id, org)).fetchone()
+            if not tmpl: raise LookupError("Template not found")
+        title = overrides.get("title") or tmpl["title_template"] or tmpl["name"]
+        payload = {
+            "title": title,
+            "description": overrides.get("description", tmpl["description"]),
+            "priority": overrides.get("priority", tmpl["priority"]),
+            "estimatedMinutes": overrides.get("estimatedMinutes", tmpl["estimated_minutes"]),
+            "buildingId": overrides.get("buildingId"),
+            "stageId": overrides.get("stageId"),
+            "assigneeUserId": overrides.get("assigneeUserId"),
+            "dueDate": overrides.get("dueDate"),
+        }
+        wi = self.create_work_item(org, project_id, payload)
+        # Add checklist items
+        checklist = json.loads(tmpl["checklist_items"] or "[]")
+        if checklist:
+            for item_title in checklist:
+                try:
+                    self.add_checklist_item(org, wi["id"], str(item_title))
+                except Exception:
+                    pass
+        return wi
+
     def list_org_labels(self, org: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -9013,6 +9079,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # WI Templates: GET /api/v1/wi-templates
+        if path == "/api/v1/wi-templates":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"templates": self.store.list_wi_templates(self.organization_id)}); return
         # Org labels: GET /api/v1/labels
         if path == "/api/v1/labels":
             if not self._require_permission("projectRead"): return
@@ -10299,6 +10369,34 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # WI Templates: POST /api/v1/wi-templates, /wi-templates/:id/delete, /wi-templates/:id/apply
+        if path == "/api/v1/wi-templates":
+            if not self._require_permission("projectManage"): return
+            try:
+                tmpl = self.store.create_wi_template(self.organization_id, self._read_json())
+                self._json(HTTPStatus.CREATED, {"template": tmpl}); return
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err)); return
+        if len(parts) == 5 and parts[3] == "wi-templates" and parts[4] == "delete":
+            if not self._require_permission("projectManage"): return
+            self.store.delete_wi_template(self.organization_id, parts[3]); self._json(HTTPStatus.OK, {"deleted": True}); return
+        if len(parts) == 5 and parts[3] == "wi-templates" and parts[5] in ("delete","apply"):
+            template_id = parts[4]; action = parts[5]
+            if not self._require_permission("projectManage"): return
+            if action == "delete":
+                self.store.delete_wi_template(self.organization_id, template_id)
+                self._json(HTTPStatus.OK, {"deleted": True}); return
+            if action == "apply":
+                try:
+                    payload = self._read_json()
+                    project_id = str(payload.get("projectId",""))
+                    if not project_id: raise ValueError("projectId required")
+                    wi = self.store.apply_wi_template(self.organization_id, project_id, template_id,
+                                                      payload, actor=self.current_role)
+                    self._json(HTTPStatus.CREATED, {"workItem": wi}); return
+                except (ValueError, LookupError, json.JSONDecodeError) as err:
+                    status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                    self._error(status, "invalid_request", str(err)); return
         # Org labels: POST /api/v1/labels  and /labels/:id/delete
         if path == "/api/v1/labels":
             if not self._require_permission("projectManage"): return

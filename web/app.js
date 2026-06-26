@@ -641,7 +641,7 @@ function renderRoute() {
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') { hydrateGrowthChart(); hydrateOverviewKpi(); }
   if (route === 'inventory') { hydrateInventory(); }
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels(),hydrateWiTemplatesAdmin()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -1297,6 +1297,51 @@ async function hydrateLabels() {
     });
     if (r.ok) { toast('Метка создана'); hydrateLabels(); }
     else toast(`Ошибка: ${(await r.json()).error?.message || r.status}`);
+  });
+}
+
+async function hydrateWiTemplatesAdmin() {
+  document.getElementById('addWiTemplateBtn')?.addEventListener('click', async () => {
+    const name = prompt('Название шаблона:'); if (!name?.trim()) return;
+    const titleTemplate = prompt('Заголовок задачи по умолчанию (можно пустой):') || '';
+    const description = prompt('Описание по умолчанию (можно пустой):') || '';
+    const priority = prompt('Приоритет (low/medium/high/critical):', 'medium') || 'medium';
+    const estMin = parseInt(prompt('Оценка в минутах (0 = не задано):', '0') || '0');
+    const checklistRaw = prompt('Пункты чеклиста через | (можно пустой):') || '';
+    const checklistItems = checklistRaw ? checklistRaw.split('|').map(s => s.trim()).filter(Boolean) : [];
+    const r = await apiFetch('/api/v1/wi-templates', {
+      method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ name: name.trim(), titleTemplate, description, priority,
+        estimatedMinutes: estMin || null, checklistItems }),
+    });
+    if (r.ok) { toast('Шаблон создан'); hydrateWiTemplatesAdmin(); }
+    else toast(`Ошибка: ${(await r.json()).error?.message || r.status}`);
+  });
+
+  const el = document.getElementById('wiTemplatesList');
+  if (!el) return;
+  const r = await apiFetch('/api/v1/wi-templates').catch(() => null);
+  if (!r?.ok) { el.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; return; }
+  const { templates = [] } = await r.json();
+  if (!templates.length) { el.innerHTML = '<p class="empty-copy" style="font-size:12px">Нет шаблонов. Нажмите + чтобы добавить.</p>'; return; }
+  el.innerHTML = templates.map(t => `
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+      <div style="flex:1">
+        <strong style="font-size:13px">${escapeHtml(t.name)}</strong>
+        ${t.title_template ? `<span style="font-size:11px;color:var(--text-muted)"> — ${escapeHtml(t.title_template)}</span>` : ''}
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+          Приоритет: ${t.priority}${t.estimated_minutes ? ` · ${Math.round(t.estimated_minutes/60*10)/10}ч` : ''}
+          ${t.checklistItems?.length ? ` · ${t.checklistItems.length} пунктов` : ''}
+        </div>
+      </div>
+      <button class="button ghost" data-del-wi-template="${t.id}" style="font-size:11px;color:#f46">✕</button>
+    </div>`).join('');
+  el.querySelectorAll('[data-del-wi-template]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Удалить шаблон?')) return;
+      const r2 = await apiFetch(`/api/v1/wi-templates/${btn.dataset.delWiTemplate}/delete`, { method:'POST', headers:apiHeaders() });
+      if (r2.ok) { toast('Удалён'); hydrateWiTemplatesAdmin(); }
+    });
   });
 }
 
@@ -3849,7 +3894,7 @@ function renderProjects(unavailable = false) {
       </div>
       <ol class="project-stages">${stages}</ol>
       <button class="button project-open" type="button" data-open-project="${project.id}">Открыть проект →</button>
-      ${project.kind === 'customer' ? `<footer class="project-actions"><button class="button ghost" type="button" data-permission="projectManage" data-add-building="${project.id}">＋ Здание</button><button class="button ghost" type="button" data-permission="projectManage" data-add-work-item="${project.id}">＋ Полевая задача</button></footer>` : '<footer class="project-boundary">Внутренний проект · полевые операции отключены</footer>'}
+      ${project.kind === 'customer' ? `<footer class="project-actions"><button class="button ghost" type="button" data-permission="projectManage" data-add-building="${project.id}">＋ Здание</button><button class="button ghost" type="button" data-permission="projectManage" data-add-work-item="${project.id}">＋ Задача</button><button class="button ghost" type="button" data-permission="projectManage" data-add-wi-from-template="${project.id}" style="font-size:11px">📋 Из шаблона</button></footer>` : '<footer class="project-boundary">Внутренний проект · полевые операции отключены</footer>'}
       ${workItems.length ? `<div class="work-items-preview"><div class="preview-title"><span>FIELD WORKFLOW</span><b>${workItems.length}</b></div>${workItems.slice(-5).reverse().map(item => {
         const blockedBy = item.blockedBy || [];
         const allowed = [item.status, ...(WORK_ITEM_TRANSITIONS[item.status] || [])].filter(status => !blockedBy.length || !['progress','review','testing','done'].includes(status));
@@ -3863,8 +3908,32 @@ function renderProjects(unavailable = false) {
   }).join('');
   portfolio.querySelectorAll('[data-add-building]').forEach(button => button.addEventListener('click', () => openBuildingDialog(button.dataset.addBuilding)));
   portfolio.querySelectorAll('[data-add-work-item]').forEach(button => button.addEventListener('click', () => openWorkItemDialog(button.dataset.addWorkItem)));
+  portfolio.querySelectorAll('[data-add-wi-from-template]').forEach(button => button.addEventListener('click', () => _openWiFromTemplate(button.dataset.addWiFromTemplate)));
   portfolio.querySelectorAll('[data-work-item-status]').forEach(select => select.addEventListener('change', updateWorkItemStatus));
   portfolio.querySelectorAll('[data-open-project]').forEach(button => button.addEventListener('click', () => { location.hash = `project/${encodeURIComponent(button.dataset.openProject)}`; }));
+}
+
+async function _openWiFromTemplate(projectId) {
+  const r = await apiFetch('/api/v1/wi-templates').catch(() => null);
+  if (!r?.ok) { toast('Шаблоны недоступны'); return; }
+  const { templates = [] } = await r.json();
+  if (!templates.length) { toast('Нет шаблонов. Создайте их в Настройках.'); return; }
+  const list = templates.map((t, i) => `${i + 1}. ${t.name}${t.title_template ? ` — "${t.title_template}"` : ''}`).join('\n');
+  const idx = parseInt(prompt(`Выберите шаблон (номер):\n${list}`) || '0') - 1;
+  if (idx < 0 || idx >= templates.length) return;
+  const tmpl = templates[idx];
+  const title = prompt('Заголовок задачи:', tmpl.title_template || tmpl.name);
+  if (!title?.trim()) return;
+  try {
+    const res = await apiFetch(`/api/v1/wi-templates/${tmpl.id}/apply`, {
+      method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ projectId, title: title.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(`Ошибка: ${data.error?.message || res.status}`); return; }
+    toast(`✓ Задача "${title.trim()}" создана`);
+    await loadProjects();
+  } catch (e) { toast(`Ошибка: ${e.message}`); }
 }
 
 function _locationCompletionPct(project, locationIds) {
