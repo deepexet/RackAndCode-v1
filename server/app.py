@@ -9753,6 +9753,35 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             skill = self.query_params.get("skill",[""])[0]
             level = self.query_params.get("minLevel",["basic"])[0]
             self._json(HTTPStatus.OK, {"members": self.store.find_skilled_members(self.organization_id, skill, level)}); return
+        # Inventory valuation: GET /api/v1/inventory/valuation
+        if path == "/api/v1/inventory/valuation":
+            if not self._require_permission("projectRead"): return
+            org = self.organization_id
+            with self.store._connect() as conn:
+                rows = conn.execute(
+                    "SELECT s.sku_id, sk.sku_code, sk.name, sk.unit, sk.unit_cost, sk.category, "
+                    "s.warehouse_id, w.name as warehouse_name, s.quantity, "
+                    "COALESCE(sk.unit_cost,0)*s.quantity as value "
+                    "FROM inventory_stock s "
+                    "JOIN inventory_skus sk ON sk.id=s.sku_id "
+                    "JOIN warehouses w ON w.id=s.warehouse_id "
+                    "WHERE s.organization_id=? AND s.quantity>0 "
+                    "ORDER BY value DESC",
+                    (org,)
+                ).fetchall()
+                total = sum(r["value"] for r in rows)
+                by_cat = {}
+                for r in rows:
+                    c = r["category"] or "Без категории"
+                    by_cat.setdefault(c, {"category": c, "totalValue": 0.0, "skuCount": 0})
+                    by_cat[c]["totalValue"] += r["value"]
+                    by_cat[c]["skuCount"] += 1
+            self._json(HTTPStatus.OK, {
+                "lines": [dict(r) for r in rows],
+                "totalValue": total,
+                "byCategory": sorted(by_cat.values(), key=lambda x: -x["totalValue"]),
+                "currency": "RUB",
+            }); return
         # Inventory alerts dashboard: GET /api/v1/inventory/alerts
         if path == "/api/v1/inventory/alerts":
             if not self._require_permission("projectRead"): return

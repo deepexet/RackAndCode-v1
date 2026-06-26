@@ -4354,7 +4354,7 @@ function renderProjectDetail() {
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
   const projTags = (project.tags||'').split(',').filter(Boolean).map(t=>`<span style="display:inline-block;background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:10px;padding:1px 7px;font-size:10px;color:var(--text-secondary);margin-right:4px">#${escapeHtml(t)}</span>`).join('');
-container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p>${projTags ? `<div style="margin-top:6px">${projTags}</div>` : ''}</div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="editProjectMetaBtn" type="button" title="Редактировать проект">✎ Проект</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/calendar.ics" download="${encodeURIComponent(project.code||project.id)}.ics" title="Скачать вехи как iCal (.ics)">📅 iCal</a><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/report.html" target="_blank" title="Открыть HTML-отчёт проекта">📄 Отчёт</a><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="activityFeedBtn" type="button" title="Журнал активности проекта">📜 Активность</button><button class="button ghost" id="riskMatrixBtn" type="button" title="Матрица рисков проекта">⚠ Риски</button><button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p>${projTags ? `<div style="margin-top:6px">${projTags}</div>` : ''}</div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="editProjectMetaBtn" type="button" title="Редактировать проект">✎ Проект</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/calendar.ics" download="${encodeURIComponent(project.code||project.id)}.ics" title="Скачать вехи как iCal (.ics)">📅 iCal</a><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/report.html" target="_blank" title="Открыть HTML-отчёт проекта">📄 Отчёт</a><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="ganttBtn" type="button" title="Диаграмма Ганта по вехам">📅 Гант</button><button class="button ghost" id="activityFeedBtn" type="button" title="Журнал активности проекта">📜 Активность</button><button class="button ghost" id="riskMatrixBtn" type="button" title="Матрица рисков проекта">⚠ Риски</button><button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis">${(() => {
       const now = Date.now();
       const week = 7 * 86400000;
@@ -4605,6 +4605,82 @@ container.innerHTML = `<header class="detail-header"><div><a href="#projects">�
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
 
   container.querySelector('#smartNoteBtn')?.addEventListener('click', () => openFieldNoteDialog(project.id));
+
+  container.querySelector('#ganttBtn')?.addEventListener('click', async () => {
+    const pid = selectedProjectId;
+    const r = await apiFetch(`/api/v1/projects/${pid}/milestones`).catch(() => null);
+    const { milestones = [] } = r?.ok ? await r.json() : {};
+    if (!milestones.length) { toast('Нет вех для отображения'); return; }
+    const existing = document.getElementById('ganttOverlay');
+    if (existing) existing.remove();
+    // Calculate date range
+    const dates = milestones.flatMap(m => [m.target_date, m.completed_at].filter(Boolean));
+    const today = new Date().toISOString().slice(0,10);
+    dates.push(today);
+    const minDate = new Date(dates.reduce((a,b) => a < b ? a : b));
+    const maxDate = new Date(dates.reduce((a,b) => a > b ? a : b));
+    // Add padding
+    minDate.setDate(minDate.getDate() - 7);
+    maxDate.setDate(maxDate.getDate() + 14);
+    const totalDays = Math.ceil((maxDate - minDate) / 86400000);
+    const W = 640; const H = Math.max(160, milestones.length * 36 + 60);
+    const chartW = W - 160; // leave 160px for labels
+    function xOf(dateStr) {
+      const d = new Date(dateStr);
+      return 160 + Math.round((d - minDate) / 86400000 / totalDays * chartW);
+    }
+    const todayX = xOf(today);
+    // Build month grid lines
+    const monthLines = [];
+    const cur = new Date(minDate); cur.setDate(1);
+    while (cur <= maxDate) {
+      const x = xOf(cur.toISOString().slice(0,10));
+      monthLines.push(`<line x1="${x}" y1="30" x2="${x}" y2="${H}" stroke="var(--border)" stroke-width="1"/>`);
+      monthLines.push(`<text x="${x+3}" y="24" font-size="9" fill="var(--text-muted)">${cur.toLocaleDateString('ru',{month:'short',year:'2-digit'})}</text>`);
+      cur.setMonth(cur.getMonth()+1);
+    }
+    const STATUS_C = { pending:'#778195', in_progress:'#4f8ef7', done:'#4adc84', blocked:'#f46' };
+    const bars = milestones.map((m, i) => {
+      const y = 40 + i * 36;
+      const tx = xOf(m.target_date || today);
+      const cx = m.completed_at ? xOf(m.completed_at) : null;
+      const color = STATUS_C[m.status] || '#778195';
+      return [
+        `<text x="155" y="${y+13}" font-size="10" fill="var(--text)" text-anchor="end" clip-path="url(#lbl)">${escapeHtml((m.name||m.title||'').slice(0,20))}</text>`,
+        `<circle cx="${tx}" cy="${y+8}" r="6" fill="${color}" stroke="var(--bg)" stroke-width="2"/>`,
+        cx ? `<circle cx="${cx}" cy="${y+8}" r="5" fill="#4adc84" stroke="var(--bg)" stroke-width="2"/>` : '',
+        cx ? `<line x1="${Math.min(tx,cx)}" y1="${y+8}" x2="${Math.max(tx,cx)}" y2="${y+8}" stroke="#4adc84" stroke-width="2"/>` : '',
+        `<title>${escapeHtml(m.name||m.title||'')} · ${m.target_date||'?'} · ${m.status}</title>`,
+      ].join('');
+    });
+    const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%;display:block">
+      <defs><clipPath id="lbl"><rect x="0" y="0" width="155" height="${H}"/></clipPath></defs>
+      <rect width="${W}" height="${H}" fill="var(--bg)" rx="6"/>
+      ${monthLines.join('')}
+      <line x1="${todayX}" y1="0" x2="${todayX}" y2="${H}" stroke="#4f8ef7" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <text x="${todayX+3}" y="14" font-size="9" fill="#4f8ef7">Сегодня</text>
+      ${bars.join('')}
+    </svg>`;
+    const overlay = document.createElement('div');
+    overlay.id = 'ganttOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:700px;max-height:85vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
+          <h3 style="margin:0;font-size:14px">📅 Диаграмма Ганта · ${milestones.length} вех</h3>
+          <button id="ganttDismiss" class="button ghost" style="font-size:11px">✕</button>
+        </div>
+        <div style="flex:1;overflow:auto;padding:14px 16px">${svgContent}
+          <div style="margin-top:10px;display:flex;gap:12px;font-size:10px">
+            ${Object.entries(STATUS_C).map(([s,c])=>`<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${c};margin-right:3px"></span>${s}</span>`).join('')}
+            <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4adc84;margin-right:3px"></span>done</span>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#ganttDismiss')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  });
 
   container.querySelector('#activityFeedBtn')?.addEventListener('click', async () => {
     const pid = selectedProjectId;
@@ -9173,6 +9249,74 @@ function _bindInventoryEvents() {
       </div>`;
     document.body.appendChild(overlay);
     overlay.querySelector('#invAlertsDismiss')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  });
+
+  document.getElementById('invValuationBtn')?.addEventListener('click', async () => {
+    const r = await apiFetch('/api/v1/inventory/valuation').catch(() => null);
+    if (!r?.ok) { toast('Ошибка загрузки данных'); return; }
+    const { lines = [], totalValue = 0, byCategory = [], currency = 'RUB' } = await r.json();
+    const existing = document.getElementById('valuationOverlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'valuationOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    const fmt = (n) => Number(n||0).toLocaleString('ru', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    const barMax = byCategory[0]?.totalValue || 1;
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:660px;max-height:88vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)">
+          <div>
+            <h3 style="margin:0;font-size:14px">💰 Оценка запасов</h3>
+            <p style="margin:2px 0 0;font-size:12px;color:var(--text-muted)">Метод: средневзвешенная стоимость · ${lines.length} позиций</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <strong style="font-size:18px;color:var(--accent)">${fmt(totalValue)} ${currency}</strong>
+            <button id="valDismiss" class="button ghost" style="font-size:11px">✕</button>
+          </div>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:14px 18px">
+          <p style="font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.08em;margin:0 0 10px">ПО КАТЕГОРИЯМ</p>
+          ${byCategory.map(c => {
+            const pct = totalValue > 0 ? Math.round(c.totalValue/totalValue*100) : 0;
+            const barW = Math.round(c.totalValue/barMax*100);
+            return `<div style="margin-bottom:8px">
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+                <span>${escapeHtml(c.category)}</span>
+                <span style="color:var(--text-muted)">${fmt(c.totalValue)} ${currency} · ${pct}%</span>
+              </div>
+              <div style="height:5px;background:var(--border);border-radius:3px">
+                <div style="height:100%;border-radius:3px;background:#4f8ef7;width:${barW}%"></div>
+              </div>
+            </div>`;
+          }).join('')}
+          <hr style="border:none;border-top:1px solid var(--border);margin:14px 0">
+          <p style="font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.08em;margin:0 0 10px">ТОП ПОЗИЦИИ ПО СТОИМОСТИ</p>
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead>
+              <tr style="color:var(--text-muted)">
+                <th style="text-align:left;padding:4px 0;border-bottom:1px solid var(--border)">SKU</th>
+                <th style="text-align:left;padding:4px 0;border-bottom:1px solid var(--border)">Склад</th>
+                <th style="text-align:right;padding:4px 0;border-bottom:1px solid var(--border)">Кол-во</th>
+                <th style="text-align:right;padding:4px 0;border-bottom:1px solid var(--border)">Цена</th>
+                <th style="text-align:right;padding:4px 0;border-bottom:1px solid var(--border)">Стоимость</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${lines.slice(0,30).map(l => `<tr>
+                <td style="padding:4px 0;border-bottom:1px solid var(--border)"><strong>${escapeHtml(l.sku_code)}</strong><br><span style="color:var(--text-muted)">${escapeHtml(l.name)}</span></td>
+                <td style="padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-muted)">${escapeHtml(l.warehouse_name)}</td>
+                <td style="padding:4px 0;border-bottom:1px solid var(--border);text-align:right">${Number(l.quantity||0).toLocaleString()}</td>
+                <td style="padding:4px 0;border-bottom:1px solid var(--border);text-align:right">${fmt(l.unit_cost)}</td>
+                <td style="padding:4px 0;border-bottom:1px solid var(--border);text-align:right;color:#4f8ef7"><strong>${fmt(l.value)}</strong></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+          ${lines.length > 30 ? `<p style="font-size:10px;color:var(--text-muted);margin-top:8px">...и ещё ${lines.length-30} позиций</p>` : ''}
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#valDismiss')?.addEventListener('click', () => overlay.remove());
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   });
 
