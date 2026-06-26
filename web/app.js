@@ -3976,7 +3976,10 @@ function renderProjectDetail() {
     <section class="detail-section" id="milestonesSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">ROADMAP</p><h2>Вехи проекта</h2></div>
-        ${canManage ? `<button class="button ghost" id="addMilestoneBtn" type="button" style="font-size:12px">＋ Веха</button>` : ''}
+        <div style="display:flex;gap:6px">
+          <button class="button ghost" id="exportMilestonesBtn" type="button" style="font-size:12px" title="Экспорт вех в CSV">⬇ CSV</button>
+          ${canManage ? `<button class="button ghost" id="addMilestoneBtn" type="button" style="font-size:12px">＋ Веха</button>` : ''}
+        </div>
       </div>
       <div id="milestonesList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
     </section>
@@ -4325,6 +4328,19 @@ function renderProjectDetail() {
   setupWorkItemsBulkList(project);
   hydrateProjectWorkload(project.id);
   hydrateMilestones(project.id);
+  container.querySelector('#exportMilestonesBtn')?.addEventListener('click', async () => {
+    try {
+      const r = await apiFetch(`/api/v1/projects/${project.id}/milestones`);
+      const { milestones = [] } = await r.json();
+      if (!milestones.length) { toast('Нет вех для экспорта'); return; }
+      const rows = [['id','name','status','target_date','description']];
+      milestones.forEach(m => rows.push([m.id, m.name, m.status, m.target_date, m.description||'']));
+      const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `milestones-${project.code||project.id}.csv` });
+      a.click(); URL.revokeObjectURL(a.href);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
   setupIssuesPanel(project.id);
   hydrateBudgetWidget(project.id);
   hydrateReservations(project.id);
@@ -5057,6 +5073,13 @@ function setupWorkItemsBulkList(project) {
             `<option value="${s}" ${(wi.status||'')==s?'selected':''}>${s}</option>`
           ).join('')}
         </select>
+        <select class="wi-priority-sel" data-wi-pri-id="${wi.id}" data-wi-pri-ver="${wi.version}"
+          style="padding:3px 6px;font-size:10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:${{critical:'#e05353',high:'#e09800',medium:'var(--accent)',low:'var(--text-muted)'}[wi.priority]||'var(--text-muted)'};cursor:pointer;flex-shrink:0"
+          aria-label="Приоритет">
+          ${['low','medium','high','critical'].map(p =>
+            `<option value="${p}" ${(wi.priority||'')==p?'selected':''}>${p}</option>`
+          ).join('')}
+        </select>
         <button class="text-button wi-date-btn" data-wi-date-id="${wi.id}" data-wi-ver="${wi.version}"
           data-wi-start="${wi.startDate||''}" data-wi-due="${wi.dueDate||''}"
           style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0" title="Даты">📅</button>
@@ -5084,6 +5107,28 @@ function setupWorkItemsBulkList(project) {
           sel.style.color = STATUS_COLOR[newStatus] || '#556';
           toast(`Статус → ${newStatus}`);
         } catch(e) { toast(`Ошибка: ${e.message}`); sel.value = sel.dataset.wiVer ? /* prev */ sel.value : newStatus; }
+      });
+    });
+
+    const PRI_COLOR_MAP = {critical:'#e05353',high:'#e09800',medium:'var(--accent)',low:'var(--text-muted)'};
+    listEl.querySelectorAll('.wi-priority-sel').forEach(sel => {
+      sel.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const wiId = sel.dataset.wiPriId;
+        const ver = parseInt(sel.dataset.wiPriVer);
+        const newPri = sel.value;
+        try {
+          const r = await apiFetch(`/api/v1/projects/${project.id}/work-items/${wiId}`, {
+            method: 'PUT', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ priority: newPri, expectedVersion: ver }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          const updated = await r.json();
+          const wi = (project.workItems||[]).find(w => w.id === wiId);
+          if (wi) { wi.priority = newPri; wi.version = updated.version || ver+1; sel.dataset.wiPriVer = wi.version; }
+          sel.style.color = PRI_COLOR_MAP[newPri] || 'var(--text-muted)';
+          toast(`Приоритет → ${newPri}`);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
       });
     });
 
