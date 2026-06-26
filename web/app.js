@@ -5300,6 +5300,27 @@ async function hydrateBudgetWidget(projectId) {
         })() : '<p class="empty-copy" style="font-size:13px">Расходов нет.</p>'}
       </div>`;
 
+    // Budget forecast panel
+    try {
+      const rf = await apiFetch(`/api/v1/projects/${projectId}/budget/forecast`);
+      const f = await rf.json();
+      const cpiColor = f.cpi == null ? '#778195' : f.cpi >= 1 ? '#4adc84' : f.cpi >= 0.8 ? '#e8a84c' : '#f46';
+      const exhColor = !f.exhaustionDate ? '#778195' : f.targetDate && f.exhaustionDate > f.targetDate ? '#f46' : '#4adc84';
+      el.insertAdjacentHTML('beforeend', `
+        <div style="margin-top:14px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px">
+          <p style="font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.08em;margin:0 0 10px">ПРОГНОЗ БЮДЖЕТА</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px">
+            <div><div style="font-size:10px;color:var(--text-muted)">Расход/день (30д)</div><strong style="font-size:15px">${f.dailyBurnRate?.toLocaleString() ?? '—'}</strong></div>
+            <div><div style="font-size:10px;color:var(--text-muted)">Дата исчерпания</div><strong style="font-size:13px;color:${exhColor}">${f.exhaustionDate ?? '∞'}</strong></div>
+            <div><div style="font-size:10px;color:var(--text-muted)">WI выполнено</div><strong style="font-size:15px">${f.wiCompletionPct ?? 0}%</strong></div>
+            <div><div style="font-size:10px;color:var(--text-muted)">CPI (эфф.бюджета)</div><strong style="font-size:15px;color:${cpiColor}">${f.cpi ?? '—'}</strong></div>
+          </div>
+          ${f.cpi != null ? `<p style="font-size:11px;color:${cpiColor};margin:8px 0 0">
+            ${f.cpi >= 1 ? '✓ Укладываемся в бюджет (CPI ≥ 1)' : f.cpi >= 0.8 ? '⚠ Небольшое превышение (CPI < 1)' : '⚠ Значительное превышение бюджета (CPI < 0.8)'}
+          </p>` : ''}
+        </div>`);
+    } catch { /* forecast unavailable */ }
+
     document.getElementById('addExpenseBtn')?.addEventListener('click', async () => {
       const category = prompt('Категория (materials/labour/equipment/other):', 'materials') || 'other';
       const desc = prompt('Описание расхода:') || '';
@@ -8250,6 +8271,7 @@ async function _loadSkuCatalog() {
             style="font-size:11px">✏</button>
           <button class="text-button" data-sku-label="${s.id}" style="font-size:11px" title="Печать этикетки">🏷</button>
           <button class="text-button" data-sku-cost-hist="${s.id}" style="font-size:11px;color:var(--text-muted)" title="История цены">📈</button>
+          <button class="text-button" data-sku-transfer="${s.id}" data-sku-name="${escapeHtml(s.name)}" data-sku-code="${escapeHtml(s.sku_code)}" style="font-size:11px;color:var(--text-muted)" title="Перемещение между складами">↔</button>
           <button class="text-button" data-sku-del="${s.id}" style="font-size:11px;color:var(--text-muted)">✕</button>
         </td>
       </tr>`).join('')}</tbody>
@@ -8293,6 +8315,38 @@ async function _loadSkuCatalog() {
             `${h.created_at.slice(0,10)}: ${h.old_cost??'—'} → ${h.new_cost} (${escapeHtml(h.changed_by||'—')})`
           ).join('\n');
           alert(`История изменений цены:\n\n${rows}`);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+
+    list.querySelectorAll('[data-sku-transfer]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const skuId = btn.dataset.skuTransfer;
+        const skuLabel = `${btn.dataset.skuCode} — ${btn.dataset.skuName}`;
+        const whRes = await apiFetch('/api/v1/inventory/warehouses').catch(() => null);
+        if (!whRes?.ok) { toast('Ошибка загрузки складов'); return; }
+        const { warehouses = [] } = await whRes.json();
+        if (warehouses.length < 2) { toast('Нужно минимум 2 склада'); return; }
+        const whList = warehouses.map((w, i) => `${i+1}. ${w.name}`).join('\n');
+        const fromIdx = parseInt(prompt(`Перемещение: ${skuLabel}\nОткуда (номер):\n${whList}`) || '0') - 1;
+        if (fromIdx < 0 || fromIdx >= warehouses.length) return;
+        const toIdx = parseInt(prompt(`Куда (номер):\n${whList}`) || '0') - 1;
+        if (toIdx < 0 || toIdx >= warehouses.length || toIdx === fromIdx) { toast('Неверный склад назначения'); return; }
+        const qty = parseFloat(prompt('Количество:') || '0');
+        if (!qty || qty <= 0) { toast('Неверное количество'); return; }
+        const note = prompt('Примечание (необязательно):') || '';
+        try {
+          const r = await apiFetch('/api/v1/inventory/transfer', {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({
+              fromWarehouseId: warehouses[fromIdx].id,
+              toWarehouseId: warehouses[toIdx].id,
+              skuId, quantity: qty, note,
+            }),
+          });
+          const data = await r.json();
+          if (r.ok) { toast(`✓ Перемещено ${qty} ед. со склада "${warehouses[fromIdx].name}" на "${warehouses[toIdx].name}"`); _loadSkuCatalog(); }
+          else toast(`Ошибка: ${data.error?.message || r.status}`);
         } catch(e) { toast(`Ошибка: ${e.message}`); }
       });
     });

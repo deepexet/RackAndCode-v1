@@ -5093,6 +5093,55 @@ Rules:
             row = conn.execute("SELECT * FROM project_expenses WHERE id=?", (eid,)).fetchone()
         return dict(row)
 
+    def get_budget_forecast(self, org: str, project_id: str) -> dict[str, Any]:
+        """Compute burn rate from last 30 days and forecast budget exhaustion date."""
+        import datetime as _dt
+        summary = self.get_budget_summary(org, project_id)
+        with self._connect() as conn:
+            proj = conn.execute(
+                "SELECT start_date, target_date FROM projects WHERE organization_id=? AND id=?", (org, project_id)
+            ).fetchone()
+            cutoff30 = (_dt.date.today() - _dt.timedelta(days=30)).isoformat()
+            last30 = conn.execute(
+                "SELECT SUM(amount) as total FROM project_expenses "
+                "WHERE organization_id=? AND project_id=? AND expense_date>=?",
+                (org, project_id, cutoff30)
+            ).fetchone()
+        spent_30d = (last30["total"] or 0) if last30 else 0
+        daily_burn = spent_30d / 30 if spent_30d > 0 else 0
+        remaining = summary.get("remaining")
+        budget = summary.get("budgetAmount")
+        today = _dt.date.today()
+        if daily_burn > 0 and remaining is not None and remaining > 0:
+            days_until_exhaustion = int(remaining / daily_burn)
+            exhaustion_date = (today + _dt.timedelta(days=days_until_exhaustion)).isoformat()
+        else:
+            days_until_exhaustion = None
+            exhaustion_date = None
+        # Project completion % by spent vs budget
+        completion_pct_by_spend = round(summary["totalSpent"] / budget * 100, 1) if budget else None
+        # WI completion
+        with self._connect() as conn:
+            wi_counts = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM project_work_items WHERE organization_id=? AND project_id=? GROUP BY status",
+                (org, project_id)
+            ).fetchall()
+        total_wi = sum(r["cnt"] for r in wi_counts); done_wi = sum(r["cnt"] for r in wi_counts if r["status"] == "done")
+        wi_completion_pct = round(done_wi / total_wi * 100, 1) if total_wi else 0
+        # Cost efficiency index (CPI): WI% / spend%
+        cpi = round(wi_completion_pct / completion_pct_by_spend, 2) if completion_pct_by_spend else None
+        return {
+            **summary,
+            "dailyBurnRate": round(daily_burn, 2),
+            "spentLast30d": round(spent_30d, 2),
+            "daysUntilExhaustion": days_until_exhaustion,
+            "exhaustionDate": exhaustion_date,
+            "targetDate": proj["target_date"] if proj else None,
+            "wiCompletionPct": wi_completion_pct,
+            "spendCompletionPct": completion_pct_by_spend,
+            "cpi": cpi,  # >1 under budget for work done; <1 over budget
+        }
+
     def set_project_budget(self, org: str, project_id: str, amount: float | None, currency: str = "USD") -> None:
         with self._connect() as conn:
             result = conn.execute(
@@ -9457,6 +9506,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._json(HTTPStatus.OK, {"stock": stock, "movements": movements})
                 return
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Unknown inventory route"); return
+        # Budget forecast: GET /api/v1/projects/:id/budget/forecast
+        if path.startswith("/api/v1/projects/") and len(parts) == 7 and parts[5] == "budget" and parts[6] == "forecast":
+            if not self._require_permission("projectRead"): return
+            try:
+                self._json(HTTPStatus.OK, self.store.get_budget_forecast(self.organization_id, parts[4])); return
+            except LookupError as e:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", str(e)); return
         # Budget: GET /api/v1/projects/:id/budget  and  /expenses
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "budget":
             if not self._require_permission("projectRead"): return
