@@ -8325,7 +8325,7 @@ function _bindInventoryEvents() {
     el.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
     const whParam = _invSelectedWarehouse ? `?warehouseId=${_invSelectedWarehouse}` : '';
     try {
-      const { byCategory = [], topMoving = [] } = await apiFetch(`/api/v1/inventory/analytics${whParam}`).then(r => r.json());
+      const { byCategory = [], topMoving = [], abc = [], abcSummary = {} } = await apiFetch(`/api/v1/inventory/analytics${whParam}`).then(r => r.json());
       const totalValue = byCategory.reduce((s, c) => s + (c.total_value || 0), 0);
       const CAT_PALETTE = ['#4f8ef7','#4adc84','#e8a84c','#a78bfa','#f46','#22d3ee','#e05353','#f0f'];
       el.innerHTML = `
@@ -8360,7 +8360,39 @@ function _bindInventoryEvents() {
               </div>`).join('') : '<p class="empty-copy" style="font-size:12px">Нет движений за 30 дней</p>'}
           </div>
         </div>
-        <p style="font-size:11px;color:var(--text-muted);margin:0">Итого стоимость запасов: <strong>${totalValue.toLocaleString()}</strong></p>`;
+        <p style="font-size:11px;color:var(--text-muted);margin:0 0 16px">Итого стоимость запасов: <strong>${totalValue.toLocaleString()}</strong></p>
+        ${abc.length ? `
+        <p style="font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.08em;margin:0 0 10px">ABC-АНАЛИЗ (по списаниям)</p>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          ${['A','B','C'].map(cls => {
+            const colors = {A:'#4adc84',B:'#e8a84c',C:'#f46'};
+            const descs = {A:'≤80% оборота',B:'80-95%',C:'>95%'};
+            return `<div style="flex:1;background:var(--surface);border:1px solid ${colors[cls]}40;border-left:3px solid ${colors[cls]};border-radius:8px;padding:8px 12px;text-align:center">
+              <div style="font-size:20px;font-weight:700;color:${colors[cls]}">${abcSummary[cls]||0}</div>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:2px">Класс ${cls} · ${descs[cls]}</div>
+            </div>`;
+          }).join('')}
+        </div>
+        <div style="max-height:220px;overflow-y:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead><tr style="color:var(--text-muted)">
+              <th style="text-align:left;padding:3px 6px">SKU</th>
+              <th style="text-align:left;padding:3px 6px">Название</th>
+              <th style="text-align:right;padding:3px 6px">Оборот</th>
+              <th style="text-align:center;padding:3px 6px">Класс</th>
+            </tr></thead>
+            <tbody>${abc.map(r => {
+              const col = {A:'#4adc84',B:'#e8a84c',C:'#f46'}[r.class]||'#778';
+              return `<tr style="border-top:1px solid var(--border)">
+                <td style="padding:3px 6px;font-family:monospace">${escapeHtml(r.skuCode)}</td>
+                <td style="padding:3px 6px">${escapeHtml(r.name)}</td>
+                <td style="padding:3px 6px;text-align:right">${r.issuedValue.toLocaleString()}</td>
+                <td style="padding:3px 6px;text-align:center;color:${col};font-weight:700">${r.class}</td>
+              </tr>`;
+            }).join('')}</tbody>
+          </table>
+        </div>` : ''}
+      `;
     } catch(e) { el.innerHTML = `<p class="empty-copy">${e.message}</p>`; }
   }
 

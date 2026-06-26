@@ -9230,9 +9230,34 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         f"GROUP BY m.sku_id ORDER BY total_moved DESC LIMIT 5",
                         params_m + [since30]
                     ).fetchall()
+                # ABC analysis: classify SKUs by cumulative % of total issued value
+                abc_rows = conn.execute(
+                    f"SELECT s.id, s.sku_code, s.name, s.category, "
+                    f"SUM(m.quantity * COALESCE(s.unit_cost,0)) as issued_value "
+                    f"FROM inventory_movements m JOIN inventory_skus s ON s.id=m.sku_id AND s.organization_id=m.organization_id "
+                    f"WHERE {where_m} AND m.movement_type IN ('issue','loss','transfer') "
+                    f"GROUP BY m.sku_id ORDER BY issued_value DESC",
+                    params_m
+                ).fetchall()
+                total_abc = sum(r["issued_value"] or 0 for r in abc_rows)
+                abc_result: list[dict[str, Any]] = []
+                cumulative = 0.0
+                for r in abc_rows:
+                    v = r["issued_value"] or 0
+                    cumulative += v
+                    pct = (cumulative / total_abc * 100) if total_abc > 0 else 0
+                    cls = "A" if pct <= 80 else "B" if pct <= 95 else "C"
+                    abc_result.append({"skuCode": r["sku_code"], "name": r["name"], "category": r["category"],
+                                       "issuedValue": round(v, 2), "class": cls})
                 self._json(HTTPStatus.OK, {
                     "byCategory": [dict(r) for r in cat_rows],
                     "topMoving": [dict(r) for r in top_rows],
+                    "abc": abc_result[:50],
+                    "abcSummary": {
+                        "A": sum(1 for r in abc_result if r["class"] == "A"),
+                        "B": sum(1 for r in abc_result if r["class"] == "B"),
+                        "C": sum(1 for r in abc_result if r["class"] == "C"),
+                    }
                 })
                 return
             if sub == "reconciliations":
