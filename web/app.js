@@ -3983,6 +3983,15 @@ function renderProjectDetail() {
       </div>
       <div id="milestonesList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
     </section>
+    <section class="detail-section" id="risksSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">УПРАВЛЕНИЕ РИСКАМИ</p><h2>Реестр рисков</h2></div>
+        <div style="display:flex;gap:6px">
+          ${canManage ? `<button class="button ghost" id="addRiskBtn" type="button" style="font-size:12px">＋ Риск</button>` : ''}
+        </div>
+      </div>
+      <div id="risksList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="standupSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">ЕЖЕДНЕВНО</p><h2>Стендап — ${new Date().toLocaleDateString('ru-RU')}</h2></div>
@@ -4342,6 +4351,7 @@ function renderProjectDetail() {
     } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
   setupIssuesPanel(project.id);
+  hydrateRisks(project.id);
   hydrateBudgetWidget(project.id);
   hydrateReservations(project.id);
   hydrateGantt(project);
@@ -4833,6 +4843,101 @@ async function reloadProjectData(projectId) {
     const idx = projects.findIndex(p => p.id === projectId);
     if (idx !== -1) { projects[idx] = project; renderProjectDetail(); }
   } catch { /* silent */ }
+}
+
+const _RISK_PROB_COLORS = {low:'#4adc84',medium:'#e8a84c',high:'#f46'};
+const _RISK_IMPACT_COLORS = {low:'#4f8ef7',medium:'#e8a84c',high:'#e05353',critical:'#f46'};
+const _RISK_STATUS_LABELS = {open:'Открыт',mitigated:'Снижен',accepted:'Принят',closed:'Закрыт'};
+const _RISK_SCORE = {low:1,medium:2,high:3,critical:4};
+
+async function hydrateRisks(projectId) {
+  const list = document.getElementById('risksList');
+  if (!list) return;
+  const canManage = roleCan('projectManage');
+  try {
+    const { risks = [] } = await apiFetch(`/api/v1/projects/${projectId}/risks`).then(r => r.json());
+    if (!risks.length) {
+      list.innerHTML = '<p class="empty-copy" style="font-size:13px">Рисков нет. Нажмите «＋ Риск» чтобы добавить.</p>';
+    } else {
+      const open = risks.filter(r => r.status === 'open');
+      const rest = risks.filter(r => r.status !== 'open');
+      const sorted = [...open.sort((a,b) => (_RISK_SCORE[b.impact]||0)*(_RISK_SCORE[b.probability]||0) - (_RISK_SCORE[a.impact]||0)*(_RISK_SCORE[a.probability]||0)), ...rest];
+      list.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px">
+        ${sorted.map(risk => {
+          const pc = _RISK_PROB_COLORS[risk.probability] || '#778';
+          const ic = _RISK_IMPACT_COLORS[risk.impact] || '#778';
+          const closed = risk.status !== 'open';
+          return `<div style="background:var(--surface);border:1px solid ${closed ? 'var(--border)' : ic+'44'};border-radius:10px;padding:12px;opacity:${closed ? .6 : 1}">
+            <div style="display:flex;align-items:flex-start;gap:10px">
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                  <strong style="font-size:13px">${escapeHtml(risk.title)}</strong>
+                  <span style="font-size:10px;padding:2px 7px;border-radius:8px;background:${pc}22;color:${pc}">P: ${risk.probability}</span>
+                  <span style="font-size:10px;padding:2px 7px;border-radius:8px;background:${ic}22;color:${ic}">I: ${risk.impact}</span>
+                  <span style="font-size:10px;color:var(--text-muted)">${_RISK_STATUS_LABELS[risk.status]||risk.status}</span>
+                </div>
+                ${risk.description ? `<p style="font-size:12px;color:var(--text-muted);margin:0 0 4px">${escapeHtml(risk.description)}</p>` : ''}
+                ${risk.mitigation ? `<p style="font-size:11px;color:#4adc84;margin:0"><strong>Снижение:</strong> ${escapeHtml(risk.mitigation)}</p>` : ''}
+                ${risk.owner ? `<p style="font-size:11px;color:var(--text-muted);margin:4px 0 0">Ответственный: ${escapeHtml(risk.owner)}</p>` : ''}
+              </div>
+              ${canManage ? `<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
+                <button class="text-button risk-edit-btn" data-risk-id="${risk.id}" style="font-size:11px">✏</button>
+                <button class="text-button risk-del-btn" data-risk-id="${risk.id}" style="font-size:11px;color:#e05353">✕</button>
+              </div>` : ''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+    document.getElementById('addRiskBtn')?.addEventListener('click', async () => {
+      const title = prompt('Название риска:'); if (!title?.trim()) return;
+      const desc = prompt('Описание риска (пусто = нет):') ?? '';
+      const prob = prompt('Вероятность (low/medium/high):', 'medium');
+      if (!['low','medium','high'].includes(prob||'')) { toast('Неверная вероятность'); return; }
+      const impact = prompt('Влияние (low/medium/high/critical):', 'medium');
+      if (!['low','medium','high','critical'].includes(impact||'')) { toast('Неверное влияние'); return; }
+      const mitigation = prompt('Меры снижения (пусто = нет):') ?? '';
+      const owner = prompt('Ответственный (имя, пусто = нет):') ?? '';
+      try {
+        const r = await apiFetch(`/api/v1/projects/${projectId}/risks`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ title: title.trim(), description: desc, probability: prob, impact, mitigation, owner }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+        toast('Риск добавлен'); hydrateRisks(projectId);
+      } catch(e) { toast(`Ошибка: ${e.message}`); }
+    });
+    list.querySelectorAll('.risk-edit-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const rid = btn.dataset.riskId;
+        const risk = risks.find(r => r.id === rid); if (!risk) return;
+        const newStatus = prompt(`Статус (open/mitigated/accepted/closed):\nТекущий: ${risk.status}`, risk.status);
+        if (!newStatus || !_RISK_STATUS_LABELS[newStatus]) return;
+        const newMit = prompt('Меры снижения:', risk.mitigation||'') ?? risk.mitigation;
+        try {
+          const r = await apiFetch(`/api/v1/projects/${projectId}/risks/${rid}/update`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ status: newStatus, mitigation: newMit }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          toast('Риск обновлён'); hydrateRisks(projectId);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+    list.querySelectorAll('.risk-del-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить риск?')) return;
+        const rid = btn.dataset.riskId;
+        try {
+          const r = await apiFetch(`/api/v1/projects/${projectId}/risks/${rid}/delete`, {
+            method: 'POST', headers: apiHeaders({}),
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          toast('Риск удалён'); hydrateRisks(projectId);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+  } catch { list.innerHTML = '<p class="empty-copy" style="font-size:13px">Недоступно.</p>'; }
 }
 
 const _MILESTONE_STATUS_LABELS = {pending:'Ожидается',at_risk:'Под риском',achieved:'Достигнута',missed:'Пропущена'};

@@ -5504,6 +5504,54 @@ Rules:
             )
         return self.get_issue(org, issue_id)  # type: ignore[return-value]
 
+    # ── Risk register ──────────────────────────────────────────────────────────
+    def list_risks(self, org: str, project_id: str, status: str | None = None) -> list[dict[str, Any]]:
+        where = "organization_id=? AND project_id=?"
+        params: list[Any] = [org, project_id]
+        if status:
+            where += " AND status=?"; params.append(status)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM project_risks WHERE {where} ORDER BY created_at DESC", params
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_risk(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        rid = _uid()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_risks(id,organization_id,project_id,title,description,probability,impact,status,mitigation,owner,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, org, project_id, payload["title"], payload.get("description",""),
+                 payload.get("probability","medium"), payload.get("impact","medium"),
+                 "open", payload.get("mitigation",""), payload.get("owner",""), now, now),
+            )
+        return self.get_risk(org, rid)
+
+    def get_risk(self, org: str, risk_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM project_risks WHERE id=? AND organization_id=?", (risk_id, org)).fetchone()
+        return dict(row) if row else None
+
+    def update_risk(self, org: str, risk_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        risk = self.get_risk(org, risk_id)
+        if not risk:
+            raise LookupError("Risk not found")
+        allowed = {"title","description","probability","impact","status","mitigation","owner"}
+        sets = ", ".join(f"{k}=?" for k in payload if k in allowed)
+        vals = [payload[k] for k in payload if k in allowed]
+        if not sets:
+            return risk
+        with self._connect() as conn:
+            conn.execute(f"UPDATE project_risks SET {sets}, updated_at=? WHERE id=? AND organization_id=?",
+                         vals + [utc_now(), risk_id, org])
+        return self.get_risk(org, risk_id)  # type: ignore[return-value]
+
+    def delete_risk(self, org: str, risk_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM project_risks WHERE id=? AND organization_id=?", (risk_id, org))
+
     def list_issues(self, org: str, project_id: str | None = None,
                      status: str | None = None, severity: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -8324,6 +8372,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             project_id = parts[4]
             self._json(HTTPStatus.OK, {"milestones": self.store.list_milestones(self.organization_id, project_id)})
             return
+        # Risk register: GET /api/v1/projects/:id/risks
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "risks":
+            if not self._require_permission("projectRead"): return
+            project_id = parts[4]
+            status_f = self.query_params.get("status", [None])[0]
+            self._json(HTTPStatus.OK, {"risks": self.store.list_risks(self.organization_id, project_id, status_f)})
+            return
         # Scheduled reports: GET /api/v1/admin/scheduled-reports
         if path == "/api/v1/admin/scheduled-reports":
             if not self._require_permission("adminRead"): return
@@ -9489,6 +9544,33 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # Risk register: POST /api/v1/projects/:id/risks  and  /:id/risks/:rid/update|delete
+        if len(parts) >= 6 and parts[3] == "projects" and parts[5] == "risks":
+            project_id = parts[4]
+            if len(parts) == 6:
+                if not self._require_permission("projectManage"): return
+                try:
+                    risk = self.store.create_risk(self.organization_id, project_id, self._read_json())
+                    self.audit(self.organization_id, self.current_user_id, None, "create", "project_risk", risk["id"])
+                    self._json(HTTPStatus.CREATED, {"risk": risk})
+                except (ValueError, KeyError, json.JSONDecodeError) as err:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+                return
+            if len(parts) == 8 and parts[7] in ("update", "delete"):
+                rid = parts[6]
+                if not self._require_permission("projectManage"): return
+                if parts[7] == "delete":
+                    self.store.delete_risk(self.organization_id, rid)
+                    self.audit(self.organization_id, self.current_user_id, None, "delete", "project_risk", rid)
+                    self._json(HTTPStatus.OK, {"deleted": True}); return
+                try:
+                    risk = self.store.update_risk(self.organization_id, rid, self._read_json())
+                    self.audit(self.organization_id, self.current_user_id, None, "update", "project_risk", rid)
+                    self._json(HTTPStatus.OK, {"risk": risk})
+                except (LookupError, ValueError, json.JSONDecodeError) as err:
+                    status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                    self._error(status, "invalid_request", str(err))
+                return
         # Scheduled reports: POST /api/v1/admin/scheduled-reports  and  /:id/delete  and  /:id/run
         if path == "/api/v1/admin/scheduled-reports":
             if not self._require_permission("adminRead"): return
