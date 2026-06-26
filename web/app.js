@@ -6045,7 +6045,7 @@ function setupWorkItemsBulkList(project) {
     if (!selected.size) return;
     const action = prompt(
       `Массовое действие для ${selected.size} задач:\n` +
-      `1 — изменить статус\n2 — назначить исполнителя`,
+      `1 — изменить статус\n2 — назначить исполнителя\n3 — изменить приоритет\n4 — установить срок`,
       '1'
     );
     if (!action) return;
@@ -6082,6 +6082,28 @@ function setupWorkItemsBulkList(project) {
         });
         const { updated } = await r.json();
         toast(`Назначено: ${updated}`);
+      } catch(e) { toast(`Ошибка: ${e.message}`); return; }
+    } else if (action === '3') {
+      const priority = prompt('Приоритет (low/medium/high/critical):', 'medium');
+      if (!priority) return;
+      try {
+        const r = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/work-items/bulk-update`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ ids: [...selected], priority }),
+        });
+        const { updated } = await r.json();
+        toast(`Приоритет изменён: ${updated}`);
+      } catch(e) { toast(`Ошибка: ${e.message}`); return; }
+    } else if (action === '4') {
+      const dueDate = prompt('Срок (YYYY-MM-DD):', new Date().toISOString().slice(0,10));
+      if (!dueDate || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) { toast('Неверный формат даты'); return; }
+      try {
+        const r = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/work-items/bulk-update`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ ids: [...selected], dueDate }),
+        });
+        const { updated } = await r.json();
+        toast(`Срок установлен: ${updated}`);
       } catch(e) { toast(`Ошибка: ${e.message}`); return; }
     }
     selected.clear();

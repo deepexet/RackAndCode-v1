@@ -1946,6 +1946,43 @@ class WorkspaceStore:
                  json.dumps({"predecessorId": predecessor_id}), "{}", now),
             )
 
+    def bulk_update_work_items(self, org: str, project_id: str, item_ids: list[str],
+                               patch: dict[str, Any]) -> dict[str, Any]:
+        """Apply allowed fields (status, priority, assigneeUserId, dueDate) to multiple WIs."""
+        allowed = {"status", "priority", "assigneeUserId", "dueDate"}
+        updates = {k: v for k, v in patch.items() if k in allowed}
+        if not updates: raise ValueError("No valid fields to update")
+        if "status" in updates and updates["status"] not in WORK_ITEM_TRANSITIONS:
+            raise ValueError(f"Invalid status: {updates['status']}")
+        if "priority" in updates and updates["priority"] not in ALLOWED_PRIORITIES:
+            raise ValueError(f"Invalid priority: {updates['priority']}")
+        now = utc_now()
+        updated = 0; errors: list[str] = []
+        with self._lock, self._connect() as conn:
+            for iid in item_ids[:200]:
+                try:
+                    row = conn.execute(
+                        "SELECT status, priority, assignee_user_id, due_date FROM project_work_items "
+                        "WHERE organization_id=? AND project_id=? AND id=?", (org, project_id, iid)
+                    ).fetchone()
+                    if not row: errors.append(f"{iid}: not found"); continue
+                    new_status = updates.get("status", row["status"])
+                    if "status" in updates and new_status != row["status"] and new_status not in WORK_ITEM_TRANSITIONS.get(row["status"], set()):
+                        errors.append(f"{iid}: invalid transition {row['status']}→{new_status}"); continue
+                    conn.execute(
+                        "UPDATE project_work_items SET status=?,priority=?,assignee_user_id=?,due_date=?,updated_at=?,version=version+1 "
+                        "WHERE organization_id=? AND project_id=? AND id=?",
+                        (new_status,
+                         updates.get("priority", row["priority"]),
+                         updates.get("assigneeUserId", row["assignee_user_id"]),
+                         updates.get("dueDate", row["due_date"]),
+                         now, org, project_id, iid)
+                    )
+                    updated += 1
+                except Exception as e:
+                    errors.append(f"{iid}: {e}")
+        return {"updated": updated, "errors": errors}
+
     def update_work_item(self, organization_id: str, project_id: str, item_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         expected_version = payload.get("expectedVersion")
         if not isinstance(expected_version, int) or expected_version < 1:
@@ -10288,6 +10325,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
+        # Bulk update (multi-field): POST /api/v1/projects/:id/work-items/bulk-update
+        if path.startswith("/api/v1/projects/") and len(parts) == 6 and parts[4] == "work-items" and parts[5] == "bulk-update":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                ids: list[str] = payload.get("ids", [])
+                if not ids: self._error(HTTPStatus.BAD_REQUEST, "missing_fields", "ids[] required"); return
+                result = self.store.bulk_update_work_items(self.organization_id, parts[3], ids, payload)
+                self._json(HTTPStatus.OK, result); return
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err)); return
         # Team presence: POST /api/v1/projects/:id/presence
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "presence":
             if not self._require_permission("projectManage"): return
