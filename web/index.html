@@ -247,6 +247,7 @@
           <button class="button ghost" id="invLowStockBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">⚠ Низкий остаток</button>
           <button class="button ghost" id="invMinQtyEditorBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">⚙ Пороги пополнения</button>
           <button class="button ghost" id="invReconcileBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">📋 Инвентаризация</button>
+          <button class="button ghost" id="invAnalyticsBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">📊 Аналитика</button>
           <hr style="border:none;border-top:1px solid var(--border);margin:8px 0">
           <button class="button primary" id="invQuickReceiveBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start">＋ Быстрый приём</button>
           <button class="button ghost" id="invQuickIssueBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">− Быстрый расход</button>
@@ -304,6 +305,18 @@
           </div>
         </div>
         <div id="inventoryLowStockList"></div>
+      </div>
+
+      <!-- Analytics panel -->
+      <div id="inventoryAnalyticsPanel" style="display:none;margin-top:20px">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">СКЛАД</p><h2>Аналитика запасов</h2></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="button ghost" id="invAnalyticsRefreshBtn" type="button" style="font-size:12px">↻</button>
+            <button class="button ghost" id="invAnalyticsCloseBtn" type="button">✕</button>
+          </div>
+        </div>
+        <div id="inventoryAnalyticsContent"></div>
       </div>
 
       <!-- Reconciliation panel -->

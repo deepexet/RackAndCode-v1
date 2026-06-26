@@ -7464,9 +7464,65 @@ function _bindInventoryEvents() {
   }
 
   function _closeAllInvPanels() {
-    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel','inventoryMinQtyPanel','inventoryReconcilePanel']
+    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel','inventoryMinQtyPanel','inventoryReconcilePanel','inventoryAnalyticsPanel']
       .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   }
+
+  async function _loadInventoryAnalytics() {
+    const el = document.getElementById('inventoryAnalyticsContent');
+    if (!el) return;
+    el.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    const whParam = _invSelectedWarehouse ? `?warehouseId=${_invSelectedWarehouse}` : '';
+    try {
+      const { byCategory = [], topMoving = [] } = await apiFetch(`/api/v1/inventory/analytics${whParam}`).then(r => r.json());
+      const totalValue = byCategory.reduce((s, c) => s + (c.total_value || 0), 0);
+      const CAT_PALETTE = ['#4f8ef7','#4adc84','#e8a84c','#a78bfa','#f46','#22d3ee','#e05353','#f0f'];
+      el.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
+          <div>
+            <p style="font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.08em;margin:0 0 10px">ПО КАТЕГОРИЯМ</p>
+            ${byCategory.length ? byCategory.map((c, i) => {
+              const pct = totalValue > 0 ? Math.round((c.total_value || 0) / totalValue * 100) : 0;
+              const color = CAT_PALETTE[i % CAT_PALETTE.length];
+              return `<div style="margin-bottom:8px">
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px">
+                  <span style="font-size:12px">${escapeHtml(c.category || 'Без категории')}</span>
+                  <span style="font-size:11px;color:var(--text-muted)">${(c.total_value||0).toLocaleString()} · ${pct}%</span>
+                </div>
+                <div style="height:5px;border-radius:3px;background:var(--border)">
+                  <div style="height:100%;width:${pct}%;background:${color};border-radius:3px;transition:width .3s"></div>
+                </div>
+                <div style="font-size:10px;color:var(--text-muted);margin-top:1px">${c.sku_count} SKU · ${(c.total_qty||0).toFixed(1)} ед.</div>
+              </div>`;
+            }).join('') : '<p class="empty-copy" style="font-size:12px">Нет данных</p>'}
+          </div>
+          <div>
+            <p style="font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.08em;margin:0 0 10px">ТОП-5 ДВИЖЕНИЙ (30 дней)</p>
+            ${topMoving.length ? topMoving.map((s, i) => `
+              <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+                <span style="font-size:11px;color:var(--text-muted);width:16px;text-align:right">${i+1}</span>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(s.name)}</div>
+                  <div style="font-size:10px;font-family:monospace;color:var(--text-muted)">${escapeHtml(s.sku_code)}</div>
+                </div>
+                <span style="font-size:12px;font-weight:700;color:#f46">${(s.total_moved||0).toFixed(1)}</span>
+              </div>`).join('') : '<p class="empty-copy" style="font-size:12px">Нет движений за 30 дней</p>'}
+          </div>
+        </div>
+        <p style="font-size:11px;color:var(--text-muted);margin:0">Итого стоимость запасов: <strong>${totalValue.toLocaleString()}</strong></p>`;
+    } catch(e) { el.innerHTML = `<p class="empty-copy">${e.message}</p>`; }
+  }
+
+  document.getElementById('invAnalyticsBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventoryAnalyticsPanel');
+    const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
+    _closeAllInvPanels();
+    if (wasHidden && panel) { panel.style.display = ''; _loadInventoryAnalytics(); }
+  });
+  document.getElementById('invAnalyticsCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventoryAnalyticsPanel'); if (p) p.style.display = 'none';
+  });
+  document.getElementById('invAnalyticsRefreshBtn')?.addEventListener('click', _loadInventoryAnalytics);
 
   async function _loadReconcileList() {
     const list = document.getElementById('inventoryReconcileList');

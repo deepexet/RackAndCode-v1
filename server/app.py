@@ -8340,6 +8340,39 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"requests": self.store.list_reorder_requests(org, status)}); return
             if sub == "reorder-suggest":
                 self._json(HTTPStatus.OK, {"suggestions": self.store.auto_suggest_reorders(org)}); return
+            if sub == "analytics":
+                if not self._require_permission("projectRead"): return
+                wh = self.query_params.get("warehouseId",[None])[0]
+                with self.store._connect() as conn:
+                    where_m = "m.organization_id=?"
+                    params_m: list[Any] = [org]
+                    if wh:
+                        where_m += " AND m.warehouse_id=?"; params_m.append(wh)
+                    # Category totals from current stock
+                    cat_rows = conn.execute(
+                        "SELECT s.category, COUNT(*) as sku_count, "
+                        "SUM(CASE WHEN m.movement_type IN ('receive','return') THEN m.quantity "
+                        "WHEN m.movement_type IN ('issue','loss','transfer') THEN -m.quantity ELSE 0 END) as total_qty, "
+                        "SUM(CASE WHEN m.movement_type IN ('receive','return') THEN m.quantity * COALESCE(s.unit_cost,0) "
+                        "WHEN m.movement_type IN ('issue','loss','transfer') THEN -m.quantity * COALESCE(s.unit_cost,0) ELSE 0 END) as total_value "
+                        f"FROM inventory_movements m JOIN inventory_skus s ON s.id=m.sku_id AND s.organization_id=m.organization_id "
+                        f"WHERE {where_m} GROUP BY s.category ORDER BY total_value DESC",
+                        params_m
+                    ).fetchall()
+                    # Top 5 moving SKUs (last 30 days)
+                    since30 = (datetime.utcnow() - timedelta(days=30)).isoformat()
+                    top_rows = conn.execute(
+                        f"SELECT s.name, s.sku_code, SUM(m.quantity) as total_moved "
+                        f"FROM inventory_movements m JOIN inventory_skus s ON s.id=m.sku_id AND s.organization_id=m.organization_id "
+                        f"WHERE {where_m} AND m.movement_type IN ('issue','loss') AND m.created_at>=? "
+                        f"GROUP BY m.sku_id ORDER BY total_moved DESC LIMIT 5",
+                        params_m + [since30]
+                    ).fetchall()
+                self._json(HTTPStatus.OK, {
+                    "byCategory": [dict(r) for r in cat_rows],
+                    "topMoving": [dict(r) for r in top_rows],
+                })
+                return
             if sub == "reconciliations":
                 wh = self.query_params.get("warehouseId",[None])[0]
                 self._json(HTTPStatus.OK, {"reconciliations": self.store.list_reconciliations(org, wh)}); return
