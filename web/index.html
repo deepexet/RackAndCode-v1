@@ -245,9 +245,11 @@
           <button class="button ghost" id="invReorderBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">Заявки на пополнение</button>
           <button class="button ghost" id="invSuppliersBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">Поставщики</button>
           <button class="button ghost" id="invLowStockBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">⚠ Низкий остаток</button>
+          <button class="button ghost" id="invMinQtyEditorBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">⚙ Пороги пополнения</button>
           <hr style="border:none;border-top:1px solid var(--border);margin:8px 0">
           <button class="button primary" id="invQuickReceiveBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start">＋ Быстрый приём</button>
           <button class="button ghost" id="invQuickIssueBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">− Быстрый расход</button>
+          <button class="button ghost" id="invWriteOffBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px;color:#e05353">✕ Списание (loss)</button>
         </aside>
 
         <!-- Main: stock table -->
@@ -301,6 +303,19 @@
           </div>
         </div>
         <div id="inventoryLowStockList"></div>
+      </div>
+
+      <!-- Min qty bulk editor panel -->
+      <div id="inventoryMinQtyPanel" style="display:none;margin-top:20px">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">НАСТРОЙКИ</p><h2>Пороги пополнения</h2></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="button primary" id="invMinQtySaveBtn" type="button" style="font-size:12px">Сохранить всё</button>
+            <button class="button ghost" id="invMinQtyCloseBtn" type="button">✕</button>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Задайте минимальный остаток для каждой позиции. При достижении порога система создаст оповещение.</p>
+        <div id="inventoryMinQtyList"></div>
       </div>
 
       <!-- Movement history panel -->

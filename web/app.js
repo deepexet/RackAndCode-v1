@@ -7356,7 +7356,7 @@ function _bindInventoryEvents() {
   const _MT_LABELS = { receive:'Приход', issue:'Расход', transfer:'Перемещение',
     adjustment:'Корректировка', return:'Возврат', loss:'Списание' };
   const _MT_COLORS = { receive:'#4adc84', issue:'#f46', transfer:'#4f8ef7',
-    adjustment:'#e8a84c', return:'#a78bfa', loss:'#f46' };
+    adjustment:'#e8a84c', return:'#a78bfa', loss:'#e05353' };
 
   async function _loadMovementSparkline() {
     const el = document.getElementById('invMovementSparkline');
@@ -7433,7 +7433,7 @@ function _bindInventoryEvents() {
   }
 
   function _closeAllInvPanels() {
-    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel']
+    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel','inventoryMinQtyPanel']
       .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   }
 
@@ -7624,6 +7624,7 @@ function _bindInventoryEvents() {
 
   document.getElementById('invQuickReceiveBtn')?.addEventListener('click', () => _quickMovementTyped('receive'));
   document.getElementById('invQuickIssueBtn')?.addEventListener('click', () => _quickMovementTyped('issue'));
+  document.getElementById('invWriteOffBtn')?.addEventListener('click', () => _quickMovementTyped('loss'));
 
   document.getElementById('invSuppliersBtn')?.addEventListener('click', () => {
     const panel = document.getElementById('inventorySuppliersPanel');
@@ -7685,6 +7686,74 @@ function _bindInventoryEvents() {
         </div>`;
     } catch(e) { list.innerHTML = `<p style="font-size:12px;color:#e05353">${e.message}</p>`; }
   }
+
+  async function _loadMinQtyEditor() {
+    const list = document.getElementById('inventoryMinQtyList');
+    if (!list) return;
+    const warehouseId = _invSelectedWarehouse;
+    if (!warehouseId) { list.innerHTML = '<p style="font-size:12px;color:#e8a84c">Выберите склад сначала.</p>'; return; }
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка позиций…</p>';
+    try {
+      const { stock = [] } = await apiFetch(`/api/v1/inventory/stock?warehouseId=${warehouseId}&limit=500`).then(r => r.json());
+      if (!stock.length) { list.innerHTML = '<p class="empty-copy">Нет позиций на складе.</p>'; return; }
+      list.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--text-muted);text-align:left">
+          <th style="padding:6px 8px">SKU</th>
+          <th style="padding:6px 8px">Наименование</th>
+          <th style="padding:6px 8px;text-align:right">Текущий</th>
+          <th style="padding:6px 8px;text-align:right">Мин. порог</th>
+          <th style="padding:6px 8px">Бин</th>
+        </tr></thead>
+        <tbody>${stock.map(s => `<tr data-sku-row="${s.sku_id}" style="border-top:1px solid var(--border)">
+          <td style="padding:6px 8px;font-family:monospace;font-size:11px;color:var(--text-muted)">${escapeHtml(s.sku_code)}</td>
+          <td style="padding:6px 8px;font-weight:600">${escapeHtml(s.sku_name)}</td>
+          <td style="padding:6px 8px;text-align:right;color:${s.belowMin?'#f46':'inherit'}">${s.quantity} ${escapeHtml(s.unit||'')}</td>
+          <td style="padding:6px 8px">
+            <input type="number" min="0" step="1" class="min-qty-input" data-sku-id="${s.sku_id}" data-wh-id="${warehouseId}" data-bin="${escapeHtml(s.location_bin||'')}"
+              value="${s.min_quantity??''}" placeholder="—"
+              style="width:70px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;text-align:right">
+          </td>
+          <td style="padding:6px 8px">
+            <input type="text" class="bin-input" data-sku-id="${s.sku_id}"
+              value="${escapeHtml(s.location_bin||'')}" placeholder="A1-01"
+              style="width:80px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+          </td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+    } catch(e) { list.innerHTML = `<p class="empty-copy">${e.message}</p>`; }
+  }
+
+  document.getElementById('invMinQtyEditorBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventoryMinQtyPanel');
+    const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
+    _closeAllInvPanels();
+    if (wasHidden && panel) { panel.style.display = ''; _loadMinQtyEditor(); }
+  });
+  document.getElementById('invMinQtyCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventoryMinQtyPanel'); if (p) p.style.display = 'none';
+  });
+  document.getElementById('invMinQtySaveBtn')?.addEventListener('click', async () => {
+    const inputs = document.querySelectorAll('#inventoryMinQtyList .min-qty-input');
+    if (!inputs.length) return;
+    let saved = 0, errors = 0;
+    const warehouseId = _invSelectedWarehouse;
+    for (const inp of inputs) {
+      const skuId = inp.dataset.skuId;
+      const binInp = document.querySelector(`#inventoryMinQtyList .bin-input[data-sku-id="${skuId}"]`);
+      const minQty = inp.value === '' ? null : parseFloat(inp.value);
+      const locationBin = binInp?.value ?? '';
+      try {
+        const r = await apiFetch('/api/v1/inventory/stock-settings', {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ warehouseId, skuId, minQuantity: minQty, locationBin }),
+        });
+        if (!r.ok) throw new Error(r.status);
+        saved++;
+      } catch { errors++; }
+    }
+    toast(`Сохранено: ${saved}${errors ? `, ошибок: ${errors}` : ''}`);
+    if (!errors) _loadStock(warehouseId);
+  });
 
   document.getElementById('invLowStockBtn')?.addEventListener('click', () => {
     const panel = document.getElementById('inventoryLowStockPanel');
