@@ -3749,8 +3749,9 @@ function renderProjects(unavailable = false) {
       <div class="stage-progress"><i style="width:${stage.progress}%"></i></div>
       <small>${stage.taskCount} задач</small>
     </li>`).join('');
+    const tagChips = project.tags ? project.tags.split(',').filter(Boolean).map(t => `<span style="display:inline-block;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:1px 7px;font-size:10px;color:var(--text-secondary);margin-right:3px">#${escapeHtml(t)}</span>`).join('') : '';
     return `<article class="project-card">
-      <header><div><span class="project-code">${escapeHtml(project.code)}</span><h3>${escapeHtml(project.name)}</h3></div><span class="project-status ${project.status}">${project.status.replace('_', ' ')}</span></header>
+      <header><div><span class="project-code">${escapeHtml(project.code)}</span><h3>${escapeHtml(project.name)}</h3>${tagChips ? `<div style="margin-top:3px">${tagChips}</div>` : ''}</div><span class="project-status ${project.status}">${project.status.replace('_', ' ')}</span></header>
       <p>${escapeHtml(project.description)}</p>
       <div class="project-summary">
         <div class="project-progress"><strong>${project.progress}%</strong><span>общий прогресс</span></div>
@@ -3890,7 +3891,8 @@ function renderProjectDetail() {
   const openIssues = project.issues.filter(value => value.status !== 'resolved');
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
-  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/calendar.ics" download="${encodeURIComponent(project.code||project.id)}.ics" title="Скачать вехи как iCal (.ics)">📅 iCal</a><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+  const projTags = (project.tags||'').split(',').filter(Boolean).map(t=>`<span style="display:inline-block;background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:10px;padding:1px 7px;font-size:10px;color:var(--text-secondary);margin-right:4px">#${escapeHtml(t)}</span>`).join('');
+container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p>${projTags ? `<div style="margin-top:6px">${projTags}</div>` : ''}</div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="editProjectMetaBtn" type="button" title="Редактировать проект">✎ Проект</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/calendar.ics" download="${encodeURIComponent(project.code||project.id)}.ics" title="Скачать вехи как iCal (.ics)">📅 iCal</a><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis">${(() => {
       const now = Date.now();
       const week = 7 * 86400000;
@@ -4368,6 +4370,31 @@ function renderProjectDetail() {
     } catch(e) { panel.innerHTML = `<p style="color:#e05353">${e.message}</p>`; }
   });
 
+  container.querySelector('#editProjectMetaBtn')?.addEventListener('click', async () => {
+    const name = prompt('Название проекта:', project.name);
+    if (name === null) return;
+    const description = prompt('Описание:', project.description || '');
+    if (description === null) return;
+    const status = prompt('Статус (planned/active/on_hold/completed/cancelled):', project.status);
+    if (status === null) return;
+    const priority = prompt('Приоритет (low/medium/high/critical):', project.priority);
+    if (priority === null) return;
+    const startDate = prompt('Дата начала (YYYY-MM-DD или пусто):', project.startDate || '');
+    if (startDate === null) return;
+    const targetDate = prompt('Целевая дата (YYYY-MM-DD или пусто):', project.targetDate || '');
+    if (targetDate === null) return;
+    const tags = prompt('Теги (через запятую, напр. interior,urgent):', project.tags || '');
+    if (tags === null) return;
+    try {
+      const r = await apiFetch(`/api/v1/projects/${encodeURIComponent(project.id)}/update`, {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ name: name.trim(), description, status, priority,
+          startDate: startDate||null, targetDate: targetDate||null, tags }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('Проект обновлён'); renderProjectDetail(project.id);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
   container.querySelector('#exportCsvBtn')?.addEventListener('click', () => {
     const a = document.createElement('a');
     a.href = `/api/v1/projects/${encodeURIComponent(project.id)}/report.csv`;

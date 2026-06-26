@@ -1091,7 +1091,8 @@ class WorkspaceStore:
                 "id": project_id, "code": project["code"], "name": project["name"],
                 "description": project["description"], "status": project["status"],
                 "priority": project["priority"], "kind": project["kind"], "startDate": project["start_date"],
-                "targetDate": project["target_date"], "version": project["version"],
+                "targetDate": project["target_date"], "tags": project["tags"] if "tags" in project.keys() else "",
+                "version": project["version"],
                 "createdAt": project["created_at"], "updatedAt": project["updated_at"],
                 "progress": progress,
                 "workTypeProgress": work_type_progress,
@@ -1189,12 +1190,14 @@ class WorkspaceStore:
                             selected_work_type_ids.append(work_type_id)
                 else:
                     raise ValueError("Project must include at least one work type")
+                raw_tags = payload.get("tags", "")
+                tags = ",".join(t.strip().lower() for t in str(raw_tags).split(",") if t.strip()) if raw_tags else ""
                 connection.execute(
                     """INSERT INTO projects
                        (organization_id, id, code, name, description, status, priority,
-                        start_date, target_date, version, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
-                    (organization_id, project_id, code.strip().upper(), name.strip(), str(payload.get("description", ""))[:1000], status, priority, payload.get("startDate"), payload.get("targetDate"), now, now),
+                        start_date, target_date, tags, version, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                    (organization_id, project_id, code.strip().upper(), name.strip(), str(payload.get("description", ""))[:1000], status, priority, payload.get("startDate"), payload.get("targetDate"), tags, now, now),
                 )
                 connection.executemany(
                     """INSERT INTO project_stages
@@ -2035,6 +2038,34 @@ class WorkspaceStore:
                 "UPDATE projects SET status=?,updated_at=? WHERE organization_id=? AND id=?",
                 (new_status, now, org, project_id)
             )
+
+    def update_project_meta(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Update editable project fields: name, description, status, priority, startDate, targetDate, tags."""
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM projects WHERE organization_id=? AND id=?", (org, project_id)
+            ).fetchone()
+            if not existing:
+                raise LookupError("Project not found")
+            name = payload.get("name", existing["name"]).strip() or existing["name"]
+            description = str(payload.get("description", existing["description"] or ""))[:1000]
+            status = payload.get("status", existing["status"])
+            priority = payload.get("priority", existing["priority"])
+            start_date = payload.get("startDate", existing["start_date"])
+            target_date = payload.get("targetDate", existing["target_date"])
+            if status not in ALLOWED_PROJECT_STATUSES:
+                raise ValueError(f"Invalid status: {status}")
+            if priority not in ALLOWED_PRIORITIES:
+                raise ValueError(f"Invalid priority: {priority}")
+            raw_tags = payload.get("tags", existing["tags"] if "tags" in existing.keys() else "")
+            tags = ",".join(t.strip().lower() for t in str(raw_tags).split(",") if t.strip()) if raw_tags else ""
+            now = utc_now()
+            conn.execute(
+                "UPDATE projects SET name=?,description=?,status=?,priority=?,start_date=?,target_date=?,tags=?,updated_at=? "
+                "WHERE organization_id=? AND id=?",
+                (name, description, status, priority, start_date, target_date, tags, now, org, project_id)
+            )
+            return self.get_project(org, project_id) or {}
 
     # ── Auth / Session ──────────────────────────────────────────────────────
 
@@ -9279,6 +9310,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(err))
             return
+        # Project meta update: POST /api/v1/projects/:id/update
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "update":
+            if not self._require_permission("projectManage"): return
+            project_id = parts[4]
+            try:
+                project = self.store.update_project_meta(self.organization_id, project_id, self._read_json())
+                self.store.audit(self.organization_id, self.current_role, None, "project_meta_updated", "project", project_id)
+                self._json(HTTPStatus.OK, {"project": project}); return
+            except LookupError:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Project not found"); return
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err)); return
         # Team members CRUD
         if path == "/api/v1/team":
             if not self._require_permission("projectManage"): return
