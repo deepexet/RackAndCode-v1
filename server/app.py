@@ -8598,6 +8598,45 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             project_id = parts[4]
             self._json(HTTPStatus.OK, {"milestones": self.store.list_milestones(self.organization_id, project_id)})
             return
+        # Project iCal export: GET /api/v1/projects/:id/calendar.ics
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "calendar.ics":
+            if not self._require_permission("projectRead"): return
+            project_id = parts[4]
+            project = self.store.get_project(self.organization_id, project_id)
+            if not project: self._error(HTTPStatus.NOT_FOUND, "not_found", "Project not found"); return
+            milestones = self.store.list_milestones(self.organization_id, project_id)
+            work_items = [wi for wi in (project.get("workItems") or []) if wi.get("due_date")]
+            def _ical_date(d: str) -> str:
+                return d.replace("-", "")
+            def _ical_str(s: str) -> str:
+                return s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+            lines = ["BEGIN:VCALENDAR", "VERSION:2.0", f"PRODID:-//RackPilot//{project['name']}//EN",
+                     "CALSCALE:GREGORIAN", "METHOD:PUBLISH"]
+            for ms in milestones:
+                uid = f"milestone-{ms['id']}@rackpilot"
+                lines += ["BEGIN:VEVENT", f"UID:{uid}",
+                          f"SUMMARY:[Веха] {_ical_str(ms['name'])}",
+                          f"DTSTART;VALUE=DATE:{_ical_date(ms['target_date'])}",
+                          f"DTEND;VALUE=DATE:{_ical_date(ms['target_date'])}",
+                          f"DESCRIPTION:{_ical_str(ms.get('description',''))}",
+                          f"STATUS:{'COMPLETED' if ms['status']=='achieved' else 'NEEDS-ACTION'}",
+                          "END:VEVENT"]
+            for wi in work_items:
+                uid = f"wi-{wi['id']}@rackpilot"
+                lines += ["BEGIN:VEVENT", f"UID:{uid}",
+                          f"SUMMARY:{_ical_str(wi['title'])}",
+                          f"DTSTART;VALUE=DATE:{_ical_date(wi['due_date'])}",
+                          f"DTEND;VALUE=DATE:{_ical_date(wi['due_date'])}",
+                          f"DESCRIPTION:{_ical_str(wi.get('description',''))}",
+                          f"STATUS:{'COMPLETED' if wi['status']=='done' else 'NEEDS-ACTION'}",
+                          "END:VEVENT"]
+            lines.append("END:VCALENDAR")
+            ical_bytes = "\r\n".join(lines).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/calendar; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{project["code"] or project_id}.ics"')
+            self.send_header("Content-Length", str(len(ical_bytes)))
+            self.end_headers(); self.wfile.write(ical_bytes); return
         # Project documents: GET /api/v1/projects/:id/documents
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "documents":
             if not self._require_permission("projectRead"): return
