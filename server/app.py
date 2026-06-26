@@ -5602,6 +5602,46 @@ Rules:
             )
         return self.get_issue(org, issue_id)  # type: ignore[return-value]
 
+    # ── Project documents ──────────────────────────────────────────────────────
+    def list_project_documents(self, org: str, project_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM project_documents WHERE organization_id=? AND project_id=? ORDER BY created_at DESC",
+                (org, project_id)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_project_document(self, org: str, project_id: str, filename: str, mime_type: str,
+                                 data_bytes: bytes, uploaded_by: str, description: str = "") -> dict[str, Any]:
+        doc_id = _uid()
+        now = utc_now()
+        # Store file in data/uploads/{org}/{doc_id}_{filename}
+        uploads_dir = Path(self.db_path).parent / "uploads" / org
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r'[^\w.\-]', '_', filename)[:80]
+        storage_path = str(uploads_dir / f"{doc_id}_{safe_name}")
+        Path(storage_path).write_bytes(data_bytes)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_documents(id,organization_id,project_id,filename,mime_type,size_bytes,storage_path,uploaded_by,description,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (doc_id, org, project_id, filename, mime_type, len(data_bytes), storage_path, uploaded_by, description, now)
+            )
+        return self.get_project_document(org, doc_id)  # type: ignore[return-value]
+
+    def get_project_document(self, org: str, doc_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM project_documents WHERE id=? AND organization_id=?", (doc_id, org)).fetchone()
+        return dict(row) if row else None
+
+    def delete_project_document(self, org: str, doc_id: str) -> None:
+        doc = self.get_project_document(org, doc_id)
+        if not doc: return
+        try: Path(doc["storage_path"]).unlink(missing_ok=True)
+        except OSError: pass
+        with self._connect() as conn:
+            conn.execute("DELETE FROM project_documents WHERE id=? AND organization_id=?", (doc_id, org))
+
     # ── Risk register ──────────────────────────────────────────────────────────
     def list_risks(self, org: str, project_id: str, status: str | None = None) -> list[dict[str, Any]]:
         where = "organization_id=? AND project_id=?"
@@ -8538,6 +8578,24 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             project_id = parts[4]
             self._json(HTTPStatus.OK, {"milestones": self.store.list_milestones(self.organization_id, project_id)})
             return
+        # Project documents: GET /api/v1/projects/:id/documents
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "documents":
+            if not self._require_permission("projectRead"): return
+            docs = self.store.list_project_documents(self.organization_id, parts[4])
+            self._json(HTTPStatus.OK, {"documents": docs}); return
+        # Project document download: GET /api/v1/projects/:id/documents/:did/download
+        if len(parts) == 8 and parts[3] == "projects" and parts[5] == "documents" and parts[7] == "download":
+            if not self._require_permission("projectRead"): return
+            doc = self.store.get_project_document(self.organization_id, parts[6])
+            if not doc: self._error(HTTPStatus.NOT_FOUND, "not_found", "Document not found"); return
+            path = Path(doc["storage_path"])
+            if not path.exists(): self._error(HTTPStatus.NOT_FOUND, "not_found", "File missing"); return
+            data = path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", doc["mime_type"])
+            self.send_header("Content-Disposition", f'attachment; filename="{doc["filename"]}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers(); self.wfile.write(data); return
         # Risk register: GET /api/v1/projects/:id/risks
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "risks":
             if not self._require_permission("projectRead"): return
@@ -9778,6 +9836,33 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # Project documents: POST /api/v1/projects/:id/documents (upload base64)
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "documents":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                filename = str(payload["filename"])
+                mime_type = str(payload.get("mimeType", "application/octet-stream"))
+                data_b64 = str(payload["data"])
+                import base64
+                data_bytes = base64.b64decode(data_b64)
+                if len(data_bytes) > 50 * 1024 * 1024:
+                    self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "too_large", "Max 50 MB"); return
+                doc = self.store.create_project_document(
+                    self.organization_id, parts[4], filename, mime_type,
+                    data_bytes, self.current_role, str(payload.get("description",""))
+                )
+                self.audit(self.organization_id, self.current_user_id, None, "upload", "project_document", doc["id"])
+                self._json(HTTPStatus.CREATED, {"document": {k:v for k,v in doc.items() if k != "storage_path"}})
+            except (KeyError, ValueError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        # Project document delete: POST /api/v1/projects/:id/documents/:did/delete
+        if len(parts) == 8 and parts[3] == "projects" and parts[5] == "documents" and parts[7] == "delete":
+            if not self._require_permission("projectManage"): return
+            self.store.delete_project_document(self.organization_id, parts[6])
+            self.audit(self.organization_id, self.current_user_id, None, "delete", "project_document", parts[6])
+            self._json(HTTPStatus.OK, {"deleted": True}); return
         # Risk register: POST /api/v1/projects/:id/risks  and  /:id/risks/:rid/update|delete
         if len(parts) >= 6 and parts[3] == "projects" and parts[5] == "risks":
             project_id = parts[4]

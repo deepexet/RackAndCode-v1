@@ -4031,6 +4031,15 @@ function renderProjectDetail() {
       </div>
       <div id="risksList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
     </section>
+    <section class="detail-section" id="projectDocsSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Вложения проекта</h2></div>
+        <div style="display:flex;gap:6px">
+          ${canManage ? `<label class="button ghost" style="cursor:pointer;font-size:12px">＋ Загрузить<input type="file" id="docUploadInput" multiple style="display:none" accept="*/*"></label>` : ''}
+        </div>
+      </div>
+      <div id="projectDocsList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="standupSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">ЕЖЕДНЕВНО</p><h2>Стендап — ${new Date().toLocaleDateString('ru-RU')}</h2></div>
@@ -4435,6 +4444,7 @@ function renderProjectDetail() {
   });
   setupIssuesPanel(project.id);
   hydrateRisks(project.id);
+  hydrateProjectDocs(project.id);
   hydrateBudgetWidget(project.id);
   hydrateReservations(project.id);
   hydrateGantt(project);
@@ -4928,6 +4938,69 @@ async function reloadProjectData(projectId) {
     const idx = projects.findIndex(p => p.id === projectId);
     if (idx !== -1) { projects[idx] = project; renderProjectDetail(); }
   } catch { /* silent */ }
+}
+
+async function hydrateProjectDocs(projectId) {
+  const list = document.getElementById('projectDocsList');
+  if (!list) return;
+  const canManage = roleCan('projectManage');
+  try {
+    const { documents = [] } = await apiFetch(`/api/v1/projects/${projectId}/documents`).then(r => r.json());
+    if (!documents.length) {
+      list.innerHTML = '<p class="empty-copy" style="font-size:13px">Вложений нет. Загрузите первый файл.</p>';
+    } else {
+      const EXT_ICONS = { pdf:'📄', doc:'📝', docx:'📝', xls:'📊', xlsx:'📊', png:'🖼', jpg:'🖼', jpeg:'🖼', zip:'📦', rar:'📦', mp4:'🎬' };
+      list.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px">
+        ${documents.map(d => {
+          const ext = d.filename.split('.').pop().toLowerCase();
+          const icon = EXT_ICONS[ext] || '📎';
+          const sizeMb = (d.size_bytes / 1048576).toFixed(2);
+          return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start">
+            <span style="font-size:22px;flex-shrink:0">${icon}</span>
+            <div style="flex:1;min-width:0">
+              <a href="/api/v1/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(d.id)}/download"
+                style="font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block"
+                title="${escapeHtml(d.filename)}" download="${escapeHtml(d.filename)}">${escapeHtml(d.filename)}</a>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${sizeMb} МБ · ${d.created_at.slice(0,10)}</div>
+              ${d.description ? `<div style="font-size:11px;color:var(--text-secondary);margin-top:3px">${escapeHtml(d.description)}</div>` : ''}
+              ${canManage ? `<button class="text-button doc-del-btn" data-doc-id="${d.id}" style="font-size:10px;color:#e05353;margin-top:4px">✕ удалить</button>` : ''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
+    list.querySelectorAll('.doc-del-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Удалить вложение?')) return;
+        try {
+          await apiFetch(`/api/v1/projects/${projectId}/documents/${btn.dataset.docId}/delete`, {
+            method: 'POST', headers: apiHeaders({}),
+          });
+          toast('Файл удалён'); hydrateProjectDocs(projectId);
+        } catch(e) { toast(`Ошибка: ${e.message}`); }
+      });
+    });
+  } catch { list.innerHTML = '<p class="empty-copy" style="font-size:13px">Недоступно.</p>'; }
+
+  document.getElementById('docUploadInput')?.addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (!files.length) return;
+    let uploaded = 0;
+    for (const file of files) {
+      try {
+        const ab = await file.arrayBuffer();
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(ab)));
+        const r = await apiFetch(`/api/v1/projects/${projectId}/documents`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ filename: file.name, mimeType: file.type || 'application/octet-stream', data: b64 }),
+        });
+        if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+        uploaded++;
+      } catch(err) { toast(`Ошибка загрузки ${file.name}: ${err.message}`); }
+    }
+    if (uploaded) { toast(`Загружено: ${uploaded} файл(ов)`); hydrateProjectDocs(projectId); }
+  });
 }
 
 const _RISK_PROB_COLORS = {low:'#4adc84',medium:'#e8a84c',high:'#f46'};

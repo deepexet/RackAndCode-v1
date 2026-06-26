@@ -24,7 +24,7 @@ class BackupTests(unittest.TestCase):
         backup = create_backup(self.database, self.root / "backups", keep=5)
         verification = verify_backup(backup)
         self.assertTrue(verification["verified"])
-        self.assertEqual(verification["schemaVersion"], "069")
+        self.assertEqual(verification["schemaVersion"], "070")
         restored = restore_backup(backup, self.root / "restored.db")
         restored_store = WorkspaceStore(restored)
         self.assertEqual(restored_store.get()["tasks"][0]["id"], "FS-TEST")
