@@ -4354,7 +4354,7 @@ function renderProjectDetail() {
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
   const projTags = (project.tags||'').split(',').filter(Boolean).map(t=>`<span style="display:inline-block;background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:10px;padding:1px 7px;font-size:10px;color:var(--text-secondary);margin-right:4px">#${escapeHtml(t)}</span>`).join('');
-container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p>${projTags ? `<div style="margin-top:6px">${projTags}</div>` : ''}</div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="editProjectMetaBtn" type="button" title="Редактировать проект">✎ Проект</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/calendar.ics" download="${encodeURIComponent(project.code||project.id)}.ics" title="Скачать вехи как iCal (.ics)">📅 iCal</a><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/report.html" target="_blank" title="Открыть HTML-отчёт проекта">📄 Отчёт</a><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="riskMatrixBtn" type="button" title="Матрица рисков проекта">⚠ Риски</button><button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p>${projTags ? `<div style="margin-top:6px">${projTags}</div>` : ''}</div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="editProjectMetaBtn" type="button" title="Редактировать проект">✎ Проект</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/calendar.ics" download="${encodeURIComponent(project.code||project.id)}.ics" title="Скачать вехи как iCal (.ics)">📅 iCal</a><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/report.html" target="_blank" title="Открыть HTML-отчёт проекта">📄 Отчёт</a><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="activityFeedBtn" type="button" title="Журнал активности проекта">📜 Активность</button><button class="button ghost" id="riskMatrixBtn" type="button" title="Матрица рисков проекта">⚠ Риски</button><button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis">${(() => {
       const now = Date.now();
       const week = 7 * 86400000;
@@ -4605,6 +4605,46 @@ container.innerHTML = `<header class="detail-header"><div><a href="#projects">�
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
 
   container.querySelector('#smartNoteBtn')?.addEventListener('click', () => openFieldNoteDialog(project.id));
+
+  container.querySelector('#activityFeedBtn')?.addEventListener('click', async () => {
+    const pid = selectedProjectId;
+    const r = await apiFetch(`/api/v1/projects/${pid}/activity?limit=80`).catch(() => null);
+    const { events = [] } = r?.ok ? await r.json() : {};
+    const ACTION_ICON = {
+      'create': '＋', 'update': '✎', 'delete': '✕', 'upload': '⬆',
+      'risk.create': '⚠', 'risk.update': '✎', 'risk.delete': '✕',
+    };
+    const existing = document.getElementById('activityFeedOverlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'activityFeedOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:540px;max-height:82vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)">
+          <h3 style="margin:0;font-size:14px">📜 Журнал активности <span style="font-size:11px;color:var(--text-muted)">(${events.length})</span></h3>
+          <button id="actFeedDismiss" class="button ghost" style="font-size:11px">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:14px 18px">
+          ${!events.length ? '<p class="empty-copy" style="font-size:12px">Нет событий.</p>' :
+            events.map(ev => {
+              const icon = ACTION_ICON[ev.action] || '●';
+              const ts = ev.created_at ? ev.created_at.slice(0,16).replace('T',' ') : '';
+              return `<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+                <span style="font-size:13px;color:var(--accent);min-width:16px">${icon}</span>
+                <div style="flex:1">
+                  <div style="font-size:12px"><strong>${escapeHtml(ev.action)}</strong>${ev.target_type ? ` · <span style="color:var(--text-muted)">${escapeHtml(ev.target_type)}</span>` : ''}</div>
+                  ${ev.actor_id ? `<div style="font-size:10px;color:var(--text-muted)">${escapeHtml(ev.actor_id)}${ev.actor_role ? ' ('+escapeHtml(ev.actor_role)+')' : ''}</div>` : ''}
+                </div>
+                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap">${ts}</span>
+              </div>`;
+            }).join('')}
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#actFeedDismiss')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  });
 
   container.querySelector('#riskMatrixBtn')?.addEventListener('click', async () => {
     const pid = selectedProjectId;
@@ -9134,6 +9174,80 @@ function _bindInventoryEvents() {
     document.body.appendChild(overlay);
     overlay.querySelector('#invAlertsDismiss')?.addEventListener('click', () => overlay.remove());
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  });
+
+  document.getElementById('invBulkReceiveBtn')?.addEventListener('click', async () => {
+    // Load warehouses for target selection
+    const whResp = await apiFetch('/api/v1/inventory/warehouses').catch(() => null);
+    const { warehouses = [] } = whResp?.ok ? await whResp.json() : {};
+    if (!warehouses.length) { toast('Сначала создайте склад'); return; }
+    const existing = document.getElementById('bulkReceiveOverlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'bulkReceiveOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:540px;max-height:85vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)">
+          <h3 style="margin:0;font-size:14px">📥 Массовое оприходование</h3>
+          <button id="bulkRecvDismiss" class="button ghost" style="font-size:11px">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px">
+          <div>
+            <label style="font-size:11px;color:var(--text-muted)">Склад назначения</label>
+            <select id="bulkRecvWarehouse" style="width:100%;margin-top:4px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+              ${warehouses.map(w => `<option value="${w.id}">${escapeHtml(w.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-muted)">Строки: SKU_CODE КОЛИЧЕСТВО [ПРИМЕЧАНИЕ] (по одной на строку)</label>
+            <textarea id="bulkRecvInput" rows="10" placeholder="BOLT-M8 100&#10;PAINT-WHITE 5 Партия апрель&#10;CABLE-12 50" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:monospace;resize:vertical;box-sizing:border-box"></textarea>
+          </div>
+          <div id="bulkRecvPreview" style="font-size:11px;color:var(--text-muted)"></div>
+          <button id="bulkRecvSubmit" class="button primary" style="width:100%">Принять товары</button>
+          <div id="bulkRecvResult" style="display:none"></div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#bulkRecvDismiss')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    const ta = overlay.querySelector('#bulkRecvInput');
+    const preview = overlay.querySelector('#bulkRecvPreview');
+    ta?.addEventListener('input', () => {
+      const lines = ta.value.split('\n').filter(l => l.trim());
+      preview.textContent = lines.length ? `${lines.length} строк к обработке` : '';
+    });
+    overlay.querySelector('#bulkRecvSubmit')?.addEventListener('click', async () => {
+      const warehouseId = overlay.querySelector('#bulkRecvWarehouse')?.value;
+      const lines = (ta?.value || '').split('\n').filter(l => l.trim());
+      if (!lines.length) { toast('Введите хотя бы одну строку'); return; }
+      // Load SKUs to resolve codes → ids
+      const skuResp = await apiFetch('/api/v1/inventory/skus?limit=5000').catch(() => null);
+      const { skus = [] } = skuResp?.ok ? await skuResp.json() : {};
+      const skuByCode = Object.fromEntries(skus.map(s => [s.sku_code?.toUpperCase(), s]));
+      const resultEl = overlay.querySelector('#bulkRecvResult');
+      resultEl.style.display = 'block';
+      resultEl.innerHTML = '<p style="font-size:11px;color:var(--text-muted)">Обработка…</p>';
+      let ok = 0, errs = [];
+      for (const line of lines) {
+        const [code, qtyStr, ...noteParts] = line.trim().split(/\s+/);
+        const sku = skuByCode[code?.toUpperCase()];
+        const qty = parseFloat(qtyStr);
+        if (!sku) { errs.push(`${code}: SKU не найден`); continue; }
+        if (isNaN(qty) || qty <= 0) { errs.push(`${code}: некорректное количество "${qtyStr}"`); continue; }
+        const note = noteParts.join(' ') || 'Массовое оприходование';
+        const r2 = await apiFetch('/api/v1/inventory/receive', {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ skuId: sku.id, warehouseId, quantity: qty, note }),
+        });
+        if (r2.ok) ok++;
+        else { const e = await r2.json().catch(() => ({})); errs.push(`${code}: ${e.error?.message || r2.status}`); }
+      }
+      resultEl.innerHTML = `
+        <p style="font-size:12px;color:#4adc84">✓ Принято: ${ok} позиций</p>
+        ${errs.length ? `<p style="font-size:11px;color:#f46">Ошибки:</p>${errs.map(e=>`<div style="font-size:10px;color:#f46;font-family:monospace">${escapeHtml(e)}</div>`).join('')}` : ''}`;
+      if (ok > 0) hydrateInventory?.();
+    });
   });
 
   document.getElementById('invCycleCountBtn')?.addEventListener('click', async () => {

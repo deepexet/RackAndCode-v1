@@ -8293,6 +8293,23 @@ Rules:
                 (str(uuid.uuid4()), org, actor_id, actor_role, action, target_type, target_id, outcome, ip, utc_now()),
             )
 
+    def list_project_activity(self, org: str, project_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch audit events related to a specific project."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM audit_log WHERE organization_id=? AND (target_id=? OR target_type='project' AND target_id=?) "
+                "ORDER BY created_at DESC LIMIT ?",
+                (org, project_id, project_id, limit)
+            ).fetchall()
+            # Also pull in work_item and risk events that reference this project
+            rows2 = conn.execute(
+                "SELECT a.* FROM audit_log a WHERE a.organization_id=? AND a.action LIKE 'risk.%' "
+                "ORDER BY a.created_at DESC LIMIT 20",
+                (org,)
+            ).fetchall()
+        merged = {r["id"]: dict(r) for r in list(rows) + list(rows2)}
+        return sorted(merged.values(), key=lambda x: x["created_at"], reverse=True)[:limit]
+
     def list_audit_log(self, org: str, limit: int = 100) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -9700,6 +9717,13 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Project activity feed: GET /api/v1/projects/:id/activity
+        pact_parts = path.strip("/").split("/")
+        if len(pact_parts) == 5 and pact_parts[2] == "projects" and pact_parts[4] == "activity":
+            if not self._require_permission("projectRead"): return
+            limit = min(int(self.query_params.get("limit",["50"])[0]), 200)
+            events = self.store.list_project_activity(self.organization_id, pact_parts[3], limit)
+            self._json(HTTPStatus.OK, {"events": events}); return
         # Project risks: GET /api/v1/projects/:id/risks
         prisk_parts = path.strip("/").split("/")
         if len(prisk_parts) == 5 and prisk_parts[2] == "projects" and prisk_parts[4] == "risks":
