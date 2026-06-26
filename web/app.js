@@ -9251,8 +9251,8 @@ function setupGlobalSearch() {
   const results = document.getElementById('globalSearchResults');
   if (!input || !results) return;
 
-  const TYPE_ICON = { project:'📁', work_item:'✅', location:'📍', asset:'🖥', issue:'⚠', document:'📄' };
-  const TYPE_LABEL = { project:'Проект', work_item:'Задача', location:'Локация', asset:'Актив', issue:'Проблема', document:'Документ' };
+  const TYPE_ICON = { project:'📁', work_item:'✅', location:'📍', asset:'🖥', issue:'⚠', document:'📄', sku:'📦', team_member:'👤' };
+  const TYPE_LABEL = { project:'Проект', work_item:'Задача', location:'Локация', asset:'Актив', issue:'Проблема', document:'Документ', sku:'SKU', team_member:'Сотрудник' };
 
   let _timer = null;
   let _lastQ = '';
@@ -9300,6 +9300,11 @@ function setupGlobalSearch() {
       location.hash = `project/${encodeURIComponent(projectId)}`;
     } else if (type === 'document') {
       location.hash = 'projects';
+    } else if (type === 'sku') {
+      location.hash = 'inventory';
+      setTimeout(() => { document.getElementById('invSkuBtn')?.click(); }, 200);
+    } else if (type === 'team_member') {
+      location.hash = 'admin';
     }
   });
 

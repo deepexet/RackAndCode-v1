@@ -3695,6 +3695,22 @@ Rules:
             ).fetchall():
                 results.append({"type": "document", "id": r["id"],
                                  "title": r["name"], "subtitle": r["mime_type"]})
+            # Inventory SKUs
+            for r in conn.execute(
+                "SELECT id, name, sku_code, category, unit FROM inventory_skus "
+                "WHERE organization_id=? AND active=1 AND (name LIKE ? OR sku_code LIKE ? OR barcode LIKE ?) LIMIT ?",
+                (org, q, q, q, limit),
+            ).fetchall():
+                results.append({"type": "sku", "id": r["id"],
+                                 "title": r["name"], "subtitle": f"{r['sku_code']} · {r['category']}"})
+            # Team members
+            for r in conn.execute(
+                "SELECT id, name, role, email FROM team_members "
+                "WHERE organization_id=? AND (name LIKE ? OR email LIKE ? OR role LIKE ?) LIMIT ?",
+                (org, q, q, q, limit),
+            ).fetchall():
+                results.append({"type": "team_member", "id": r["id"],
+                                 "title": r["name"], "subtitle": f"{r['role']} · {r['email'] or ''}"})
         return {"query": query, "results": results[:limit]}
 
     def get_project_analytics(self, org: str, project_id: str) -> dict[str, Any]:
