@@ -3851,7 +3851,7 @@ function renderProjectDetail() {
   const openIssues = project.issues.filter(value => value.status !== 'resolved');
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
-  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+  container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p></div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis">${(() => {
       const now = Date.now();
       const week = 7 * 86400000;
@@ -4312,6 +4312,37 @@ function renderProjectDetail() {
     a.href = `/api/v1/projects/${encodeURIComponent(project.id)}/report.csv`;
     a.download = '';
     a.click();
+  });
+  container.querySelector('#exportKpiBtn')?.addEventListener('click', async () => {
+    try {
+      const p = project;
+      const wis = p.workItems || [];
+      const total = wis.length;
+      const done = wis.filter(w => w.status === 'done').length;
+      const blocked = wis.filter(w => w.effectiveStatus === 'blocked' || w.status === 'blocked').length;
+      const overdue = wis.filter(w => w.status !== 'done' && w.dueDate && w.dueDate < new Date().toISOString().slice(0,10)).length;
+      const estH = (wis.reduce((s,w) => s + (w.estimatedMinutes||0), 0) / 60).toFixed(1);
+      const actH = (wis.reduce((s,w) => s + (w.actualMinutes||0), 0) / 60).toFixed(1);
+      const rows = [
+        ['Метрика','Значение'],
+        ['Проект', p.name],
+        ['Код', p.code||''],
+        ['Статус', p.status||''],
+        ['Прогресс %', (p.progress||0).toFixed(1)],
+        ['Всего задач', total],
+        ['Выполнено задач', done],
+        ['Заблокировано', blocked],
+        ['Просрочено', overdue],
+        ['Плановые часы', estH],
+        ['Фактические часы', actH],
+        ['Дедлайн', p.targetDate||''],
+        ['Обновлён', (p.updatedAt||'').slice(0,10)],
+      ];
+      const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `kpi-${p.code||p.id}.csv` });
+      a.click(); URL.revokeObjectURL(a.href);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
   container.querySelector('#exportProjectBtn')?.addEventListener('click', () => exportProjectData(project.id, project.name));
   container.querySelector('#importProjectInput')?.addEventListener('change', e => {
@@ -5169,7 +5200,7 @@ function setupWorkItemsBulkList(project) {
             <strong style="font-size:12px">${wi.code ? escapeHtml(wi.code) + ' ' : ''}${escapeHtml(wi.title)}</strong>
             <span style="font-size:9px;font-weight:700;color:${STATUS_COLOR[wi.effectiveStatus||wi.status]||'#556'};text-transform:uppercase">${wi.effectiveStatus||wi.status}</span>
           </div>
-          <small style="font-size:10px;color:var(--text-muted)">${wt ? escapeHtml(wt.name) : ''}${bld ? ' · ' + escapeHtml(bld.code) : ''}${wi.startDate ? ' · с ' + wi.startDate : ''}${wi.dueDate ? ' · до ' + wi.dueDate : ''}</small>
+          <small style="font-size:10px;color:var(--text-muted)">${wt ? escapeHtml(wt.name) : ''}${bld ? ' · ' + escapeHtml(bld.code) : ''}${wi.startDate ? ' · с ' + wi.startDate : ''}${wi.dueDate ? ' · до ' + wi.dueDate : ''}${wi.estimatedMinutes ? ' · <span style="color:#4f8ef7">~' + (wi.estimatedMinutes/60).toFixed(1) + 'ч план</span>' : ''}${wi.actualMinutes ? ' · <span style="color:#4adc84">' + (wi.actualMinutes/60).toFixed(1) + 'ч факт</span>' : ''}</small>
         </div>
         <select class="wi-status-sel" data-wi-status-id="${wi.id}" data-wi-ver="${wi.version}"
           style="padding:3px 6px;font-size:10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:${STATUS_COLOR[wi.effectiveStatus||wi.status]||'#556'};cursor:pointer;flex-shrink:0"
