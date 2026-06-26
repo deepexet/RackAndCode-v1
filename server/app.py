@@ -9544,6 +9544,54 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Inventory alerts dashboard: GET /api/v1/inventory/alerts
+        if path == "/api/v1/inventory/alerts":
+            if not self._require_permission("projectRead"): return
+            org = self.organization_id
+            with self.store._connect() as conn:
+                low_stock = conn.execute(
+                    "SELECT s.sku_id, sk.sku_code, sk.name, s.warehouse_id, w.name as wh_name, "
+                    "s.quantity, s.min_quantity FROM inventory_stock s "
+                    "JOIN inventory_skus sk ON sk.id=s.sku_id "
+                    "JOIN warehouses w ON w.id=s.warehouse_id "
+                    "WHERE s.organization_id=? AND s.min_quantity IS NOT NULL AND s.quantity<=s.min_quantity",
+                    (org,)
+                ).fetchall()
+                import datetime as _dt
+                exp_cutoff = (_dt.date.today() + _dt.timedelta(days=30)).isoformat()
+                expiring = conn.execute(
+                    "SELECT l.*, sk.sku_code, sk.name as sku_name, w.name as wh_name "
+                    "FROM inventory_lots l JOIN inventory_skus sk ON sk.id=l.sku_id "
+                    "JOIN warehouses w ON w.id=l.warehouse_id "
+                    "WHERE l.organization_id=? AND l.expires_at IS NOT NULL AND l.expires_at<=? AND l.quantity>0 "
+                    "ORDER BY l.expires_at LIMIT 20",
+                    (org, exp_cutoff)
+                ).fetchall()
+                overdue_orders = conn.execute(
+                    "SELECT so.*, sup.name as supplier_name FROM supplier_orders so "
+                    "LEFT JOIN inventory_suppliers sup ON sup.id=so.supplier_id "
+                    "WHERE so.organization_id=? AND so.status IN ('sent','confirmed') "
+                    "AND so.expected_at IS NOT NULL AND so.expected_at < date('now')",
+                    (org,)
+                ).fetchall()
+                try:
+                    open_counts = conn.execute(
+                        "SELECT * FROM cycle_counts WHERE organization_id=? AND status='open'", (org,)
+                    ).fetchall()
+                except Exception:
+                    open_counts = []
+            self._json(HTTPStatus.OK, {
+                "lowStock": [dict(r) for r in low_stock],
+                "expiringSoon": [dict(r) for r in expiring],
+                "overdueOrders": [dict(r) for r in overdue_orders],
+                "openCycleCounts": [dict(r) for r in open_counts],
+                "summary": {
+                    "lowStockCount": len(low_stock),
+                    "expiringSoonCount": len(expiring),
+                    "overdueOrdersCount": len(overdue_orders),
+                    "openCycleCountsCount": len(open_counts),
+                }
+            }); return
         # Work orders: GET /api/v1/work-orders
         if path == "/api/v1/work-orders":
             if not self._require_permission("projectRead"): return

@@ -8884,6 +8884,64 @@ function _bindInventoryEvents() {
   document.getElementById('invQuickIssueBtn')?.addEventListener('click', () => _quickMovementTyped('issue'));
   document.getElementById('invWriteOffBtn')?.addEventListener('click', () => _quickMovementTyped('loss'));
 
+  document.getElementById('invAlertsBtn')?.addEventListener('click', async () => {
+    const r = await apiFetch('/api/v1/inventory/alerts').catch(() => null);
+    if (!r?.ok) { toast('Ошибка загрузки алертов'); return; }
+    const { lowStock = [], expiringSoon = [], overdueOrders = [], openCycleCounts = [], summary = {} } = await r.json();
+    const existing = document.getElementById('invAlertsOverlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'invAlertsOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    const totalAlerts = summary.lowStockCount + summary.expiringSoonCount + summary.overdueOrdersCount + summary.openCycleCountsCount;
+    function section(title, color, items, rowFn) {
+      if (!items.length) return '';
+      return `<div style="margin-bottom:16px">
+        <p style="font-size:11px;font-weight:700;color:${color};letter-spacing:.08em;margin:0 0 8px">${title} (${items.length})</p>
+        ${items.slice(0,10).map(rowFn).join('')}
+        ${items.length > 10 ? `<p style="font-size:10px;color:var(--text-muted)">...и ещё ${items.length-10}</p>` : ''}
+      </div>`;
+    }
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:640px;max-height:85vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border)">
+          <h3 style="margin:0;font-size:15px">🔔 Алерты склада ${totalAlerts ? `<span style="font-size:12px;color:#f46">(${totalAlerts})</span>` : '<span style="font-size:12px;color:#4adc84">— всё хорошо</span>'}</h3>
+          <button id="invAlertsDismiss" class="button ghost" style="font-size:11px">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:16px 20px">
+          ${!totalAlerts ? '<p class="empty-copy">Нет активных алертов. Всё в порядке! ✓</p>' : ''}
+          ${section('LOW STOCK', '#e8a84c', lowStock, r =>
+            `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
+              <span><strong>${escapeHtml(r.sku_code)}</strong> ${escapeHtml(r.name)} · ${escapeHtml(r.wh_name)}</span>
+              <span style="color:#e8a84c">${r.quantity} / min ${r.min_quantity}</span>
+            </div>`
+          )}
+          ${section('ИСТЕКАЕТ СРОК', '#f46', expiringSoon, r => {
+            const days = Math.ceil((new Date(r.expires_at) - new Date()) / 86400000);
+            return `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
+              <span><strong>${escapeHtml(r.sku_code||'')}</strong> ${escapeHtml(r.sku_name)} · ${escapeHtml(r.wh_name)}</span>
+              <span style="color:${days<=0?'#f46':'#e8a84c'}">${days<=0?'Истёк':days+' дн.'} · ${r.quantity} ед.</span>
+            </div>`;
+          })}
+          ${section('ПРОСРОЧЕННЫЕ ЗАКАЗЫ', '#f46', overdueOrders, r =>
+            `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
+              <span>${escapeHtml(r.supplier_name||'—')} · ожид. ${r.expected_at?.slice(0,10)||'?'}</span>
+              <span style="color:#f46">${escapeHtml(r.status)}</span>
+            </div>`
+          )}
+          ${section('ОТКРЫТЫЕ ИНВЕНТАРИЗАЦИИ', '#a78bfa', openCycleCounts, r =>
+            `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
+              <span>${escapeHtml(r.name)}</span>
+              <span style="color:#a78bfa">с ${r.started_at?.slice(0,10)||'?'}</span>
+            </div>`
+          )}
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#invAlertsDismiss')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  });
+
   document.getElementById('invCycleCountBtn')?.addEventListener('click', async () => {
     const whId = _invSelectedWarehouse;
     if (!whId) { toast('Выберите склад перед инвентаризацией'); return; }
