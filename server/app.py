@@ -4951,6 +4951,104 @@ Rules:
         self.audit(org, actor, None, f"reorder.{status}", "reorder_request", request_id)
         return dict(updated)
 
+    # ── Inventory reconciliation ───────────────────────────────────────────────
+    def create_reconciliation(self, org: str, warehouse_id: str, note: str = "", counted_by: str = "") -> dict[str, Any]:
+        now = utc_now()
+        rid = _uid()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO inventory_reconciliations(id,organization_id,warehouse_id,status,note,counted_by,started_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (rid, org, warehouse_id, "draft", note, counted_by, now, now, now)
+            )
+            # Snapshot current stock for this warehouse
+            rows = conn.execute(
+                "SELECT ss.sku_id, COALESCE(ss.quantity,0) as qty FROM inventory_stock_settings ss "
+                "WHERE ss.organization_id=? AND ss.warehouse_id=? "
+                "UNION SELECT im.sku_id, 0 FROM inventory_movements im "
+                "WHERE im.organization_id=? AND im.warehouse_id=? AND im.sku_id NOT IN "
+                "(SELECT sku_id FROM inventory_stock_settings WHERE organization_id=? AND warehouse_id=?)",
+                (org, warehouse_id, org, warehouse_id, org, warehouse_id)
+            ).fetchall()
+            # Use actual computed stock
+            stock = conn.execute(
+                "SELECT sku_id, SUM(CASE WHEN movement_type IN ('receive','return','adjustment') THEN quantity "
+                "WHEN movement_type IN ('issue','loss','transfer') THEN -quantity ELSE 0 END) as qty "
+                "FROM inventory_movements WHERE organization_id=? AND warehouse_id=? GROUP BY sku_id",
+                (org, warehouse_id)
+            ).fetchall()
+            for s in stock:
+                lid = _uid()
+                conn.execute(
+                    "INSERT INTO inventory_reconciliation_lines(id,reconciliation_id,organization_id,sku_id,system_quantity,updated_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (lid, rid, org, s["sku_id"], max(0, s["qty"] or 0), now)
+                )
+        return self.get_reconciliation(org, rid)
+
+    def get_reconciliation(self, org: str, recon_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT r.*, w.name as warehouse_name FROM inventory_reconciliations r "
+                "JOIN warehouses w ON w.id=r.warehouse_id WHERE r.id=? AND r.organization_id=?",
+                (recon_id, org)
+            ).fetchone()
+            if not row: return None
+            lines = conn.execute(
+                "SELECT l.*, s.name as sku_name, s.sku_code, s.unit "
+                "FROM inventory_reconciliation_lines l JOIN inventory_skus s ON s.id=l.sku_id "
+                "WHERE l.reconciliation_id=? ORDER BY s.name",
+                (recon_id,)
+            ).fetchall()
+        result = dict(row)
+        result["lines"] = [dict(l) for l in lines]
+        return result
+
+    def list_reconciliations(self, org: str, warehouse_id: str | None = None) -> list[dict[str, Any]]:
+        where = "r.organization_id=?"
+        params: list[Any] = [org]
+        if warehouse_id:
+            where += " AND r.warehouse_id=?"; params.append(warehouse_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT r.*, w.name as warehouse_name FROM inventory_reconciliations r "
+                f"JOIN warehouses w ON w.id=r.warehouse_id WHERE {where} ORDER BY r.created_at DESC LIMIT 50",
+                params
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_reconciliation_line(self, org: str, recon_id: str, sku_id: str, counted_qty: float | None, note: str = "") -> None:
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE inventory_reconciliation_lines SET counted_quantity=?, note=?, updated_at=? "
+                "WHERE reconciliation_id=? AND sku_id=? AND organization_id=?",
+                (counted_qty, note, now, recon_id, sku_id, org)
+            )
+
+    def complete_reconciliation(self, org: str, recon_id: str, actor: str) -> dict[str, Any]:
+        now = utc_now()
+        recon = self.get_reconciliation(org, recon_id)
+        if not recon: raise LookupError("Reconciliation not found")
+        # Apply adjustments for lines with variance
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE inventory_reconciliations SET status='completed', completed_at=?, updated_at=? WHERE id=? AND organization_id=?",
+                (now, now, recon_id, org)
+            )
+            for line in recon["lines"]:
+                if line["counted_quantity"] is None: continue
+                variance = line["counted_quantity"] - line["system_quantity"]
+                if abs(variance) < 0.001: continue
+                mid = _uid()
+                conn.execute(
+                    "INSERT INTO inventory_movements(id,organization_id,warehouse_id,sku_id,movement_type,quantity,reference,note,source,recorded_by,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (mid, org, recon["warehouse_id"], line["sku_id"], "adjustment", variance,
+                     f"recon:{recon_id}", line["note"] or "Инвентаризация", "reconciliation", actor, now)
+                )
+        return self.get_reconciliation(org, recon_id)
+
     def auto_suggest_reorders(self, org: str) -> list[dict[str, Any]]:
         """Return stock items below min_quantity that don't have an open reorder request."""
         with self._connect() as conn:
@@ -8242,6 +8340,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"requests": self.store.list_reorder_requests(org, status)}); return
             if sub == "reorder-suggest":
                 self._json(HTTPStatus.OK, {"suggestions": self.store.auto_suggest_reorders(org)}); return
+            if sub == "reconciliations":
+                wh = self.query_params.get("warehouseId",[None])[0]
+                self._json(HTTPStatus.OK, {"reconciliations": self.store.list_reconciliations(org, wh)}); return
+            if sub == "reconciliations" and len(parts) == 5:
+                rid = parts[4]
+                data = self.store.get_reconciliation(org, rid)
+                if not data: self._error(HTTPStatus.NOT_FOUND, "not_found", "Reconciliation not found"); return
+                self._json(HTTPStatus.OK, {"reconciliation": data}); return
             if sub == "suppliers":
                 include_inactive = self.query_params.get("includeInactive",["0"])[0] == "1"
                 self._json(HTTPStatus.OK, {"suppliers": self.store.list_suppliers(org, include_inactive)}); return
@@ -9322,6 +9428,36 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         location_bin=payload.get("locationBin"),
                     )
                     self._json(HTTPStatus.OK, {"stock": result}); return
+                if sub == "reconciliations":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    if len(parts) == 5:  # POST /api/v1/inventory/reconciliations — create
+                        recon = self.store.create_reconciliation(
+                            org, warehouse_id=str(payload["warehouseId"]),
+                            note=str(payload.get("note","")),
+                            counted_by=str(payload.get("countedBy", self.current_role)),
+                        )
+                        self.audit(org, self.current_user_id, None, "create", "reconciliation", recon["id"])
+                        self._json(HTTPStatus.CREATED, {"reconciliation": recon}); return
+                    if len(parts) == 6:
+                        rid = parts[5]
+                        if "countedQuantity" in payload or "skuId" in payload:
+                            # Update line: POST /api/v1/inventory/reconciliations/:id {skuId, countedQuantity, note}
+                            self.store.update_reconciliation_line(
+                                org, rid,
+                                sku_id=str(payload["skuId"]),
+                                counted_qty=None if payload.get("countedQuantity") is None else float(payload["countedQuantity"]),
+                                note=str(payload.get("note","")),
+                            )
+                            self._json(HTTPStatus.OK, {"updated": True}); return
+                        if payload.get("action") == "complete":
+                            # Complete: POST /api/v1/inventory/reconciliations/:id {action:"complete"}
+                            try:
+                                recon = self.store.complete_reconciliation(org, rid, actor=self.current_role)
+                                self.audit(org, self.current_user_id, None, "complete", "reconciliation", rid)
+                                self._json(HTTPStatus.OK, {"reconciliation": recon}); return
+                            except LookupError as err:
+                                self._error(HTTPStatus.NOT_FOUND, "not_found", str(err)); return
                 if sub == "suppliers":
                     if not self._require_permission("projectManage"): return
                     payload = self._read_json()

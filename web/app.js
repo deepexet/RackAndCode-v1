@@ -7464,9 +7464,138 @@ function _bindInventoryEvents() {
   }
 
   function _closeAllInvPanels() {
-    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel','inventoryMinQtyPanel']
+    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel','inventoryMinQtyPanel','inventoryReconcilePanel']
       .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   }
+
+  async function _loadReconcileList() {
+    const list = document.getElementById('inventoryReconcileList');
+    const detail = document.getElementById('inventoryReconcileDetail');
+    if (!list) return;
+    detail.style.display = 'none'; detail.innerHTML = '';
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    const whParam = _invSelectedWarehouse ? `?warehouseId=${_invSelectedWarehouse}` : '';
+    try {
+      const { reconciliations = [] } = await apiFetch(`/api/v1/inventory/reconciliations${whParam}`).then(r => r.json());
+      if (!reconciliations.length) {
+        list.innerHTML = '<p class="empty-copy" style="font-size:13px">Инвентаризаций нет. Создайте первую.</p>'; return;
+      }
+      const ST_COLORS = {draft:'#778',in_progress:'#4f8ef7',completed:'#4adc84',cancelled:'#f46'};
+      const ST_LABELS = {draft:'Черновик',in_progress:'В процессе',completed:'Завершена',cancelled:'Отменена'};
+      list.innerHTML = reconciliations.map(r => `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer"
+          data-recon-id="${r.id}">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600">${escapeHtml(r.warehouse_name)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${r.started_at.slice(0,10)} · ${escapeHtml(r.counted_by||'—')}</div>
+          </div>
+          <span style="font-size:11px;padding:2px 8px;border-radius:8px;background:${ST_COLORS[r.status]}22;color:${ST_COLORS[r.status]}">${ST_LABELS[r.status]||r.status}</span>
+        </div>`).join('');
+      list.querySelectorAll('[data-recon-id]').forEach(el => {
+        el.addEventListener('click', () => _openReconcileDetail(el.dataset.reconId));
+      });
+    } catch(e) { list.innerHTML = `<p class="empty-copy">${e.message}</p>`; }
+  }
+
+  async function _openReconcileDetail(reconId) {
+    const detail = document.getElementById('inventoryReconcileDetail');
+    if (!detail) return;
+    detail.style.display = 'block';
+    detail.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    try {
+      const { reconciliation: r } = await apiFetch(`/api/v1/inventory/reconciliations/${reconId}`).then(resp => resp.json());
+      const isOpen = r.status === 'draft' || r.status === 'in_progress';
+      detail.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div>
+            <p style="font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--accent);margin:0">СВЕРКА · ${r.warehouse_name}</p>
+            <p style="font-size:12px;color:var(--text-muted);margin:2px 0 0">${r.started_at.slice(0,16).replace('T',' ')} · ${r.counted_by||'—'}</p>
+          </div>
+          ${isOpen ? `<button class="button primary" id="completeReconBtn" style="font-size:12px">✓ Завершить и применить</button>` : ''}
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="color:var(--text-muted);text-align:left">
+            <th style="padding:6px 8px">SKU</th>
+            <th style="padding:6px 8px">Наименование</th>
+            <th style="padding:6px 8px;text-align:right">Учётный</th>
+            <th style="padding:6px 8px;text-align:right">${isOpen ? 'Факт (введите)' : 'Фактический'}</th>
+            <th style="padding:6px 8px;text-align:right">Расхождение</th>
+          </tr></thead>
+          <tbody>${r.lines.map(l => {
+            const v = l.variance;
+            const vc = v === null ? '#778' : v > 0 ? '#4adc84' : v < 0 ? '#f46' : '#778';
+            return `<tr style="border-top:1px solid var(--border)" data-line-sku="${l.sku_id}">
+              <td style="padding:6px 8px;font-family:monospace;font-size:11px;color:var(--text-muted)">${escapeHtml(l.sku_code)}</td>
+              <td style="padding:6px 8px">${escapeHtml(l.sku_name)}</td>
+              <td style="padding:6px 8px;text-align:right">${l.system_quantity} ${escapeHtml(l.unit||'')}</td>
+              <td style="padding:6px 8px;text-align:right">
+                ${isOpen
+                  ? `<input type="number" min="0" step="0.001" class="recon-count-inp" data-sku="${l.sku_id}"
+                      value="${l.counted_quantity??''}" placeholder="—" data-recon-id="${reconId}"
+                      style="width:80px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;text-align:right">`
+                  : `${l.counted_quantity??'—'} ${escapeHtml(l.unit||'')}`}
+              </td>
+              <td style="padding:6px 8px;text-align:right;font-weight:700;color:${vc}">${v===null ? '—' : (v>0?'+':'')+v.toFixed(3)}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>`;
+
+      if (isOpen) {
+        let _saveTimer = null;
+        detail.querySelectorAll('.recon-count-inp').forEach(inp => {
+          inp.addEventListener('change', async () => {
+            clearTimeout(_saveTimer);
+            _saveTimer = setTimeout(async () => {
+              const qty = inp.value === '' ? null : parseFloat(inp.value);
+              await apiFetch(`/api/v1/inventory/reconciliations/${reconId}`, {
+                method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+                body: JSON.stringify({ skuId: inp.dataset.sku, countedQuantity: qty }),
+              }).catch(() => {});
+            }, 600);
+          });
+        });
+        detail.querySelector('#completeReconBtn')?.addEventListener('click', async () => {
+          if (!confirm('Применить расхождения как корректировки склада?')) return;
+          try {
+            await apiFetch(`/api/v1/inventory/reconciliations/${reconId}`, {
+              method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+              body: JSON.stringify({ action: 'complete' }),
+            });
+            toast('Инвентаризация завершена, корректировки применены');
+            _openReconcileDetail(reconId);
+            _loadStock(_invSelectedWarehouse);
+          } catch(e) { toast(`Ошибка: ${e.message}`); }
+        });
+      }
+    } catch(e) { detail.innerHTML = `<p class="empty-copy">${e.message}</p>`; }
+  }
+
+  document.getElementById('invReconcileBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventoryReconcilePanel');
+    const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
+    _closeAllInvPanels();
+    if (wasHidden && panel) { panel.style.display = ''; _loadReconcileList(); }
+  });
+  document.getElementById('invReconcileCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventoryReconcilePanel'); if (p) p.style.display = 'none';
+  });
+  document.getElementById('invReconcileNewBtn')?.addEventListener('click', async () => {
+    const wh = _invSelectedWarehouse;
+    if (!wh) { toast('Выберите склад для инвентаризации'); return; }
+    const note = prompt('Примечание к инвентаризации (пусто = нет):') ?? '';
+    const countedBy = prompt('ФИО / имя ответственного:') ?? '';
+    try {
+      const r = await apiFetch('/api/v1/inventory/reconciliations', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ warehouseId: wh, note, countedBy }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      const { reconciliation } = await r.json();
+      toast('Инвентаризация создана');
+      _loadReconcileList();
+      setTimeout(() => _openReconcileDetail(reconciliation.id), 300);
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
 
   document.getElementById('invHistoryBtn')?.addEventListener('click', () => {
     const panel = document.getElementById('inventoryHistoryPanel');

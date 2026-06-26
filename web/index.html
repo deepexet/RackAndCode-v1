@@ -246,6 +246,7 @@
           <button class="button ghost" id="invSuppliersBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">Поставщики</button>
           <button class="button ghost" id="invLowStockBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">⚠ Низкий остаток</button>
           <button class="button ghost" id="invMinQtyEditorBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">⚙ Пороги пополнения</button>
+          <button class="button ghost" id="invReconcileBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">📋 Инвентаризация</button>
           <hr style="border:none;border-top:1px solid var(--border);margin:8px 0">
           <button class="button primary" id="invQuickReceiveBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start">＋ Быстрый приём</button>
           <button class="button ghost" id="invQuickIssueBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">− Быстрый расход</button>
@@ -303,6 +304,19 @@
           </div>
         </div>
         <div id="inventoryLowStockList"></div>
+      </div>
+
+      <!-- Reconciliation panel -->
+      <div id="inventoryReconcilePanel" style="display:none;margin-top:20px">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">ИНВЕНТАРИЗАЦИЯ</p><h2>Сверка остатков</h2></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="button ghost" id="invReconcileNewBtn" type="button" style="font-size:12px">＋ Новая сверка</button>
+            <button class="button ghost" id="invReconcileCloseBtn" type="button">✕</button>
+          </div>
+        </div>
+        <div id="inventoryReconcileList"></div>
+        <div id="inventoryReconcileDetail" style="display:none;margin-top:16px"></div>
       </div>
 
       <!-- Min qty bulk editor panel -->
