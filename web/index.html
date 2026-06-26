@@ -253,6 +253,7 @@
           <button class="button ghost" id="invQuickIssueBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">− Быстрый расход</button>
           <button class="button ghost" id="invWriteOffBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px;color:#e05353">✕ Списание (loss)</button>
           <button class="button ghost" id="invBatchMoveBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px">⚡ Пакетная операция</button>
+          <button class="button ghost" id="invExpiryBtn" type="button" style="width:100%;font-size:12px;justify-content:flex-start;margin-top:4px;color:#e8a84c">⏳ Сроки годности</button>
         </aside>
 
         <!-- Main: stock table -->
@@ -324,6 +325,23 @@
           </div>
         </div>
         <div id="inventoryAnalyticsContent"></div>
+      </div>
+
+      <!-- Expiry tracking panel -->
+      <div id="inventoryExpiryPanel" style="display:none;margin-top:20px">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">СКЛАД</p><h2>Сроки годности</h2></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <select id="invExpiryDays" style="padding:4px 8px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+              <option value="7">7 дней</option>
+              <option value="30" selected>30 дней</option>
+              <option value="90">90 дней</option>
+            </select>
+            <button class="button ghost" id="invAddLotBtn" type="button" style="font-size:12px">＋ Партия</button>
+            <button class="button ghost" id="invExpiryCloseBtn" type="button">✕</button>
+          </div>
+        </div>
+        <div id="inventoryExpiryList"></div>
       </div>
 
       <!-- Reconciliation panel -->

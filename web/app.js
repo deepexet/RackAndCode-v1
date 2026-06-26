@@ -7998,7 +7998,7 @@ function _bindInventoryEvents() {
   }
 
   function _closeAllInvPanels() {
-    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel','inventoryMinQtyPanel','inventoryReconcilePanel','inventoryAnalyticsPanel']
+    ['inventoryPendingPanel','inventoryHistoryPanel','inventoryReorderPanel','inventorySkuPanel','inventorySuppliersPanel','inventoryLowStockPanel','inventoryMinQtyPanel','inventoryReconcilePanel','inventoryAnalyticsPanel','inventoryExpiryPanel']
       .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   }
 
@@ -8375,6 +8375,77 @@ function _bindInventoryEvents() {
   document.getElementById('invQuickReceiveBtn')?.addEventListener('click', () => _quickMovementTyped('receive'));
   document.getElementById('invQuickIssueBtn')?.addEventListener('click', () => _quickMovementTyped('issue'));
   document.getElementById('invWriteOffBtn')?.addEventListener('click', () => _quickMovementTyped('loss'));
+
+  document.getElementById('invExpiryBtn')?.addEventListener('click', () => {
+    const panel = document.getElementById('inventoryExpiryPanel');
+    const wasHidden = panel?.style.display === 'none' || !panel?.style.display;
+    _closeAllInvPanels();
+    if (wasHidden && panel) { panel.style.display = ''; _loadExpiryList(); }
+  });
+  document.getElementById('invExpiryCloseBtn')?.addEventListener('click', () => {
+    const p = document.getElementById('inventoryExpiryPanel'); if (p) p.style.display = 'none';
+  });
+  document.getElementById('invExpiryDays')?.addEventListener('change', _loadExpiryList);
+  document.getElementById('invAddLotBtn')?.addEventListener('click', async () => {
+    const warehouseId = _invSelectedWarehouse || prompt('ID склада:');
+    if (!warehouseId?.trim()) return;
+    const { skus = [] } = await apiFetch('/api/v1/inventory/skus').then(r => r.json()).catch(() => ({}));
+    if (!skus.length) { toast('Нет SKU в каталоге'); return; }
+    const skuByCode = new Map(skus.map(s => [s.sku_code.toLowerCase(), s.id]));
+    const code = prompt('SKU (код или ID):'); if (!code?.trim()) return;
+    const skuId = skuByCode.get(code.toLowerCase()) || code;
+    const qty = parseFloat(prompt('Количество:', '1') || '0');
+    if (!qty || qty <= 0) return;
+    const lotNumber = prompt('Номер партии (пусто = нет):', '') ?? '';
+    const receivedAt = prompt('Дата получения (YYYY-MM-DD):', new Date().toISOString().slice(0,10)) || '';
+    const expiresAt = prompt('Срок годности (YYYY-MM-DD, пусто = нет):', '') || null;
+    try {
+      const r = await apiFetch('/api/v1/inventory/lots', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ warehouseId, skuId, quantity: qty, lotNumber, receivedAt, expiresAt }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('Партия добавлена'); _loadExpiryList();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
+  async function _loadExpiryList() {
+    const el = document.getElementById('inventoryExpiryList');
+    if (!el) return;
+    el.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    const days = document.getElementById('invExpiryDays')?.value || '30';
+    try {
+      const { lots = [] } = await apiFetch(`/api/v1/inventory/lots?days=${days}`).then(r => r.json());
+      if (!lots.length) { el.innerHTML = `<p class="empty-copy">Нет партий, истекающих в течение ${days} дней.</p>`; return; }
+      el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          <th style="padding:6px 8px;text-align:left">SKU</th>
+          <th style="padding:6px 8px;text-align:left">Партия</th>
+          <th style="padding:6px 8px;text-align:left">Склад</th>
+          <th style="padding:6px 8px;text-align:right">Кол-во</th>
+          <th style="padding:6px 8px;text-align:left">Истекает</th>
+          <th style="padding:6px 8px;text-align:left">Осталось</th>
+        </tr></thead>
+        <tbody>${lots.map(l => {
+          const isExp = l.expired;
+          const urgent = l.days_left <= 7;
+          const color = isExp ? '#f46' : urgent ? '#e8a84c' : '#4adc84';
+          const label = isExp ? 'ИСТЁК' : `${l.days_left} дн.`;
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:7px 8px">
+              <strong>${escapeHtml(l.sku_name)}</strong>
+              <div style="font-size:10px;color:var(--text-muted);font-family:monospace">${escapeHtml(l.sku_code)}</div>
+            </td>
+            <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(l.lot_number||'—')}</td>
+            <td style="padding:7px 8px;color:var(--text-muted)">${escapeHtml(l.warehouse_name)}</td>
+            <td style="padding:7px 8px;text-align:right">${l.quantity} ${escapeHtml(l.unit||'')}</td>
+            <td style="padding:7px 8px">${escapeHtml(l.expires_at||'')}</td>
+            <td style="padding:7px 8px;font-weight:600;color:${color}">${label}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`;
+    } catch { el.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+  }
 
   document.getElementById('invBatchMoveBtn')?.addEventListener('click', async () => {
     const movementType = prompt('Тип операции (receive/issue/loss/adjustment/return):', 'receive');

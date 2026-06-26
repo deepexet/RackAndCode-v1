@@ -5555,6 +5555,52 @@ Rules:
                 "DELETE FROM work_item_checklist WHERE id=? AND organization_id=?", (item_id, org)
             )
 
+    def list_expiring_lots(self, org: str, days: int = 30) -> list[dict[str, Any]]:
+        """Return lots expiring within `days` days, ordered by expiry date."""
+        cutoff = (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT il.*, sk.name as sku_name, sk.sku_code, sk.unit,
+                          w.name as warehouse_name
+                   FROM inventory_lots il
+                   JOIN inventory_skus sk ON sk.id=il.sku_id
+                   JOIN warehouses w ON w.id=il.warehouse_id
+                   WHERE il.organization_id=? AND il.expires_at IS NOT NULL
+                     AND il.quantity > 0
+                     AND il.expires_at <= ? ORDER BY il.expires_at""",
+                (org, cutoff)
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["expired"] = r["expires_at"] < today
+            d["days_left"] = (datetime.strptime(r["expires_at"], "%Y-%m-%d") - datetime.utcnow()).days
+            result.append(d)
+        return result
+
+    def create_lot(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        warehouse_id = str(payload.get("warehouseId",""))
+        sku_id = str(payload.get("skuId",""))
+        qty = float(payload.get("quantity", 0))
+        if not warehouse_id or not sku_id: raise ValueError("warehouseId and skuId required")
+        if qty <= 0: raise ValueError("quantity must be positive")
+        now = utc_now(); lid = _uid()
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM warehouses WHERE id=? AND organization_id=?", (warehouse_id, org)).fetchone():
+                raise LookupError("Warehouse not found")
+            if not conn.execute("SELECT 1 FROM inventory_skus WHERE id=? AND organization_id=?", (sku_id, org)).fetchone():
+                raise LookupError("SKU not found")
+            conn.execute(
+                "INSERT INTO inventory_lots (id,organization_id,warehouse_id,sku_id,lot_number,quantity,received_at,expires_at,note,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (lid, org, warehouse_id, sku_id, str(payload.get("lotNumber",""))[:60],
+                 qty, str(payload.get("receivedAt",""))[:10] or now[:10],
+                 payload.get("expiresAt") or None, str(payload.get("note",""))[:500], now)
+            )
+            row = conn.execute("SELECT * FROM inventory_lots WHERE id=?", (lid,)).fetchone()
+        return dict(row)
+
     def list_org_labels(self, org: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -8804,6 +8850,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._json(HTTPStatus.OK, {"order": order}); return
                 status_filter = self.query_params.get("status",[None])[0]
                 self._json(HTTPStatus.OK, {"orders": self.store.list_supplier_orders(org, status_filter)}); return
+            if sub == "lots":
+                if not self._require_permission("projectRead"): return
+                days = int(self.query_params.get("days",["30"])[0])
+                self._json(HTTPStatus.OK, {"lots": self.store.list_expiring_lots(org, days)}); return
             if sub == "skus" and len(parts) == 7 and parts[6] == "cost-history":
                 sku_id = parts[5]
                 with self.store._connect() as conn:
@@ -10036,6 +10086,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         if action == "delete":
                             self.store.delete_supplier(org, sid, actor=self.current_role)
                             self._json(HTTPStatus.OK, {"deleted": True}); return
+                if sub == "lots":
+                    if not self._require_permission("projectManage"): return
+                    try:
+                        lot = self.store.create_lot(org, self._read_json())
+                        self._json(HTTPStatus.CREATED, {"lot": lot}); return
+                    except (ValueError, LookupError) as e:
+                        status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                        self._error(status, "invalid_request", str(e)); return
                 if sub == "orders":
                     if not self._require_permission("projectManage"): return
                     payload = self._read_json()
