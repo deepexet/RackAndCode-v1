@@ -9753,6 +9753,95 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             skill = self.query_params.get("skill",[""])[0]
             level = self.query_params.get("minLevel",["basic"])[0]
             self._json(HTTPStatus.OK, {"members": self.store.find_skilled_members(self.organization_id, skill, level)}); return
+        # Supplier performance: GET /api/v1/inventory/supplier-performance
+        if path == "/api/v1/inventory/supplier-performance":
+            if not self._require_permission("projectRead"): return
+            org = self.organization_id
+            with self.store._connect() as conn:
+                orders = conn.execute(
+                    "SELECT so.*, sup.name as supplier_name FROM supplier_orders so "
+                    "LEFT JOIN inventory_suppliers sup ON sup.id=so.supplier_id "
+                    "WHERE so.organization_id=?",
+                    (org,)
+                ).fetchall()
+            from collections import defaultdict
+            by_sup: dict[str, dict] = defaultdict(lambda: {
+                "totalOrders": 0, "completedOrders": 0, "overdueOrders": 0,
+                "onTimeOrders": 0, "sumLeadDays": 0.0, "leadCount": 0,
+            })
+            import datetime as _dt
+            today = _dt.date.today().isoformat()
+            for o in orders:
+                sid = o["supplier_id"] or "__none__"
+                d = by_sup[sid]
+                d["supplierId"] = sid
+                d["supplierName"] = o["supplier_name"] or "Без поставщика"
+                d["totalOrders"] += 1
+                if o["status"] == "received":
+                    d["completedOrders"] += 1
+                    if o["expected_at"] and o["received_at"]:
+                        on_time = o["received_at"][:10] <= o["expected_at"][:10]
+                        if on_time: d["onTimeOrders"] += 1
+                    try:
+                        if o["created_at"] and o["received_at"]:
+                            lead = (_dt.date.fromisoformat(o["received_at"][:10]) - _dt.date.fromisoformat(o["created_at"][:10])).days
+                            if lead >= 0: d["sumLeadDays"] += lead; d["leadCount"] += 1
+                    except Exception:
+                        pass
+                elif o["status"] in ("sent","confirmed") and o["expected_at"] and o["expected_at"][:10] < today:
+                    d["overdueOrders"] += 1
+            result = []
+            for d in by_sup.values():
+                c = d["completedOrders"]
+                t = d["totalOrders"]
+                result.append({
+                    **d,
+                    "fillRate": round(c / t * 100, 1) if t else 0,
+                    "onTimeRate": round(d["onTimeOrders"] / c * 100, 1) if c else 0,
+                    "avgLeadDays": round(d["sumLeadDays"] / d["leadCount"], 1) if d["leadCount"] else None,
+                })
+            result.sort(key=lambda x: -x["totalOrders"])
+            self._json(HTTPStatus.OK, {"suppliers": result}); return
+        # SKU demand forecast: GET /api/v1/inventory/demand-forecast
+        if path == "/api/v1/inventory/demand-forecast":
+            if not self._require_permission("projectRead"): return
+            import datetime as _dt
+            org = self.organization_id
+            days_back = int(self.query_params.get("days",["90"])[0])
+            horizon = int(self.query_params.get("horizon",["30"])[0])
+            cutoff = (_dt.date.today() - _dt.timedelta(days=days_back)).isoformat()
+            with self.store._connect() as conn:
+                rows = conn.execute(
+                    "SELECT m.sku_id, sk.sku_code, sk.name, sk.unit, sk.unit_cost, sk.category, "
+                    "SUM(m.quantity) as issued_total "
+                    "FROM inventory_movements m JOIN inventory_skus sk ON sk.id=m.sku_id "
+                    "WHERE m.organization_id=? AND m.movement_type='issue' AND m.created_at>=? "
+                    "GROUP BY m.sku_id ORDER BY issued_total DESC",
+                    (org, cutoff)
+                ).fetchall()
+                # Get current stock per SKU
+                stock_rows = conn.execute(
+                    "SELECT sku_id, SUM(quantity) as on_hand FROM inventory_stock WHERE organization_id=? GROUP BY sku_id",
+                    (org,)
+                ).fetchall()
+                stock_map = {r["sku_id"]: r["on_hand"] for r in stock_rows}
+            forecast = []
+            for r in rows:
+                daily_rate = (r["issued_total"] or 0) / days_back
+                forecast_qty = round(daily_rate * horizon, 2)
+                on_hand = stock_map.get(r["sku_id"], 0)
+                days_cover = round(on_hand / daily_rate, 1) if daily_rate > 0 else None
+                forecast.append({
+                    "skuId": r["sku_id"], "skuCode": r["sku_code"], "name": r["name"],
+                    "unit": r["unit"], "category": r["category"],
+                    "issuedTotal": r["issued_total"], "dailyRate": round(daily_rate, 4),
+                    "forecastQty": forecast_qty, "onHand": on_hand,
+                    "daysCover": days_cover,
+                    "needsReorder": days_cover is not None and days_cover < horizon,
+                })
+            self._json(HTTPStatus.OK, {
+                "forecast": forecast, "daysBack": days_back, "horizon": horizon
+            }); return
         # Inventory valuation: GET /api/v1/inventory/valuation
         if path == "/api/v1/inventory/valuation":
             if not self._require_permission("projectRead"): return

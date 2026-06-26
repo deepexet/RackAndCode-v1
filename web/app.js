@@ -9252,6 +9252,105 @@ function _bindInventoryEvents() {
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   });
 
+  document.getElementById('invDemandForecastBtn')?.addEventListener('click', async () => {
+    const r = await apiFetch('/api/v1/inventory/demand-forecast?days=90&horizon=30').catch(() => null);
+    if (!r?.ok) { toast('Ошибка загрузки прогноза'); return; }
+    const { forecast = [], daysBack, horizon } = await r.json();
+    const needsReorder = forecast.filter(f => f.needsReorder);
+    const existing = document.getElementById('demandForecastOverlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'demandForecastOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:660px;max-height:88vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)">
+          <div>
+            <h3 style="margin:0;font-size:14px">📈 Прогноз потребности</h3>
+            <p style="margin:2px 0 0;font-size:11px;color:var(--text-muted)">История ${daysBack} дней · горизонт ${horizon} дней · ${forecast.length} SKU</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            ${needsReorder.length ? `<span style="font-size:11px;color:#f46;font-weight:700">⚠ ${needsReorder.length} к дозаказу</span>` : ''}
+            <button id="dfDismiss" class="button ghost" style="font-size:11px">✕</button>
+          </div>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:14px 18px">
+          ${!forecast.length ? '<p class="empty-copy" style="font-size:12px">Нет данных о выдачах за период.</p>' : `
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead><tr style="color:var(--text-muted)">
+              <th style="text-align:left;padding:5px 4px;border-bottom:1px solid var(--border)">SKU</th>
+              <th style="text-align:right;padding:5px 4px;border-bottom:1px solid var(--border)">Выдано</th>
+              <th style="text-align:right;padding:5px 4px;border-bottom:1px solid var(--border)">В наличии</th>
+              <th style="text-align:right;padding:5px 4px;border-bottom:1px solid var(--border)">Прогноз ${horizon}д</th>
+              <th style="text-align:right;padding:5px 4px;border-bottom:1px solid var(--border)">Запас (дней)</th>
+              <th style="text-align:center;padding:5px 4px;border-bottom:1px solid var(--border)">Статус</th>
+            </tr></thead>
+            <tbody>${forecast.slice(0,40).map(f => {
+              const coverColor = f.daysCover == null ? '#778195' : f.daysCover < 14 ? '#f46' : f.daysCover < 30 ? '#e8a84c' : '#4adc84';
+              return `<tr>
+                <td style="padding:5px 4px;border-bottom:1px solid var(--border)">
+                  <strong>${escapeHtml(f.skuCode)}</strong><br>
+                  <span style="color:var(--text-muted)">${escapeHtml(f.name)}</span>
+                </td>
+                <td style="padding:5px 4px;border-bottom:1px solid var(--border);text-align:right">${Number(f.issuedTotal).toLocaleString()}</td>
+                <td style="padding:5px 4px;border-bottom:1px solid var(--border);text-align:right">${Number(f.onHand).toLocaleString()}</td>
+                <td style="padding:5px 4px;border-bottom:1px solid var(--border);text-align:right;color:#4f8ef7"><strong>${Number(f.forecastQty).toLocaleString()}</strong></td>
+                <td style="padding:5px 4px;border-bottom:1px solid var(--border);text-align:right;color:${coverColor}">
+                  ${f.daysCover != null ? f.daysCover+'д' : '∞'}
+                </td>
+                <td style="padding:5px 4px;border-bottom:1px solid var(--border);text-align:center">
+                  ${f.needsReorder ? '<span style="color:#f46;font-size:10px">⚠ Дозаказ</span>' : '<span style="color:#4adc84;font-size:10px">✓ ОК</span>'}
+                </td>
+              </tr>`;
+            }).join('')}</tbody>
+          </table>
+          ${forecast.length > 40 ? `<p style="font-size:10px;color:var(--text-muted);margin-top:8px">...и ещё ${forecast.length-40} позиций</p>` : ''}`}
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#dfDismiss')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  });
+
+  document.getElementById('invSupplierPerfBtn')?.addEventListener('click', async () => {
+    const r = await apiFetch('/api/v1/inventory/supplier-performance').catch(() => null);
+    if (!r?.ok) { toast('Ошибка загрузки данных'); return; }
+    const { suppliers = [] } = await r.json();
+    const existing = document.getElementById('supplierPerfOverlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'supplierPerfOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:640px;max-height:85vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)">
+          <h3 style="margin:0;font-size:14px">🏆 Рейтинг поставщиков <span style="font-size:11px;color:var(--text-muted)">(${suppliers.length})</span></h3>
+          <button id="spDismiss" class="button ghost" style="font-size:11px">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:14px 18px">
+          ${!suppliers.length ? '<p class="empty-copy" style="font-size:12px">Нет данных о заказах.</p>' : suppliers.map(s => {
+            const fillColor = s.fillRate >= 90 ? '#4adc84' : s.fillRate >= 70 ? '#e8a84c' : '#f46';
+            const otColor = s.onTimeRate >= 85 ? '#4adc84' : s.onTimeRate >= 60 ? '#e8a84c' : '#f46';
+            return `<div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <strong style="font-size:13px">${escapeHtml(s.supplierName)}</strong>
+                <span style="font-size:10px;color:var(--text-muted)">${s.totalOrders} заказов</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px">
+                <div><div style="color:var(--text-muted);font-size:9px">Выполнено</div><strong style="color:${fillColor}">${s.fillRate}%</strong></div>
+                <div><div style="color:var(--text-muted);font-size:9px">Вовремя</div><strong style="color:${otColor}">${s.onTimeRate}%</strong></div>
+                <div><div style="color:var(--text-muted);font-size:9px">Срок (дней)</div><strong>${s.avgLeadDays != null ? s.avgLeadDays : '—'}</strong></div>
+                <div><div style="color:var(--text-muted);font-size:9px">Просрочено</div><strong style="color:${s.overdueOrders>0?'#f46':'#4adc84'}">${s.overdueOrders}</strong></div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#spDismiss')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  });
+
   document.getElementById('invValuationBtn')?.addEventListener('click', async () => {
     const r = await apiFetch('/api/v1/inventory/valuation').catch(() => null);
     if (!r?.ok) { toast('Ошибка загрузки данных'); return; }
