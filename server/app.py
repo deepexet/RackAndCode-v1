@@ -869,29 +869,37 @@ class WorkspaceStore:
 
     def list_custom_field_definitions(self,organization_id: str) -> list[dict[str,Any]]:
         with self._connect() as connection:
-            rows=connection.execute("SELECT id,scope,code,label,data_type,options_json,required,position,active,version FROM custom_field_definitions WHERE organization_id=? ORDER BY scope,position",(organization_id,)).fetchall()
+            # Read from v2 table if available (migration 084), fall back to original
+            try:
+                rows=connection.execute("SELECT id,scope,code,label,data_type,options_json,required,position,active,version FROM custom_field_definitions_v2 WHERE organization_id=? ORDER BY scope,position",(organization_id,)).fetchall()
+            except Exception:
+                rows=connection.execute("SELECT id,scope,code,label,data_type,options_json,required,position,active,version FROM custom_field_definitions WHERE organization_id=? ORDER BY scope,position",(organization_id,)).fetchall()
         return [{"id":row["id"],"scope":row["scope"],"code":row["code"],"label":row["label"],"dataType":row["data_type"],"options":json.loads(row["options_json"]),"required":bool(row["required"]),"position":row["position"],"active":bool(row["active"]),"version":row["version"]} for row in rows]
 
     def save_custom_field_definition(self,organization_id: str,payload: dict[str,Any],definition_id: str | None=None) -> dict[str,Any]:
         scope,code,label,data_type=payload.get("scope"),payload.get("code"),payload.get("label"),payload.get("dataType")
         options=payload.get("options",[])
-        if scope not in {"location","unit"}: raise ValueError("Invalid custom field scope")
+        if scope not in {"location","unit","project","work_item"}: raise ValueError("Invalid custom field scope")
         if not isinstance(code,str) or not code.strip() or len(code)>48 or not all(character.isalnum() or character in "_-" for character in code): raise ValueError("Invalid custom field code")
         if not isinstance(label,str) or not label.strip() or len(label)>120: raise ValueError("Invalid custom field label")
         if data_type not in {"text","number","boolean","date","select"}: raise ValueError("Invalid custom field type")
         if not isinstance(options,list) or len(options)>50 or any(not isinstance(value,str) or not value.strip() or len(value)>120 for value in options): raise ValueError("Invalid custom field options")
         options=list(dict.fromkeys(value.strip() for value in options));now=utc_now()
+        tbl = "custom_field_definitions_v2"
         with self._lock,self._connect() as connection:
+            # Check if v2 table exists
+            has_v2 = connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='custom_field_definitions_v2'").fetchone()
+            if not has_v2: tbl = "custom_field_definitions"
             if definition_id:
-                current=connection.execute("SELECT version FROM custom_field_definitions WHERE organization_id=? AND id=?",(organization_id,definition_id)).fetchone()
+                current=connection.execute(f"SELECT version FROM {tbl} WHERE organization_id=? AND id=?",(organization_id,definition_id)).fetchone()
                 if current is None: raise LookupError("Custom field not found")
                 expected=payload.get("expectedVersion")
                 if expected!=current["version"]: raise EntityVersionConflict(current["version"])
-                try: connection.execute("""UPDATE custom_field_definitions SET scope=?,code=?,label=?,data_type=?,options_json=?,required=?,active=?,version=version+1,updated_at=? WHERE organization_id=? AND id=? AND version=?""",(scope,code.strip(),label.strip(),data_type,json.dumps(options,ensure_ascii=False),1 if payload.get("required") else 0,1 if payload.get("active",True) else 0,now,organization_id,definition_id,expected))
+                try: connection.execute(f"""UPDATE {tbl} SET scope=?,code=?,label=?,data_type=?,options_json=?,required=?,active=?,version=version+1,updated_at=? WHERE organization_id=? AND id=? AND version=?""",(scope,code.strip(),label.strip(),data_type,json.dumps(options,ensure_ascii=False),1 if payload.get("required") else 0,1 if payload.get("active",True) else 0,now,organization_id,definition_id,expected))
                 except sqlite3.IntegrityError as error: raise ValueError("Custom field code already exists in this scope") from error
             else:
-                definition_id=str(uuid.uuid4());position=connection.execute("SELECT COALESCE(MAX(position),-1)+1 AS value FROM custom_field_definitions WHERE organization_id=? AND scope=?",(organization_id,scope)).fetchone()["value"]
-                try: connection.execute("""INSERT INTO custom_field_definitions (organization_id,id,scope,code,label,data_type,options_json,required,position,active,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,1,1,?,?)""",(organization_id,definition_id,scope,code.strip(),label.strip(),data_type,json.dumps(options,ensure_ascii=False),1 if payload.get("required") else 0,position,now,now))
+                definition_id=str(uuid.uuid4());position=connection.execute(f"SELECT COALESCE(MAX(position),-1)+1 AS value FROM {tbl} WHERE organization_id=? AND scope=?",(organization_id,scope)).fetchone()["value"]
+                try: connection.execute(f"""INSERT INTO {tbl} (organization_id,id,scope,code,label,data_type,options_json,required,position,active,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,1,1,?,?)""",(organization_id,definition_id,scope,code.strip(),label.strip(),data_type,json.dumps(options,ensure_ascii=False),1 if payload.get("required") else 0,position,now,now))
                 except sqlite3.IntegrityError as error: raise ValueError("Custom field code already exists in this scope") from error
         return next(value for value in self.list_custom_field_definitions(organization_id) if value["id"]==definition_id)
 
@@ -2038,6 +2046,50 @@ class WorkspaceStore:
             conn.execute(
                 "UPDATE projects SET status=?,updated_at=? WHERE organization_id=? AND id=?",
                 (new_status, now, org, project_id)
+            )
+
+    def get_project_custom_fields(self, org: str, project_id: str) -> dict[str, Any]:
+        """Return {fieldCode: value} for a project, merging with definitions."""
+        defs = [d for d in self.list_custom_field_definitions(org) if d["scope"] == "project" and d["active"]]
+        with self._connect() as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT field_id, value_text, value_number, value_bool, value_date FROM project_custom_field_values "
+                    "WHERE organization_id=? AND project_id=?", (org, project_id)
+                ).fetchall()
+            except Exception:
+                rows = []
+        val_map = {r["field_id"]: r for r in rows}
+        result = []
+        for d in defs:
+            v = val_map.get(d["id"])
+            if v:
+                if d["dataType"] == "number": val = v["value_number"]
+                elif d["dataType"] == "boolean": val = bool(v["value_bool"]) if v["value_bool"] is not None else None
+                elif d["dataType"] == "date": val = v["value_date"]
+                else: val = v["value_text"]
+            else:
+                val = None
+            result.append({"fieldId": d["id"], "code": d["code"], "label": d["label"],
+                           "dataType": d["dataType"], "value": val, "options": d["options"]})
+        return {"fields": result}
+
+    def set_project_custom_field(self, org: str, project_id: str, field_id: str, value: Any) -> None:
+        now = utc_now()
+        defs_map = {d["id"]: d for d in self.list_custom_field_definitions(org) if d["scope"] == "project"}
+        defn = defs_map.get(field_id)
+        if not defn: raise LookupError("Custom field not found")
+        vt = vn = vb = vd = None
+        if defn["dataType"] == "number": vn = float(value) if value is not None and value != "" else None
+        elif defn["dataType"] == "boolean": vb = 1 if value else 0
+        elif defn["dataType"] == "date": vd = str(value)[:10] if value else None
+        else: vt = str(value)[:500] if value is not None else None
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_custom_field_values (id,organization_id,project_id,field_id,value_text,value_number,value_bool,value_date,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,field_id) "
+                "DO UPDATE SET value_text=?,value_number=?,value_bool=?,value_date=?,updated_at=?",
+                (_uid(), org, project_id, field_id, vt, vn, vb, vd, now, vt, vn, vb, vd, now)
             )
 
     def project_sla_report(self, org: str) -> dict[str, Any]:
@@ -9400,6 +9452,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK, {"settings": self.store.get_org_settings(self.organization_id)})
             return
+        # Project custom fields: GET /api/v1/projects/:id/custom-fields
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "custom-fields":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, self.store.get_project_custom_fields(self.organization_id, parts[4])); return
         # Milestones: GET /api/v1/projects/:id/milestones
         if len(parts) == 6 and parts[3] == "projects" and parts[5] == "milestones":
             if not self._require_permission("projectRead"): return
@@ -10940,6 +10996,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # Project custom fields SET: POST /api/v1/projects/:id/custom-fields
+        if len(parts) == 6 and parts[3] == "projects" and parts[5] == "custom-fields":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                field_id = str(payload.get("fieldId","")).strip()
+                if not field_id: raise ValueError("fieldId required")
+                self.store.set_project_custom_field(self.organization_id, parts[4], field_id, payload.get("value"))
+                self._json(HTTPStatus.OK, {"ok": True}); return
+            except (ValueError, LookupError, json.JSONDecodeError) as e:
+                status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(e)); return
         # Milestone deps: POST /api/v1/projects/:pid/milestones/:mid/deps  and  /deps/:pred_id/delete
         if len(parts) >= 8 and parts[3] == "projects" and parts[5] == "milestones" and parts[7] == "deps":
             project_id = parts[4]; mid = parts[6]
