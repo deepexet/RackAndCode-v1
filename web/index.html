@@ -838,6 +838,14 @@
         <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px">Отправка HTTP POST на внешние URL при событиях платформы. Поддерживается HMAC-SHA256 подпись.</p>
         <div id="webhooksList"></div>
       </section>
+      <section class="detail-section" id="digestScheduleSection" data-permission="adminPanel">
+        <div class="detail-section-title">
+          <div><p class="eyebrow">УВЕДОМЛЕНИЯ</p><h2>Email-дайджест</h2></div>
+          <button class="button ghost" id="addDigestBtn" type="button" style="font-size:12px">＋ Расписание</button>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px">Автоматическая рассылка сводки по проектам, SLA и складу по расписанию (cron). Предпросмотр — кнопка «Preview».</p>
+        <div id="digestSchedulesList"></div>
+      </section>
       <section class="detail-section" id="mfaSection" data-permission="adminPanel">
         <div class="detail-section-title">
           <div><p class="eyebrow">БЕЗОПАСНОСТЬ</p><h2>Двухфакторная аутентификация</h2></div>

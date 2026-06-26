@@ -5769,6 +5769,63 @@ Rules:
                 skipped += len(items)
         return {"created": len(created), "orders": created, "skipped": skipped}
 
+    # ── Digest schedules ─────────────────────────────────────────────────
+    def list_digest_schedules(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM digest_schedules WHERE organization_id=? ORDER BY name", (org,)
+            ).fetchall()]
+
+    def save_digest_schedule(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        sid = str(payload.get("id","")).strip() or _uid()
+        now = utc_now()
+        name = str(payload.get("name","Daily Digest")).strip()
+        cron = str(payload.get("cronExpr","0 8 * * *")).strip()
+        recipients = _json.dumps(payload.get("recipients", []))
+        sections = _json.dumps(payload.get("includeSections", ["projects","inventory","sla","kpi"]))
+        active = 1 if payload.get("active", True) else 0
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO digest_schedules (id,organization_id,name,cron_expr,recipients,include_sections,active,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,name) "
+                "DO UPDATE SET cron_expr=?,recipients=?,include_sections=?,active=?,updated_at=?",
+                (sid, org, name, cron, recipients, sections, active, now, now,
+                 cron, recipients, sections, active, now)
+            )
+            row = conn.execute("SELECT * FROM digest_schedules WHERE organization_id=? AND name=?", (org, name)).fetchone()
+        return dict(row)
+
+    def delete_digest_schedule(self, org: str, sched_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM digest_schedules WHERE id=? AND organization_id=?", (sched_id, org))
+
+    def build_digest_html(self, org: str, sections: list[str]) -> str:
+        """Build HTML digest body with requested sections."""
+        import json as _json
+        parts = [f"<h2>RackPilot Digest — {utc_now()[:10]}</h2>"]
+        with self._connect() as conn:
+            if "kpi" in sections:
+                total_proj = conn.execute("SELECT COUNT(*) FROM projects WHERE organization_id=?", (org,)).fetchone()[0]
+                open_wi = conn.execute(
+                    "SELECT COUNT(*) FROM work_items WHERE organization_id=? AND status NOT IN ('done','cancelled')", (org,)
+                ).fetchone()[0]
+                parts.append(f"<h3>KPI</h3><p>Проектов: {total_proj} | Открытых задач: {open_wi}</p>")
+            if "sla" in sections:
+                overdue = conn.execute(
+                    "SELECT COUNT(*) FROM projects WHERE organization_id=? AND target_date < date('now') AND status NOT IN ('done','archived')", (org,)
+                ).fetchone()[0]
+                parts.append(f"<h3>SLA</h3><p>Просроченных проектов: {overdue}</p>")
+            if "inventory" in sections:
+                try:
+                    low = conn.execute(
+                        "SELECT COUNT(*) FROM inventory_stock WHERE organization_id=? AND min_quantity IS NOT NULL AND quantity<=min_quantity", (org,)
+                    ).fetchone()[0]
+                    parts.append(f"<h3>Склад</h3><p>Позиций ниже минимума: {low}</p>")
+                except Exception:
+                    pass
+        return "<html><body>" + "".join(parts) + "</body></html>"
+
     # ── Team skills ──────────────────────────────────────────────────────
     def list_team_skills(self, org: str, user_id: str | None = None, skill_name: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -9589,6 +9646,18 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Digest schedules: GET /api/v1/digest/schedules
+        if path == "/api/v1/digest/schedules":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"schedules": self.store.list_digest_schedules(self.organization_id)}); return
+        # Digest preview: GET /api/v1/digest/preview
+        if path == "/api/v1/digest/preview":
+            if not self._require_permission("projectRead"): return
+            import json as _json
+            sections = self.query_params.get("sections", ["projects,inventory,sla,kpi"])[0].split(",")
+            html = self.store.build_digest_html(self.organization_id, sections)
+            self.send_response(HTTPStatus.OK); self.send_header("Content-Type","text/html; charset=utf-8")
+            self.end_headers(); self.wfile.write(html.encode()); return
         # Team skills: GET /api/v1/team/skills
         if path == "/api/v1/team/skills":
             if not self._require_permission("projectRead"): return
@@ -11101,6 +11170,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 except (ValueError, LookupError) as e:
                     status2 = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status2, "invalid_request", str(e)); return
+        # Digest schedule POST: /api/v1/digest/schedules (save) and /:id/delete
+        if path == "/api/v1/digest/schedules":
+            if not self._require_permission("projectManage"): return
+            try:
+                sched = self.store.save_digest_schedule(self.organization_id, self._read_json())
+                self._json(HTTPStatus.OK, {"schedule": sched}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+        ds_parts = path.strip("/").split("/")
+        if len(ds_parts) == 5 and ds_parts[2] == "digest" and ds_parts[3] == "schedules" and ds_parts[4]:
+            if not self._require_permission("projectManage"): return
+            self.store.delete_digest_schedule(self.organization_id, ds_parts[4])
+            self._json(HTTPStatus.OK, {"deleted": True}); return
         # Team skills POST: /api/v1/team/skills (upsert) and /:id/delete
         if path == "/api/v1/team/skills":
             if not self._require_permission("projectManage"): return

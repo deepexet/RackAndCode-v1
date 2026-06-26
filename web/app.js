@@ -642,7 +642,7 @@ function renderRoute() {
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') { hydrateGrowthChart(); hydrateOverviewKpi(); hydrateOverviewSla(); }
   if (route === 'inventory') { hydrateInventory(); }
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels(),hydrateWiTemplatesAdmin(),hydrateWebhooks()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels(),hydrateWiTemplatesAdmin(),hydrateWebhooks(),hydrateDigestSchedules()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -1991,6 +1991,43 @@ function _showCycleCountPanel(count) {
       const rd = await apiFetch(`/api/v1/inventory/cycle-counts/${count.id}`).then(r2 => r2.json());
       _showCycleCountPanel(rd.count);
     });
+  });
+}
+
+async function hydrateDigestSchedules() {
+  const listEl = document.getElementById('digestSchedulesList');
+  if (!listEl) return;
+  try {
+    const r = await apiFetch('/api/v1/digest/schedules').catch(() => null);
+    const { schedules = [] } = r?.ok ? await r.json() : {};
+    listEl.innerHTML = schedules.length ? schedules.map(s => `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;font-size:12px">
+        <div style="flex:1">
+          <strong>${escapeHtml(s.name)}</strong>
+          <span style="color:var(--text-muted);margin-left:8px;font-family:monospace">${escapeHtml(s.cron_expr)}</span>
+          ${s.last_sent ? `<span style="color:var(--text-muted);margin-left:8px">отправлен ${s.last_sent.slice(0,10)}</span>` : ''}
+        </div>
+        <a href="/api/v1/digest/preview?sections=${encodeURIComponent((JSON.parse(s.include_sections||'[]')).join(','))}" target="_blank" class="button ghost" style="font-size:10px">Preview</a>
+        <button class="button ghost del-digest" data-id="${s.id}" style="font-size:10px;color:#f46">✕</button>
+      </div>`).join('') : '<p class="empty-copy" style="font-size:12px">Нет расписаний. Нажмите ＋ чтобы добавить.</p>';
+    listEl.querySelectorAll('.del-digest').forEach(btn => btn.addEventListener('click', async () => {
+      if (!confirm('Удалить расписание?')) return;
+      await apiFetch(`/api/v1/digest/schedules/${btn.dataset.id}`, { method:'POST', headers:apiHeaders() });
+      hydrateDigestSchedules();
+    }));
+  } catch { listEl.innerHTML = '<p class="empty-copy" style="color:#f46;font-size:12px">Ошибка загрузки расписаний.</p>'; }
+  document.getElementById('addDigestBtn')?.addEventListener('click', async () => {
+    const name = prompt('Название расписания:', 'Daily Digest'); if (!name?.trim()) return;
+    const cron = prompt('Cron-выражение (UTC):', '0 8 * * *') || '0 8 * * *';
+    const recipientsRaw = prompt('Email получателей (через запятую):', '') || '';
+    const recipients = recipientsRaw.split(',').map(s=>s.trim()).filter(Boolean);
+    const sections = ['projects','inventory','sla','kpi'];
+    const r = await apiFetch('/api/v1/digest/schedules', {
+      method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ name: name.trim(), cronExpr: cron, recipients, includeSections: sections }),
+    });
+    if (r.ok) { toast('Расписание добавлено'); hydrateDigestSchedules(); }
+    else toast(`Ошибка: ${(await r.json()).error?.message || r.status}`);
   });
 }
 
