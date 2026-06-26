@@ -1523,6 +1523,7 @@ async function hydrateTeam() {
         <div class="member-footer">
           <span style="font-size:11px;color:var(--text-muted)">${m.project_count||0} проектов</span>
           <div style="display:flex;gap:6px">
+            <button class="text-button member-skills-btn" data-id="${m.id}" data-name="${escapeHtml(m.name)}" style="color:#a78bfa">Навыки</button>
             <button class="text-button member-edit-btn" data-id="${m.id}">Ред.</button>
             <button class="text-button member-del-btn" data-id="${m.id}" style="color:#e05353">Удалить</button>
           </div>
@@ -1540,6 +1541,61 @@ async function hydrateTeam() {
         if (!confirm('Удалить сотрудника?')) return;
         await apiFetch(`/api/v1/team/${btn.dataset.id}/delete`, { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
         hydrateTeam();
+      });
+    });
+    grid.querySelectorAll('.member-skills-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const userId = btn.dataset.id;
+        const memberName = btn.dataset.name;
+        const r = await apiFetch(`/api/v1/team/skills?userId=${userId}`).catch(() => null);
+        const { skills = [] } = r?.ok ? await r.json() : {};
+        const LEVELS = { basic: '⭐', intermediate: '⭐⭐', advanced: '⭐⭐⭐', expert: '⭐⭐⭐⭐' };
+        const existing = document.getElementById('memberSkillsOverlay');
+        if (existing) existing.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'memberSkillsOverlay';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+        overlay.innerHTML = `
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:500px;max-height:80vh;display:flex;flex-direction:column">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)">
+              <h3 style="margin:0;font-size:14px">Навыки: ${escapeHtml(memberName)}</h3>
+              <div style="display:flex;gap:8px">
+                <button id="addSkillBtn" class="button ghost" style="font-size:11px">＋ Навык</button>
+                <button id="skillsDismiss" class="button ghost" style="font-size:11px">✕</button>
+              </div>
+            </div>
+            <div style="flex:1;overflow-y:auto;padding:14px 18px">
+              ${!skills.length ? '<p class="empty-copy" style="font-size:12px">Нет навыков. Нажмите ＋ чтобы добавить.</p>' :
+                skills.map(s => `
+                <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)">
+                  <div style="flex:1">
+                    <strong style="font-size:13px">${escapeHtml(s.skill_name)}</strong>
+                    <span style="font-size:11px;color:var(--text-muted);margin-left:8px">${LEVELS[s.level]||s.level}</span>
+                    ${s.certified ? `<span style="font-size:10px;color:#4adc84;margin-left:6px">✓ Сертифицирован${s.cert_expiry ? ' до ' + s.cert_expiry.slice(0,10) : ''}</span>` : ''}
+                  </div>
+                  <button class="button ghost del-skill" data-skill-id="${s.id}" style="font-size:10px;color:#f46">✕</button>
+                </div>`).join('')}
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#skillsDismiss')?.addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+        overlay.querySelectorAll('.del-skill').forEach(db => db.addEventListener('click', async () => {
+          const r2 = await apiFetch(`/api/v1/team/skills/${db.dataset.skillId}/delete`, { method:'POST', headers:apiHeaders() });
+          if (r2.ok) { overlay.remove(); btn.click(); }
+        }));
+        overlay.querySelector('#addSkillBtn')?.addEventListener('click', async () => {
+          const skillName = prompt('Название навыка / сертификата:'); if (!skillName?.trim()) return;
+          const level = prompt('Уровень (basic/intermediate/advanced/expert):', 'basic') || 'basic';
+          const certified = confirm('Имеет сертификат?');
+          const certExpiry = certified ? (prompt('Срок действия (YYYY-MM-DD или пусто):') || null) : null;
+          const r2 = await apiFetch('/api/v1/team/skills', {
+            method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ userId, skillName: skillName.trim(), level, certified, certExpiry }),
+          });
+          if (r2.ok) { overlay.remove(); btn.click(); }
+          else toast(`Ошибка: ${(await r2.json()).error?.message || r2.status}`);
+        });
       });
     });
   } catch (e) { grid.innerHTML = `<p class="empty-copy" style="color:#e05353">${e.message}</p>`; }

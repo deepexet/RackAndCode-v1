@@ -5769,6 +5769,51 @@ Rules:
                 skipped += len(items)
         return {"created": len(created), "orders": created, "skipped": skipped}
 
+    # ── Team skills ──────────────────────────────────────────────────────
+    def list_team_skills(self, org: str, user_id: str | None = None, skill_name: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            q = "SELECT * FROM team_member_skills WHERE organization_id=?"
+            args: list[Any] = [org]
+            if user_id: q += " AND user_id=?"; args.append(user_id)
+            if skill_name: q += " AND skill_name=?"; args.append(skill_name)
+            q += " ORDER BY skill_name, level DESC"
+            return [dict(r) for r in conn.execute(q, args).fetchall()]
+
+    def upsert_team_skill(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        user_id = str(payload.get("userId","")).strip()
+        skill = str(payload.get("skillName","")).strip()
+        if not user_id or not skill: raise ValueError("userId and skillName required")
+        level = str(payload.get("level","basic"))
+        if level not in ("basic","intermediate","advanced","expert"): raise ValueError("Invalid level")
+        now = utc_now(); sid = _uid()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO team_member_skills (id,organization_id,user_id,skill_name,level,certified,cert_expiry,notes,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,user_id,skill_name) "
+                "DO UPDATE SET level=?,certified=?,cert_expiry=?,notes=?,updated_at=?",
+                (sid, org, user_id, skill, level, 1 if payload.get("certified") else 0,
+                 payload.get("certExpiry"), str(payload.get("notes","")), now, now,
+                 level, 1 if payload.get("certified") else 0, payload.get("certExpiry"),
+                 str(payload.get("notes","")), now)
+            )
+            row = conn.execute("SELECT * FROM team_member_skills WHERE organization_id=? AND user_id=? AND skill_name=?",
+                               (org, user_id, skill)).fetchone()
+        return dict(row)
+
+    def delete_team_skill(self, org: str, skill_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM team_member_skills WHERE id=? AND organization_id=?", (skill_id, org))
+
+    def find_skilled_members(self, org: str, skill_name: str, min_level: str = "basic") -> list[dict[str, Any]]:
+        """Return team member user_ids that have a given skill at or above min_level."""
+        LEVELS = ["basic","intermediate","advanced","expert"]
+        min_idx = LEVELS.index(min_level) if min_level in LEVELS else 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM team_member_skills WHERE organization_id=? AND skill_name=?", (org, skill_name)
+            ).fetchall()
+        return [dict(r) for r in rows if LEVELS.index(r["level"]) >= min_idx]
+
     # ── Work orders ──────────────────────────────────────────────────────
     def list_work_orders(self, org: str, status: str | None = None, asset_id: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -9544,6 +9589,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Team skills: GET /api/v1/team/skills
+        if path == "/api/v1/team/skills":
+            if not self._require_permission("projectRead"): return
+            user_id = self.query_params.get("userId",[None])[0]
+            skill = self.query_params.get("skill",[None])[0]
+            self._json(HTTPStatus.OK, {"skills": self.store.list_team_skills(self.organization_id, user_id, skill)}); return
+        if path == "/api/v1/team/skills/search":
+            if not self._require_permission("projectRead"): return
+            skill = self.query_params.get("skill",[""])[0]
+            level = self.query_params.get("minLevel",["basic"])[0]
+            self._json(HTTPStatus.OK, {"members": self.store.find_skilled_members(self.organization_id, skill, level)}); return
         # Inventory alerts dashboard: GET /api/v1/inventory/alerts
         if path == "/api/v1/inventory/alerts":
             if not self._require_permission("projectRead"): return
@@ -11045,6 +11101,22 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 except (ValueError, LookupError) as e:
                     status2 = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status2, "invalid_request", str(e)); return
+        # Team skills POST: /api/v1/team/skills (upsert) and /:id/delete
+        if path == "/api/v1/team/skills":
+            if not self._require_permission("projectManage"): return
+            try:
+                skill = self.store.upsert_team_skill(self.organization_id, self._read_json())
+                self._json(HTTPStatus.OK, {"skill": skill}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+        ts_parts = path.strip("/").split("/")
+        if len(ts_parts) == 5 and ts_parts[2] == "team" and ts_parts[3] == "skills" and ts_parts[4] == "delete":
+            if not self._require_permission("projectManage"): return
+            # id embedded as /api/v1/team/skills/:id/delete has 6 parts
+        if len(ts_parts) == 6 and ts_parts[2] == "team" and ts_parts[3] == "skills" and ts_parts[5] == "delete":
+            if not self._require_permission("projectManage"): return
+            self.store.delete_team_skill(self.organization_id, ts_parts[4])
+            self._json(HTTPStatus.OK, {"deleted": True}); return
         # Work orders POST: /api/v1/work-orders and /:id/update
         if path == "/api/v1/work-orders":
             if not self._require_permission("projectManage"): return
