@@ -9683,6 +9683,44 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.CREATED, {"created": len(created), "items": created, "errors": errors}); return
             except (ValueError, json.JSONDecodeError) as exc:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc)); return
+        # AI time estimate: POST /api/v1/projects/:id/work-items/:wid/ai-estimate
+        if len(parts) == 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "ai-estimate":
+            project_id = parts[4]; wid = parts[6]
+            if not self._require_permission("projectManage"): return
+            ai = getattr(self.server, "ai_gateway", None)
+            if not ai:
+                self._error(HTTPStatus.SERVICE_UNAVAILABLE, "no_ai", "AI gateway not configured"); return
+            with self.store._connect() as conn:
+                wi = conn.execute("SELECT * FROM project_work_items WHERE id=? AND organization_id=?", (wid, self.organization_id)).fetchone()
+            if not wi:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Work item not found"); return
+            prompt_text = (
+                f"Estimate the time required (in hours) to complete this construction/field operations task.\n"
+                f"Title: {wi['title']}\nDescription: {wi['description'] or 'none'}\n"
+                f"Priority: {wi['priority'] or 'medium'}\n"
+                f"Return ONLY a JSON object like: {{\"estimatedHours\": 4.5, \"confidence\": \"medium\", \"reasoning\": \"...\"}}\n"
+                f"estimatedHours must be a positive number. confidence is low/medium/high. No extra text."
+            )
+            try:
+                raw = ai.complete(prompt_text, max_tokens=200, org=self.organization_id, purpose="wi_time_estimate") or "{}"
+                match = re.search(r'\{.*\}', raw, re.DOTALL)
+                if not match:
+                    self._error(HTTPStatus.BAD_GATEWAY, "parse_error", "AI did not return valid JSON"); return
+                result = json.loads(match.group())
+                est_h = float(result.get("estimatedHours", 0))
+                est_min = max(1, round(est_h * 60))
+                # Save estimate to WI
+                now = utc_now()
+                with self.store._connect() as conn:
+                    ver = (wi["version"] or 1) + 1
+                    conn.execute("UPDATE project_work_items SET estimated_minutes=?, version=?, updated_at=? WHERE id=? AND organization_id=?",
+                                 (est_min, ver, now, wid, self.organization_id))
+                self._json(HTTPStatus.OK, {"estimatedHours": est_h, "estimatedMinutes": est_min,
+                                           "confidence": result.get("confidence","medium"),
+                                           "reasoning": result.get("reasoning","")})
+            except (json.JSONDecodeError, ValueError, KeyError) as exc:
+                self._error(HTTPStatus.BAD_GATEWAY, "parse_error", str(exc))
+            return
         # Milestones: POST /api/v1/projects/:id/milestones  and  /:id/milestones/:mid/update|delete
         if len(parts) >= 6 and parts[3] == "projects" and parts[5] == "milestones":
             project_id = parts[4]
