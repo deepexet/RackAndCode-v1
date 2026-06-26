@@ -5458,6 +5458,9 @@ function setupWorkItemsBulkList(project) {
         <button class="text-button wi-timelog-btn" data-wi-id="${wi.id}" data-project-id="${project.id}"
           style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0"
           title="Лог времени">⏱</button>
+        <button class="text-button wi-label-btn" data-wi-label-id="${wi.id}" data-project-id="${project.id}"
+          style="font-size:11px;padding:0 4px;flex-shrink:0;color:var(--text-muted)"
+          title="Метки">${(wi.labels||[]).length ? `<span style="color:var(--accent)">🏷${wi.labels.length}</span>` : '🏷'}</button>
       </label>`;
     }).join('');
 
@@ -5635,6 +5638,35 @@ function setupWorkItemsBulkList(project) {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         await _openWiTimelog(btn.dataset.projectId, btn.dataset.wiId, btn);
+      });
+    });
+
+    listEl.querySelectorAll('.wi-label-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const wiId = btn.dataset.wiLabelId;
+        const projId = btn.dataset.projectId;
+        const { labels: orgLabels = [] } = await apiFetch('/api/v1/labels').then(r => r.json()).catch(() => ({}));
+        if (!orgLabels.length) {
+          toast('Сначала создайте метки в Настройки → Метки');
+          return;
+        }
+        const wi = (project.workItems||[]).find(w => w.id === wiId);
+        const current = new Set(wi?.labels || []);
+        const options = orgLabels.map(l => `${current.has(l.id) ? '✓' : '○'} ${l.name} (${l.id.slice(0,4)})`).join('\n');
+        const sel = prompt(`Введите ID меток через запятую (текущие: ${[...current].join(',')}):\n${options}\n\nИD меток:`, [...current].join(','));
+        if (sel === null) return;
+        const ids = sel.split(',').map(s => s.trim()).filter(Boolean);
+        try {
+          const r = await apiFetch(`/api/v1/projects/${projId}/work-items/${wiId}/labels`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+            body: JSON.stringify({ labelIds: ids }),
+          });
+          if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+          if (wi) wi.labels = ids;
+          btn.innerHTML = ids.length ? `<span style="color:var(--accent)">🏷${ids.length}</span>` : '🏷';
+          toast('Метки обновлены');
+        } catch(e2) { toast(`Ошибка: ${e2.message}`); }
       });
     });
 

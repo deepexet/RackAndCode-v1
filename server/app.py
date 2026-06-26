@@ -1123,6 +1123,7 @@ class WorkspaceStore:
                     "workTypeName": work_type_by_id.get(item.get("work_type_id",""), ""),
                     "startDate": item["start_date"], "dueDate": item["due_date"],
                     "estimatedMinutes": item["estimated_minutes"], "actualMinutes": item["actual_minutes"],
+                    "labels": json.loads(item["labels"]) if "labels" in item.keys() and item["labels"] else [],
                     "version": item["version"],
                 } for item in project_items],
                 "stages": project_stages,
@@ -5554,6 +5555,43 @@ Rules:
                 "DELETE FROM work_item_checklist WHERE id=? AND organization_id=?", (item_id, org)
             )
 
+    def list_org_labels(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM org_labels WHERE organization_id=? ORDER BY name", (org,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_org_label(self, org: str, name: str, color: str = "#4f8ef7") -> dict[str, Any]:
+        name = name.strip()[:50]
+        if not name: raise ValueError("Label name required")
+        now = utc_now(); lid = _uid()
+        with self._connect() as conn:
+            try:
+                conn.execute("INSERT INTO org_labels (id,organization_id,name,color,created_at) VALUES (?,?,?,?,?)",
+                             (lid, org, name, color[:20], now))
+            except sqlite3.IntegrityError:
+                raise ValueError(f"Label '{name}' already exists")
+            row = conn.execute("SELECT * FROM org_labels WHERE id=?", (lid,)).fetchone()
+        return dict(row)
+
+    def delete_org_label(self, org: str, label_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM org_labels WHERE id=? AND organization_id=?", (label_id, org))
+
+    def set_work_item_labels(self, org: str, wi_id: str, label_ids: list[str]) -> dict[str, Any]:
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM work_items WHERE id=? AND organization_id=?", (wi_id, org)).fetchone():
+                raise LookupError("Work item not found")
+            # Validate each label_id
+            for lid in label_ids:
+                if not conn.execute("SELECT 1 FROM org_labels WHERE id=? AND organization_id=?", (lid, org)).fetchone():
+                    raise ValueError(f"Label {lid} not found")
+            conn.execute("UPDATE work_items SET labels=?,updated_at=? WHERE id=? AND organization_id=?",
+                         (json.dumps(label_ids), utc_now(), wi_id, org))
+            row = conn.execute("SELECT * FROM work_items WHERE id=?", (wi_id,)).fetchone()
+        return dict(row)
+
     def list_time_log(self, org: str, work_item_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -8862,6 +8900,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Org labels: GET /api/v1/labels
+        if path == "/api/v1/labels":
+            if not self._require_permission("projectRead"): return
+            self._json(HTTPStatus.OK, {"labels": self.store.list_org_labels(self.organization_id)}); return
         # Checklist: GET /api/v1/projects/:pid/work-items/:wid/checklist
         if len(parts) == 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "checklist":
             if not self._require_permission("projectRead"): return
@@ -10111,6 +10153,33 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # Org labels: POST /api/v1/labels  and /labels/:id/delete
+        if path == "/api/v1/labels":
+            if not self._require_permission("projectManage"): return
+            try:
+                payload = self._read_json()
+                label = self.store.create_org_label(self.organization_id, str(payload.get("name","")), str(payload.get("color","#4f8ef7")))
+                self._json(HTTPStatus.CREATED, {"label": label}); return
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err)); return
+        if len(parts) == 5 and parts[3] == "labels" and parts[4] == "delete":
+            if not self._require_permission("projectManage"): return
+            self.store.delete_org_label(self.organization_id, parts[3]); self._json(HTTPStatus.OK, {"deleted": True}); return
+        if len(parts) == 5 and parts[3] == "labels" and parts[5] == "delete":
+            if not self._require_permission("projectManage"): return
+            self.store.delete_org_label(self.organization_id, parts[4]); self._json(HTTPStatus.OK, {"deleted": True}); return
+        # Set WI labels: POST /api/v1/projects/:pid/work-items/:wid/labels
+        if len(parts) == 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "labels":
+            if not self._require_permission("fieldProgress"): return
+            try:
+                payload = self._read_json()
+                ids = payload.get("labelIds", [])
+                if not isinstance(ids, list): raise ValueError("labelIds must be an array")
+                self.store.set_work_item_labels(self.organization_id, parts[6], ids)
+                self._json(HTTPStatus.OK, {"ok": True}); return
+            except (ValueError, LookupError) as err:
+                status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(status, "invalid_request", str(err)); return
         # Time log: POST /api/v1/projects/:pid/work-items/:wid/time-log  and  /time-log/:eid/delete
         if len(parts) >= 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "time-log":
             project_id = parts[4]; wi_id = parts[6]
