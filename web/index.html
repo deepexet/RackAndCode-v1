@@ -287,13 +287,19 @@
       <!-- Suppliers panel -->
       <div id="inventorySuppliersPanel" style="display:none;margin-top:20px">
         <div class="detail-section-title">
-          <div><p class="eyebrow">СПРАВОЧНИК</p><h2>Поставщики</h2></div>
+          <div><p class="eyebrow">ПОСТАВКИ</p><h2>Поставщики и заказы</h2></div>
           <div style="display:flex;gap:6px;align-items:center">
-            <button class="button ghost" id="invSupplierAddBtn" type="button" style="font-size:12px">＋ Добавить</button>
+            <button class="button ghost" id="invSuppliersTabBtn" type="button" style="font-size:12px">Поставщики</button>
+            <button class="button ghost" id="invOrdersTabBtn" type="button" style="font-size:12px">Заказы</button>
+            <button class="button ghost" id="invSupplierAddBtn" type="button" style="font-size:12px">＋ Поставщик</button>
+            <button class="button primary" id="invNewOrderBtn" type="button" style="font-size:12px">＋ Заказ</button>
             <button class="button ghost" id="invSuppliersCloseBtn" type="button">✕</button>
           </div>
         </div>
         <div id="inventorySuppliersList"></div>
+        <div id="invOrdersSection" style="display:none">
+          <div id="invOrdersList"></div>
+        </div>
       </div>
 
       <!-- Low stock alerts panel -->

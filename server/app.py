@@ -5225,6 +5225,103 @@ Rules:
                          (now, supplier_id, org))
         self.audit(org, actor, None, "supplier.delete", "supplier", supplier_id)
 
+    # ── Supplier Orders ───────────────────────────────────────────────────────
+
+    def list_supplier_orders(self, org: str, status: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            q = "SELECT so.*, s.name as supplier_name FROM supplier_orders so JOIN inventory_suppliers s ON s.id=so.supplier_id WHERE so.organization_id=?"
+            args: list[Any] = [org]
+            if status:
+                q += " AND so.status=?"; args.append(status)
+            q += " ORDER BY so.created_at DESC LIMIT 100"
+            orders = [dict(r) for r in conn.execute(q, args).fetchall()]
+        return orders
+
+    def get_supplier_order(self, org: str, order_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT so.*, s.name as supplier_name FROM supplier_orders so JOIN inventory_suppliers s ON s.id=so.supplier_id WHERE so.id=? AND so.organization_id=?",
+                (order_id, org)
+            ).fetchone()
+            if not row: return None
+            order = dict(row)
+            lines = conn.execute(
+                "SELECT sol.*, sk.name as sku_name, sk.sku_code, sk.unit FROM supplier_order_lines sol "
+                "JOIN inventory_skus sk ON sk.id=sol.sku_id WHERE sol.order_id=?", (order_id,)
+            ).fetchall()
+            order["lines"] = [dict(l) for l in lines]
+        return order
+
+    def create_supplier_order(self, org: str, payload: dict[str, Any], actor: str = "") -> dict[str, Any]:
+        supplier_id = str(payload.get("supplierId",""))
+        warehouse_id = str(payload.get("warehouseId",""))
+        lines = payload.get("lines", [])
+        if not supplier_id or not warehouse_id:
+            raise ValueError("supplierId and warehouseId required")
+        if not isinstance(lines, list) or not lines:
+            raise ValueError("lines array must not be empty")
+        now = utc_now(); oid = _uid()
+        with self._connect() as conn:
+            if not conn.execute("SELECT 1 FROM inventory_suppliers WHERE id=? AND organization_id=?", (supplier_id, org)).fetchone():
+                raise LookupError("Supplier not found")
+            if not conn.execute("SELECT 1 FROM warehouses WHERE id=? AND organization_id=?", (warehouse_id, org)).fetchone():
+                raise LookupError("Warehouse not found")
+            conn.execute(
+                "INSERT INTO supplier_orders (id,organization_id,supplier_id,warehouse_id,status,reference,note,ordered_by,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (oid, org, supplier_id, warehouse_id, "draft",
+                 str(payload.get("reference",""))[:120], str(payload.get("note",""))[:500],
+                 actor, now, now)
+            )
+            for line in lines:
+                sku_id = str(line.get("skuId",""))
+                qty = float(line.get("quantity", 0))
+                if not sku_id or qty <= 0: raise ValueError("Each line requires skuId and positive quantity")
+                if not conn.execute("SELECT 1 FROM inventory_skus WHERE id=? AND organization_id=?", (sku_id, org)).fetchone():
+                    raise LookupError(f"SKU {sku_id} not found")
+                conn.execute(
+                    "INSERT INTO supplier_order_lines (id,order_id,organization_id,sku_id,quantity,unit_price,note) VALUES (?,?,?,?,?,?,?)",
+                    (_uid(), oid, org, sku_id, qty, line.get("unitPrice"), str(line.get("note",""))[:200])
+                )
+        self.audit(org, actor, None, "supplier_order.create", "supplier_order", oid)
+        return self.get_supplier_order(org, oid) or {}
+
+    def update_supplier_order_status(self, org: str, order_id: str, status: str, actor: str = "") -> dict[str, Any]:
+        allowed = ("draft","sent","confirmed","received","cancelled")
+        if status not in allowed:
+            raise ValueError(f"Invalid status: {status}")
+        now = utc_now()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM supplier_orders WHERE id=? AND organization_id=?", (order_id, org)).fetchone()
+            if not row: raise LookupError("Order not found")
+            updates: dict[str, Any] = {"status": status, "updated_at": now}
+            if status == "sent": updates["ordered_at"] = now
+            if status == "received": updates["received_at"] = now
+            set_clause = ", ".join(f"{k}=?" for k in updates)
+            conn.execute(f"UPDATE supplier_orders SET {set_clause} WHERE id=?", (*updates.values(), order_id))
+            if status == "received":
+                # Auto-receive: create movements for each line
+                lines = conn.execute("SELECT * FROM supplier_order_lines WHERE order_id=?", (order_id,)).fetchall()
+                for line in lines:
+                    qty = line["quantity"] - line["received_qty"]
+                    if qty <= 0: continue
+                    wh = row["warehouse_id"]
+                    delta_id = _uid()
+                    conn.execute(
+                        "INSERT INTO inventory_stock (id,organization_id,warehouse_id,sku_id,quantity,reserved,updated_at) "
+                        "VALUES (?,?,?,?,?,0,?) ON CONFLICT(warehouse_id,sku_id) DO UPDATE SET quantity=quantity+?,updated_at=?",
+                        (delta_id, org, wh, line["sku_id"], qty, now, qty, now)
+                    )
+                    conn.execute(
+                        "INSERT INTO inventory_movements (id,organization_id,warehouse_id,sku_id,movement_type,quantity,reference,note,recorded_by,source,source_ref,created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (_uid(), org, wh, line["sku_id"], "receive", qty, order_id,
+                         f"PO {row['reference'] or order_id}", actor, "purchase_order", order_id, now)
+                    )
+                    conn.execute("UPDATE supplier_order_lines SET received_qty=quantity WHERE order_id=? AND sku_id=?", (order_id, line["sku_id"]))
+        self.audit(org, actor, None, f"supplier_order.{status}", "supplier_order", order_id)
+        return self.get_supplier_order(org, order_id) or {}
+
     # ── Digest / Reporting ────────────────────────────────────────────────────
 
     def build_digest_data(self, org: str) -> dict[str, Any]:
@@ -8592,6 +8689,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if sub == "suppliers":
                 include_inactive = self.query_params.get("includeInactive",["0"])[0] == "1"
                 self._json(HTTPStatus.OK, {"suppliers": self.store.list_suppliers(org, include_inactive)}); return
+            if sub == "orders":
+                if not self._require_permission("projectRead"): return
+                if len(parts) == 6:
+                    order = self.store.get_supplier_order(org, parts[5])
+                    if not order: self._error(HTTPStatus.NOT_FOUND, "not_found", "Order not found"); return
+                    self._json(HTTPStatus.OK, {"order": order}); return
+                status_filter = self.query_params.get("status",[None])[0]
+                self._json(HTTPStatus.OK, {"orders": self.store.list_supplier_orders(org, status_filter)}); return
             if sub == "skus" and len(parts) == 7 and parts[6] == "cost-history":
                 sku_id = parts[5]
                 with self.store._connect() as conn:
@@ -9807,6 +9912,26 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         if action == "delete":
                             self.store.delete_supplier(org, sid, actor=self.current_role)
                             self._json(HTTPStatus.OK, {"deleted": True}); return
+                if sub == "orders":
+                    if not self._require_permission("projectManage"): return
+                    payload = self._read_json()
+                    if len(parts) == 5:  # POST /api/v1/inventory/orders — create
+                        try:
+                            order = self.store.create_supplier_order(org, payload, actor=self.current_role)
+                            self._json(HTTPStatus.CREATED, {"order": order}); return
+                        except (ValueError, LookupError) as e:
+                            status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                            self._error(status, "invalid_request", str(e)); return
+                    if len(parts) == 7:  # POST /api/v1/inventory/orders/:id/:action
+                        order_id = parts[5]; action = parts[6]
+                        if action in ("send","confirm","receive","cancel"):
+                            status_map = {"send":"sent","confirm":"confirmed","receive":"received","cancel":"cancelled"}
+                            try:
+                                order = self.store.update_supplier_order_status(org, order_id, status_map[action], actor=self.current_role)
+                                self._json(HTTPStatus.OK, {"order": order}); return
+                            except (ValueError, LookupError) as e:
+                                status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                                self._error(status, "invalid_request", str(e)); return
                 if sub == "reservations":
                     if not self._require_permission("projectManage"): return
                     payload = self._read_json()

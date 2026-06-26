@@ -8210,6 +8210,89 @@ function _bindInventoryEvents() {
     } catch(e) { toast(`Ошибка: ${e.message}`); }
   });
 
+  // Supplier orders tab in suppliers panel
+  document.getElementById('invOrdersTabBtn')?.addEventListener('click', () => _loadSupplierOrders());
+  document.getElementById('invSuppliersTabBtn')?.addEventListener('click', () => { _loadSuppliers(); document.getElementById('invOrdersSection')?.style && (document.getElementById('invOrdersSection').style.display='none'); document.getElementById('inventorySuppliersList').style.display=''; });
+  document.getElementById('invNewOrderBtn')?.addEventListener('click', async () => {
+    const { suppliers = [] } = await apiFetch('/api/v1/inventory/suppliers').then(r => r.json()).catch(() => ({}));
+    if (!suppliers.length) { toast('Сначала добавьте поставщика'); return; }
+    const supOptions = suppliers.map(s => `${s.name} (${s.id})`).join('\n');
+    const supInput = prompt(`Выберите поставщика (введите ID или начало названия):\n${supOptions}`);
+    if (!supInput?.trim()) return;
+    const supplier = suppliers.find(s => s.id === supInput.trim() || s.name.toLowerCase().startsWith(supInput.toLowerCase()));
+    if (!supplier) { toast('Поставщик не найден'); return; }
+    const warehouseId = _invSelectedWarehouse || prompt('ID склада:');
+    if (!warehouseId?.trim()) return;
+    const reference = prompt('Номер заказа / ссылка:', '') ?? '';
+    const { skus = [] } = await apiFetch('/api/v1/inventory/skus').then(r => r.json()).catch(() => ({}));
+    const skuByCode = new Map(skus.map(s => [s.sku_code.toLowerCase(), s.id]));
+    const rawLines = prompt('Строки заказа (формат: skuCode qty unitPrice):\n\nПример:\nSKU-001 10 250\nSKU-002 5');
+    if (!rawLines?.trim()) return;
+    const lines = [];
+    for (const line of rawLines.trim().split('\n')) {
+      const [code, qtyStr, priceStr] = line.trim().split(/\s+/);
+      const skuId = skuByCode.get(code?.toLowerCase()) || code;
+      const qty = parseFloat(qtyStr||'0');
+      if (!skuId || isNaN(qty) || qty <= 0) { toast(`Пропущено: "${line}"`); continue; }
+      lines.push({ skuId, quantity: qty, unitPrice: priceStr ? parseFloat(priceStr) : null });
+    }
+    if (!lines.length) { toast('Нет корректных строк'); return; }
+    try {
+      const r = await apiFetch('/api/v1/inventory/orders', {
+        method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ supplierId: supplier.id, warehouseId, reference, lines }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+      toast('Заказ создан'); _loadSupplierOrders();
+    } catch(e) { toast(`Ошибка: ${e.message}`); }
+  });
+
+  async function _loadSupplierOrders() {
+    const section = document.getElementById('invOrdersSection');
+    const list = document.getElementById('invOrdersList');
+    const sList = document.getElementById('inventorySuppliersList');
+    if (!section || !list) return;
+    section.style.display = ''; if (sList) sList.style.display = 'none';
+    list.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+    try {
+      const { orders = [] } = await apiFetch('/api/v1/inventory/orders').then(r => r.json());
+      const STATUS_LABELS = { draft:'Черновик', sent:'Отправлен', confirmed:'Подтверждён', received:'Получен', cancelled:'Отменён' };
+      const STATUS_COLORS = { draft:'#778', sent:'#4f8ef7', confirmed:'#e8a84c', received:'#4adc84', cancelled:'#f46' };
+      if (!orders.length) { list.innerHTML = '<p class="empty-copy">Нет заказов поставщикам.</p>'; return; }
+      list.innerHTML = orders.map(o => `<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+          <div>
+            <strong style="font-size:13px">${escapeHtml(o.reference||o.id.slice(0,8))}</strong>
+            <span style="font-size:11px;color:var(--text-muted);margin-left:8px">${escapeHtml(o.supplier_name)}</span>
+          </div>
+          <span style="font-size:11px;color:${STATUS_COLORS[o.status]};font-weight:600">${STATUS_LABELS[o.status]||o.status}</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${o.status === 'draft' ? `<button class="text-button" data-ord-send="${o.id}" style="font-size:11px;color:var(--accent)">→ Отправить</button>` : ''}
+          ${o.status === 'sent' ? `<button class="text-button" data-ord-confirm="${o.id}" style="font-size:11px;color:#e8a84c">✓ Подтвердить</button>` : ''}
+          ${o.status === 'confirmed' ? `<button class="text-button" data-ord-receive="${o.id}" style="font-size:11px;color:#4adc84">⬇ Получить</button>` : ''}
+          ${['draft','sent'].includes(o.status) ? `<button class="text-button" data-ord-cancel="${o.id}" style="font-size:11px;color:#f46">✕ Отменить</button>` : ''}
+        </div>
+      </div>`).join('');
+      [['ord-send','send'],['ord-confirm','confirm'],['ord-receive','receive'],['ord-cancel','cancel']].forEach(([attr, action]) => {
+        list.querySelectorAll(`[data-${attr}]`).forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const id = btn.dataset[attr.replace(/-([a-z])/g, (_,c) => c.toUpperCase())];
+            try {
+              const r = await apiFetch(`/api/v1/inventory/orders/${id}/${action}`, {
+                method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+              });
+              if (!r.ok) throw new Error((await r.json()).error?.message || r.status);
+              toast(action === 'receive' ? 'Поступление оприходовано' : 'Статус обновлён');
+              _loadSupplierOrders();
+              if (action === 'receive') { _loadInventoryStock(); _loadHistory(); }
+            } catch(e) { toast(`Ошибка: ${e.message}`); }
+          });
+        });
+      });
+    } catch { list.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+  }
+
   async function _loadLowStock() {
     const list = document.getElementById('inventoryLowStockList');
     if (!list) return;
