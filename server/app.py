@@ -9732,6 +9732,68 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             log = self.store.list_ai_invocations(self.organization_id, limit)
             self._json(HTTPStatus.OK, {"log": log})
             return
+        # Project HTML report: GET /api/v1/projects/:id/report.html
+        if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "report.html":
+            if not self._require_permission("projectRead"): return
+            project = self.store.get_project(self.organization_id, parts[3])
+            if not project: self._error(HTTPStatus.NOT_FOUND, "not_found", "Project not found"); return
+            milestones = self.store.list_milestones(self.organization_id, parts[3])
+            import html as _html
+            esc = _html.escape
+            wi_rows = "".join(
+                f"<tr><td>{esc(w.get('code',''))}</td><td>{esc(w.get('title',''))}</td>"
+                f"<td>{esc(w.get('status',''))}</td><td>{esc(w.get('priority',''))}</td>"
+                f"<td>{esc(w.get('dueDate','') or '')}</td></tr>"
+                for w in (project.get("workItems") or [])
+            )
+            ms_rows = "".join(
+                f"<tr><td>{esc(m.get('name',''))}</td><td>{esc(m.get('status',''))}</td><td>{esc(m.get('target_date','') or '')}</td></tr>"
+                for m in milestones
+            )
+            summary = project.get("taskSummary", {})
+            report_html = f"""<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+<title>Отчёт: {esc(project['name'])}</title>
+<style>
+  body{{font-family:Arial,sans-serif;margin:40px;color:#111;font-size:13px}}
+  h1{{font-size:22px;border-bottom:2px solid #4f8ef7;padding-bottom:8px;color:#2d4a8a}}
+  h2{{font-size:15px;color:#4f8ef7;margin-top:28px}}
+  .meta{{display:flex;gap:24px;margin:12px 0;flex-wrap:wrap}}
+  .meta div{{background:#f4f8ff;border:1px solid #d0dff0;border-radius:6px;padding:8px 14px;min-width:100px;text-align:center}}
+  .meta .label{{font-size:10px;color:#667;text-transform:uppercase;letter-spacing:.5px}}
+  .meta .val{{font-size:18px;font-weight:700;color:#2d4a8a;margin-top:2px}}
+  table{{width:100%;border-collapse:collapse;margin-top:10px}}
+  th{{background:#4f8ef7;color:#fff;padding:6px 10px;text-align:left;font-size:11px}}
+  td{{padding:5px 10px;border-bottom:1px solid #e8edf5;font-size:12px}}
+  tr:hover td{{background:#f4f8ff}}
+  .footer{{margin-top:40px;font-size:10px;color:#aaa;border-top:1px solid #eee;padding-top:10px}}
+  @media print{{button{{display:none}}}}
+</style></head><body>
+<h1>📋 {esc(project['name'])}</h1>
+<div class="meta">
+  <div><div class="label">Статус</div><div class="val">{esc(project.get('status',''))}</div></div>
+  <div><div class="label">Приоритет</div><div class="val">{esc(project.get('priority',''))}</div></div>
+  <div><div class="label">Всего задач</div><div class="val">{summary.get('total',0)}</div></div>
+  <div><div class="label">Выполнено</div><div class="val">{summary.get('done',0)}</div></div>
+  <div><div class="label">Заблокировано</div><div class="val">{summary.get('blocked',0)}</div></div>
+  <div><div class="label">Дата начала</div><div class="val" style="font-size:13px">{esc(project.get('start_date','') or '—')}</div></div>
+  <div><div class="label">Целевая дата</div><div class="val" style="font-size:13px">{esc(project.get('target_date','') or '—')}</div></div>
+</div>
+{f'<p style="color:#555;margin:12px 0">{esc(project.get("description",""))}</p>' if project.get("description") else ''}
+<h2>Вехи ({len(milestones)})</h2>
+<table><thead><tr><th>Веха</th><th>Статус</th><th>Дата</th></tr></thead>
+<tbody>{ms_rows or '<tr><td colspan=3>Нет вех</td></tr>'}</tbody></table>
+<h2>Задачи ({len(project.get("workItems",[]))})</h2>
+<table><thead><tr><th>Код</th><th>Название</th><th>Статус</th><th>Приоритет</th><th>Срок</th></tr></thead>
+<tbody>{wi_rows or '<tr><td colspan=5>Нет задач</td></tr>'}</tbody></table>
+<div class="footer">Сформировано: {utc_now()[:16].replace('T',' ')} UTC · RackPilot by Valeronix</div>
+<br><button onclick="window.print()" style="padding:8px 18px;background:#4f8ef7;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">🖨 Печать / PDF</button>
+</body></html>"""
+            body = report_html.encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body); return
         # Project export: GET /api/v1/projects/:id/export
         if path.startswith("/api/v1/projects/") and len(parts) == 5 and parts[4] == "export":
             if not self._require_permission("projectManage"): return
