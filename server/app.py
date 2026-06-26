@@ -5743,6 +5743,77 @@ Rules:
                     pass
         return wi
 
+    # ── Webhooks ──────────────────────────────────────────────────────────
+    def list_webhooks(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM webhooks WHERE organization_id=? ORDER BY name", (org,)).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["events"] = json.loads(r["events"] or "[]")
+            d.pop("secret", None)
+            result.append(d)
+        return result
+
+    def create_webhook(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        url = str(payload.get("url","")).strip()
+        name = str(payload.get("name","")).strip() or url[:40]
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        events = json.dumps(payload.get("events", ["*"]))
+        secret = str(payload.get("secret",""))
+        now = utc_now(); wid = _uid()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO webhooks (id,organization_id,name,url,secret,events,active,created_at,updated_at) VALUES (?,?,?,?,?,?,1,?,?)",
+                (wid, org, name, url, secret, events, now, now)
+            )
+            row = conn.execute("SELECT * FROM webhooks WHERE id=?", (wid,)).fetchone()
+        d = dict(row); d["events"] = payload.get("events", ["*"]); d.pop("secret", None)
+        return d
+
+    def delete_webhook(self, org: str, webhook_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM webhooks WHERE id=? AND organization_id=?", (webhook_id, org))
+
+    def toggle_webhook(self, org: str, webhook_id: str, active: bool) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE webhooks SET active=?,updated_at=? WHERE id=? AND organization_id=?",
+                         (1 if active else 0, utc_now(), webhook_id, org))
+
+    def fire_webhooks(self, org: str, event: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Dispatch event to all matching active webhooks. Returns delivery results."""
+        import urllib.request as _ur, urllib.error as _ue, hmac as _hmac
+        with self._connect() as conn:
+            hooks = conn.execute(
+                "SELECT * FROM webhooks WHERE organization_id=? AND active=1", (org,)
+            ).fetchall()
+        results = []
+        body = json.dumps({"event": event, "organization": org, "data": payload, "timestamp": utc_now()}).encode()
+        for hook in hooks:
+            events_list = json.loads(hook["events"] or "[]")
+            if "*" not in events_list and event not in events_list:
+                continue
+            try:
+                headers = {"Content-Type": "application/json", "X-RackPilot-Event": event,
+                           "User-Agent": "RackPilot-Webhook/1.0"}
+                if hook["secret"]:
+                    sig = _hmac.new(hook["secret"].encode(), body, "sha256").hexdigest()
+                    headers["X-RackPilot-Signature"] = f"sha256={sig}"
+                req = _ur.Request(hook["url"], data=body, headers=headers, method="POST")
+                with _ur.urlopen(req, timeout=5) as resp:
+                    status = resp.status
+            except _ue.HTTPError as e:
+                status = e.code
+            except Exception:
+                status = 0
+            now = utc_now()
+            with self._connect() as conn:
+                conn.execute("UPDATE webhooks SET last_triggered=?,last_status=?,updated_at=? WHERE id=?",
+                             (now, status, now, hook["id"]))
+            results.append({"webhookId": hook["id"], "status": status, "ok": 200 <= status < 300})
+        return results
+
     def list_org_labels(self, org: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -9123,6 +9194,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/wi-templates":
             if not self._require_permission("projectRead"): return
             self._json(HTTPStatus.OK, {"templates": self.store.list_wi_templates(self.organization_id)}); return
+        # Webhooks: GET /api/v1/webhooks
+        if path == "/api/v1/webhooks":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, {"webhooks": self.store.list_webhooks(self.organization_id)}); return
         # Org labels: GET /api/v1/labels
         if path == "/api/v1/labels":
             if not self._require_permission("projectRead"): return
@@ -10437,6 +10512,30 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 except (ValueError, LookupError, json.JSONDecodeError) as err:
                     status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status, "invalid_request", str(err)); return
+        # Webhooks POST endpoints
+        if path == "/api/v1/webhooks":
+            if not self._require_permission("adminPanel"): return
+            try:
+                hook = self.store.create_webhook(self.organization_id, self._read_json())
+                self._json(HTTPStatus.CREATED, {"webhook": hook}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+        if len(parts) == 5 and parts[3] == "webhooks":
+            hook_id = parts[4]
+            if not self._require_permission("adminPanel"): return
+            if hook_id == "test":
+                payload = self._read_json() if self.headers.get("Content-Length","0") != "0" else {}
+                results = self.store.fire_webhooks(self.organization_id, "test", payload or {})
+                self._json(HTTPStatus.OK, {"results": results}); return
+        if len(parts) == 6 and parts[3] == "webhooks":
+            hook_id = parts[4]; action = parts[5]
+            if not self._require_permission("adminPanel"): return
+            if action == "delete":
+                self.store.delete_webhook(self.organization_id, hook_id)
+                self._json(HTTPStatus.OK, {"deleted": True}); return
+            if action in ("enable", "disable"):
+                self.store.toggle_webhook(self.organization_id, hook_id, action == "enable")
+                self._json(HTTPStatus.OK, {"active": action == "enable"}); return
         # Org labels: POST /api/v1/labels  and /labels/:id/delete
         if path == "/api/v1/labels":
             if not self._require_permission("projectManage"): return

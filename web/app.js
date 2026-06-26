@@ -641,7 +641,7 @@ function renderRoute() {
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') { hydrateGrowthChart(); hydrateOverviewKpi(); hydrateOverviewSla(); }
   if (route === 'inventory') { hydrateInventory(); }
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels(),hydrateWiTemplatesAdmin()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels(),hydrateWiTemplatesAdmin(),hydrateWebhooks()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
