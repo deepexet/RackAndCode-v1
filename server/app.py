@@ -5395,6 +5395,52 @@ Rules:
 
     # ── Work Item Comments ────────────────────────────────────────────────────
 
+    def list_checklist(self, org: str, work_item_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM work_item_checklist WHERE organization_id=? AND work_item_id=? ORDER BY position,created_at",
+                (org, work_item_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_checklist_item(self, org: str, work_item_id: str, title: str) -> dict[str, Any]:
+        title = str(title).strip()[:200]
+        if not title:
+            raise ValueError("Title required")
+        with self._connect() as conn:
+            pos = (conn.execute(
+                "SELECT MAX(position) FROM work_item_checklist WHERE organization_id=? AND work_item_id=?",
+                (org, work_item_id)
+            ).fetchone()[0] or 0) + 1
+            cid = _uid(); now = utc_now()
+            conn.execute(
+                "INSERT INTO work_item_checklist (id,organization_id,work_item_id,title,checked,position,created_at,updated_at) "
+                "VALUES (?,?,?,?,0,?,?,?)",
+                (cid, org, work_item_id, title, pos, now, now),
+            )
+            row = conn.execute("SELECT * FROM work_item_checklist WHERE id=?", (cid,)).fetchone()
+        return dict(row)
+
+    def toggle_checklist_item(self, org: str, item_id: str) -> dict[str, Any]:
+        now = utc_now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM work_item_checklist WHERE id=? AND organization_id=?", (item_id, org)
+            ).fetchone()
+            if not row:
+                raise LookupError("Checklist item not found")
+            conn.execute(
+                "UPDATE work_item_checklist SET checked=1-checked,updated_at=? WHERE id=?", (now, item_id)
+            )
+            row = conn.execute("SELECT * FROM work_item_checklist WHERE id=?", (item_id,)).fetchone()
+        return dict(row)
+
+    def delete_checklist_item(self, org: str, item_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_item_checklist WHERE id=? AND organization_id=?", (item_id, org)
+            )
+
     def list_wi_comments(self, org: str, work_item_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -8642,6 +8688,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Checklist: GET /api/v1/projects/:pid/work-items/:wid/checklist
+        if len(parts) == 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "checklist":
+            if not self._require_permission("projectRead"): return
+            wi_id = parts[6]
+            self._json(HTTPStatus.OK, {"items": self.store.list_checklist(self.organization_id, wi_id)})
+            return
         if path == "/api/v1/admin/smtp-config":
             if not self._require_permission("admin"): return
             cfg = self.store.get_smtp_config(self.organization_id)
@@ -9852,6 +9904,31 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                         self._error(status, "invalid_request", str(err))
                     return
+        # Checklist: POST /api/v1/projects/:pid/work-items/:wid/checklist  and  /checklist/:cid/toggle|delete
+        if len(parts) >= 8 and parts[3] == "projects" and parts[5] == "work-items" and parts[7] == "checklist":
+            project_id = parts[4]; wi_id = parts[6]
+            if len(parts) == 8:
+                if not self._require_permission("fieldProgress"): return
+                try:
+                    payload = self._read_json()
+                    item = self.store.add_checklist_item(self.organization_id, wi_id, str(payload.get("title","")))
+                    self._json(HTTPStatus.CREATED, {"item": item})
+                except (ValueError, json.JSONDecodeError) as err:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+                return
+            if len(parts) == 10 and parts[9] in ("toggle", "delete"):
+                if not self._require_permission("fieldProgress"): return
+                cid = parts[8]; action = parts[9]
+                try:
+                    if action == "toggle":
+                        item = self.store.toggle_checklist_item(self.organization_id, cid)
+                        self._json(HTTPStatus.OK, {"item": item})
+                    else:
+                        self.store.delete_checklist_item(self.organization_id, cid)
+                        self._json(HTTPStatus.OK, {"deleted": True})
+                except LookupError as err:
+                    self._error(HTTPStatus.NOT_FOUND, "not_found", str(err))
+                return
         # Work items CSV import: POST /api/v1/projects/:id/work-items/import-csv
         if len(parts) == 7 and parts[3] == "projects" and parts[5] == "work-items" and parts[6] == "import-csv":
             project_id = parts[4]

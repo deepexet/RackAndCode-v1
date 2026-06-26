@@ -5383,6 +5383,9 @@ function setupWorkItemsBulkList(project) {
         <button class="text-button wi-ai-est-btn" data-wi-est-id="${wi.id}"
           style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0"
           title="AI: оценить трудоёмкость">✦</button>
+        <button class="text-button wi-checklist-btn" data-wi-checklist-id="${wi.id}" data-project-id="${project.id}"
+          style="font-size:11px;color:var(--text-muted);padding:0 4px;flex-shrink:0"
+          title="Чеклист подзадач">☑</button>
       </label>`;
     }).join('');
 
@@ -5544,6 +5547,15 @@ function setupWorkItemsBulkList(project) {
         } catch(e) {
           toast(`AI оценка: ${e.message}`);
         } finally { btn.textContent = '✦'; btn.disabled = false; }
+      });
+    });
+
+    listEl.querySelectorAll('.wi-checklist-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const wiId = btn.dataset.wiChecklistId;
+        const projId = btn.dataset.projectId;
+        await _openWiChecklist(projId, wiId, btn);
       });
     });
 
@@ -6128,6 +6140,91 @@ function projectActivityText(event) {
   if (event.entityType === 'unit_progress') return `Обновлен прогресс unit · ${value.status || ''}`;
   if (event.entityType === 'unit') return `${event.action === 'created' ? 'Добавлен' : 'Обновлен'} unit ${value.code || ''} · ${value.name || ''}`;
   return `${event.entityType} · ${event.action}`;
+}
+
+async function _openWiChecklist(projId, wiId, anchorBtn) {
+  let existing = document.getElementById('wi-checklist-popup');
+  if (existing && existing.dataset.wiId === wiId) { existing.remove(); return; }
+  if (existing) existing.remove();
+
+  const popup = document.createElement('div');
+  popup.id = 'wi-checklist-popup';
+  popup.dataset.wiId = wiId;
+  popup.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-card,#1a1f2e);border:1px solid var(--border);border-radius:8px;padding:14px 16px;min-width:280px;max-width:340px;box-shadow:0 8px 32px #0006';
+  const rect = anchorBtn.getBoundingClientRect();
+  popup.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - 300)}px`;
+  popup.style.left = `${Math.max(4, Math.min(rect.left, window.innerWidth - 350))}px`;
+
+  async function refreshList() {
+    const { items = [] } = await apiFetch(`/api/v1/projects/${projId}/work-items/${wiId}/checklist`).then(r => r.json());
+    const done = items.filter(i => i.checked).length;
+    list.innerHTML = items.length ? items.map(it => `
+      <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-top:1px solid var(--border)">
+        <input type="checkbox" data-cid="${it.id}" ${it.checked ? 'checked' : ''} style="flex-shrink:0">
+        <span style="${it.checked ? 'text-decoration:line-through;color:var(--text-muted)' : ''};font-size:13px;flex:1">${escapeHtml(it.title)}</span>
+        <button class="text-button" data-del-cid="${it.id}" style="font-size:11px;color:var(--text-muted)">✕</button>
+      </div>`).join('') : '<p style="font-size:12px;color:var(--text-muted);margin:6px 0">Чеклист пуст</p>';
+    header.textContent = `Чеклист ${items.length ? `(${done}/${items.length})` : ''}`;
+    anchorBtn.style.color = done === items.length && items.length > 0 ? '#4adc84' : (items.length ? 'var(--accent)' : 'var(--text-muted)');
+
+    list.querySelectorAll('input[data-cid]').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        await apiFetch(`/api/v1/projects/${projId}/work-items/${wiId}/checklist/${cb.dataset.cid}/toggle`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+        });
+        refreshList();
+      });
+    });
+    list.querySelectorAll('[data-del-cid]').forEach(btn2 => {
+      btn2.addEventListener('click', async () => {
+        await apiFetch(`/api/v1/projects/${projId}/work-items/${wiId}/checklist/${btn2.dataset.delCid}/delete`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+        });
+        refreshList();
+      });
+    });
+  }
+
+  const header = document.createElement('div');
+  header.textContent = 'Чеклист';
+  header.style.cssText = 'font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px';
+  popup.appendChild(header);
+
+  const list = document.createElement('div');
+  popup.appendChild(list);
+
+  const addRow = document.createElement('div');
+  addRow.style.cssText = 'display:flex;gap:6px;margin-top:10px';
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.placeholder = 'Новый пункт…';
+  inp.style.cssText = 'flex:1;background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;color:var(--text)';
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '＋'; addBtn.className = 'button ghost';
+  addBtn.style.cssText = 'padding:4px 10px;font-size:13px';
+  addBtn.addEventListener('click', async () => {
+    if (!inp.value.trim()) return;
+    await apiFetch(`/api/v1/projects/${projId}/work-items/${wiId}/checklist`, {
+      method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ title: inp.value.trim() }),
+    });
+    inp.value = ''; refreshList();
+  });
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') addBtn.click(); });
+  addRow.appendChild(inp); addRow.appendChild(addBtn);
+  popup.appendChild(addRow);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.style.cssText = 'position:absolute;top:8px;right:10px;background:none;border:none;font-size:14px;color:var(--text-muted);cursor:pointer';
+  closeBtn.addEventListener('click', () => popup.remove());
+  popup.appendChild(closeBtn);
+  popup.style.position = 'fixed';
+
+  document.body.appendChild(popup);
+  refreshList();
+
+  const dismiss = (ev) => { if (!popup.contains(ev.target) && ev.target !== anchorBtn) { popup.remove(); document.removeEventListener('mousedown', dismiss); } };
+  setTimeout(() => document.addEventListener('mousedown', dismiss), 100);
 }
 
 async function updateWorkItemStatus(event) {
