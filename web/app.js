@@ -4058,7 +4058,20 @@ function renderProjectDetail() {
       <div id="assetsList" style="display:flex;flex-direction:column;gap:10px;margin-top:8px"><p class="empty-copy">Загрузка…</p></div>
     </section>
     <section class="detail-section" id="projectActivitySection">
-      <div class="detail-section-title"><div><p class="eyebrow">ACTIVITY</p><h2>Активность и комментарии</h2></div></div>
+      <div class="detail-section-title">
+        <div><p class="eyebrow">ACTIVITY</p><h2>Активность и комментарии</h2></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="activityTypeFilter" style="padding:4px 8px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+            <option value="">Все события</option>
+            <option value="comment">Комментарии</option>
+            <option value="work_item">Задачи</option>
+            <option value="issue">Проблемы</option>
+            <option value="daily_update">Дневные отчёты</option>
+            <option value="milestone">Вехи</option>
+          </select>
+          <button class="button ghost" id="activityRefreshBtn" type="button" style="font-size:11px">↻</button>
+        </div>
+      </div>
       <div id="projectActivityFeed" class="activity-feed"><p class="empty-copy">Загрузка…</p></div>
       <div class="comment-compose" id="commentCompose">
         <textarea id="commentBody" rows="2" maxlength="4000" placeholder="Оставьте комментарий… (@упоминание поддерживается)" style="width:100%;resize:vertical;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;box-sizing:border-box"></textarea>
@@ -4388,6 +4401,8 @@ function renderProjectDetail() {
   hydrateGantt(project);
   hydrateProjectComments(project.id);
   hydrateProjectStandup(project.id);
+  document.getElementById('activityTypeFilter')?.addEventListener('change', () => hydrateProjectActivity(project.id));
+  document.getElementById('activityRefreshBtn')?.addEventListener('click', () => hydrateProjectActivity(project.id));
 }
 
 async function hydrateProjectStandup(projectId) {
@@ -5474,13 +5489,19 @@ async function hydrateProjectActivity(projectId) {
     const { activity } = await actResp.json();
     const { comments } = await cmtResp.json();
 
+    const typeFilter = document.getElementById('activityTypeFilter')?.value || '';
     // Merge and sort by created_at desc
-    const items = [
+    let items = [
       ...activity.map(a => ({ ...a, _kind: 'activity' })),
       ...comments.filter(c => !c.deleted && !c.parent_id).map(c => ({ ...c, _kind: 'comment' })),
     ].sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
 
-    if (!items.length) { feed.innerHTML = '<p class="empty-copy">Нет активности. Напишите первый комментарий.</p>'; return; }
+    if (typeFilter) {
+      if (typeFilter === 'comment') items = items.filter(i => i._kind === 'comment');
+      else items = items.filter(i => i._kind === 'activity' && (i.event_type||'').includes(typeFilter));
+    }
+
+    if (!items.length) { feed.innerHTML = '<p class="empty-copy">Нет активности по выбранному фильтру.</p>'; return; }
 
     feed.innerHTML = items.slice(0, 60).map(item => {
       if (item._kind === 'activity') {
