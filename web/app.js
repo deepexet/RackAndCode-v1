@@ -4319,6 +4319,13 @@ container.innerHTML = `<header class="detail-header"><div><a href="#projects">�
       </div>
       <div id="risksList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
     </section>
+    <section class="detail-section" id="projCustomFieldsSection">
+      <div class="detail-section-title">
+        <div><p class="eyebrow">АТРИБУТЫ</p><h2>Кастомные поля проекта</h2></div>
+        ${canManage ? `<button class="button ghost" id="editProjCustomFieldsBtn" type="button" style="font-size:12px">✎ Редактировать</button>` : ''}
+      </div>
+      <div id="projCustomFieldsList"><p style="font-size:12px;color:var(--text-muted)">Загрузка…</p></div>
+    </section>
     <section class="detail-section" id="projectDocsSection">
       <div class="detail-section-title">
         <div><p class="eyebrow">ДОКУМЕНТЫ</p><h2>Вложения проекта</h2></div>
@@ -4759,6 +4766,7 @@ container.innerHTML = `<header class="detail-header"><div><a href="#projects">�
   });
   setupIssuesPanel(project.id);
   hydrateRisks(project.id);
+  hydrateProjectCustomFields(project.id);
   hydrateProjectDocs(project.id);
   hydrateBudgetWidget(project.id);
   hydrateReservations(project.id);
@@ -5320,6 +5328,40 @@ async function reloadProjectData(projectId) {
     const idx = projects.findIndex(p => p.id === projectId);
     if (idx !== -1) { projects[idx] = project; renderProjectDetail(); }
   } catch { /* silent */ }
+}
+
+async function hydrateProjectCustomFields(projectId) {
+  const el = document.getElementById('projCustomFieldsList');
+  const section = document.getElementById('projCustomFieldsSection');
+  if (!el) return;
+  try {
+    const r = await apiFetch(`/api/v1/projects/${projectId}/custom-fields`);
+    if (!r.ok) { section && (section.style.display = 'none'); return; }
+    const { fields = [] } = await r.json();
+    if (!fields.length) { section && (section.style.display = 'none'); return; }
+    if (section) section.style.display = '';
+    el.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
+      ${fields.map(f => `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+          <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">${escapeHtml(f.label)}</div>
+          <div style="font-size:14px;font-weight:500">${f.value != null && f.value !== '' ? escapeHtml(String(f.value)) : '<span style="color:var(--text-muted)">—</span>'}</div>
+        </div>`).join('')}
+    </div>`;
+    document.getElementById('editProjCustomFieldsBtn')?.addEventListener('click', async () => {
+      for (const f of fields) {
+        const cur = f.value != null ? String(f.value) : '';
+        let prompt_text = `${f.label}`;
+        if (f.dataType === 'select' && f.options?.length) prompt_text += ` (${f.options.join(' / ')})`;
+        const val = prompt(prompt_text + ':', cur);
+        if (val === null) return;
+        await apiFetch(`/api/v1/projects/${projectId}/custom-fields`, {
+          method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+          body: JSON.stringify({ fieldId: f.fieldId, value: val }),
+        });
+      }
+      toast('Сохранено'); hydrateProjectCustomFields(projectId);
+    });
+  } catch { section && (section.style.display = 'none'); }
 }
 
 async function hydrateProjectDocs(projectId) {
