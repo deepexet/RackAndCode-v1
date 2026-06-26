@@ -5871,6 +5871,60 @@ Rules:
             ).fetchall()
         return [dict(r) for r in rows if LEVELS.index(r["level"]) >= min_idx]
 
+    # ── Project risks ─────────────────────────────────────────────────────
+    def list_project_risks(self, org: str, project_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM project_risks WHERE organization_id=? AND project_id=? ORDER BY "
+                "CASE probability WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, "
+                "CASE impact WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END",
+                (org, project_id)
+            ).fetchall()]
+
+    def create_project_risk(self, org: str, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        title = str(payload.get("title","")).strip()
+        if not title: raise ValueError("title required")
+        for key, allowed in [("probability",{"low","medium","high"}),("impact",{"low","medium","high"}),
+                              ("status",{"open","mitigated","closed","accepted"})]:
+            if payload.get(key) and payload[key] not in allowed:
+                raise ValueError(f"Invalid {key}")
+        rid = _uid(); now = utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_risks (id,organization_id,project_id,title,description,probability,impact,status,mitigation,owner,due_date,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, org, project_id, title, str(payload.get("description","")),
+                 payload.get("probability","medium"), payload.get("impact","medium"),
+                 payload.get("status","open"), str(payload.get("mitigation","")),
+                 str(payload.get("owner","")), payload.get("dueDate"), now, now)
+            )
+            row = conn.execute("SELECT * FROM project_risks WHERE id=?", (rid,)).fetchone()
+        self.audit(org, "risk.create", {"id": rid, "project_id": project_id, "title": title})
+        return dict(row)
+
+    def update_project_risk(self, org: str, risk_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        fields = []
+        args: list[Any] = []
+        for col, key in [("title","title"),("description","description"),("probability","probability"),
+                         ("impact","impact"),("status","status"),("mitigation","mitigation"),
+                         ("owner","owner"),("due_date","dueDate")]:
+            if key in payload:
+                fields.append(f"{col}=?"); args.append(payload[key])
+        if not fields: raise ValueError("No fields to update")
+        fields.append("updated_at=?"); args += [now, risk_id, org]
+        with self._connect() as conn:
+            conn.execute(f"UPDATE project_risks SET {','.join(fields)} WHERE id=? AND organization_id=?", args)
+            row = conn.execute("SELECT * FROM project_risks WHERE id=?", (risk_id,)).fetchone()
+        if not row: raise LookupError("Risk not found")
+        self.audit(org, "risk.update", {"id": risk_id})
+        return dict(row)
+
+    def delete_project_risk(self, org: str, risk_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM project_risks WHERE id=? AND organization_id=?", (risk_id, org))
+        self.audit(org, "risk.delete", {"id": risk_id})
+
     # ── Work orders ──────────────────────────────────────────────────────
     def list_work_orders(self, org: str, status: str | None = None, asset_id: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -9646,6 +9700,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # Project risks: GET /api/v1/projects/:id/risks
+        prisk_parts = path.strip("/").split("/")
+        if len(prisk_parts) == 5 and prisk_parts[2] == "projects" and prisk_parts[4] == "risks":
+            if not self._require_permission("projectRead"): return
+            risks = self.store.list_project_risks(self.organization_id, prisk_parts[3])
+            self._json(HTTPStatus.OK, {"risks": risks}); return
         # Digest schedules: GET /api/v1/digest/schedules
         if path == "/api/v1/digest/schedules":
             if not self._require_permission("projectRead"): return
@@ -11170,6 +11230,29 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 except (ValueError, LookupError) as e:
                     status2 = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status2, "invalid_request", str(e)); return
+        # Project risks POST: /api/v1/projects/:id/risks, /risks/:rid/update, /risks/:rid/delete
+        risk_parts = path.strip("/").split("/")
+        if len(risk_parts) == 5 and risk_parts[2] == "projects" and risk_parts[4] == "risks":
+            if not self._require_permission("projectManage"): return
+            try:
+                risk = self.store.create_project_risk(self.organization_id, risk_parts[3], self._read_json())
+                self._json(HTTPStatus.OK, {"risk": risk}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+        if len(risk_parts) == 7 and risk_parts[2] == "projects" and risk_parts[4] == "risks":
+            project_id = risk_parts[3]; risk_id = risk_parts[5]; action = risk_parts[6]
+            if action == "update":
+                if not self._require_permission("projectManage"): return
+                try:
+                    risk = self.store.update_project_risk(self.organization_id, risk_id, self._read_json())
+                    self._json(HTTPStatus.OK, {"risk": risk}); return
+                except (ValueError, json.JSONDecodeError, LookupError) as e:
+                    status2 = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                    self._error(status2, "invalid_request", str(e)); return
+            if action == "delete":
+                if not self._require_permission("projectManage"): return
+                self.store.delete_project_risk(self.organization_id, risk_id)
+                self._json(HTTPStatus.OK, {"deleted": True}); return
         # Digest schedule POST: /api/v1/digest/schedules (save) and /:id/delete
         if path == "/api/v1/digest/schedules":
             if not self._require_permission("projectManage"): return

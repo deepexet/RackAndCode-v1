@@ -4354,7 +4354,7 @@ function renderProjectDetail() {
   const canManage = roleCan('projectManage');
   const canProgress = roleCan('fieldProgress');
   const projTags = (project.tags||'').split(',').filter(Boolean).map(t=>`<span style="display:inline-block;background:var(--bg-muted,#23283a);border:1px solid var(--border);border-radius:10px;padding:1px 7px;font-size:10px;color:var(--text-secondary);margin-right:4px">#${escapeHtml(t)}</span>`).join('');
-container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p>${projTags ? `<div style="margin-top:6px">${projTags}</div>` : ''}</div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="editProjectMetaBtn" type="button" title="Редактировать проект">✎ Проект</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/calendar.ics" download="${encodeURIComponent(project.code||project.id)}.ics" title="Скачать вехи как iCal (.ics)">📅 iCal</a><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/report.html" target="_blank" title="Открыть HTML-отчёт проекта">📄 Отчёт</a><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
+container.innerHTML = `<header class="detail-header"><div><a href="#projects">← Все проекты</a><p class="eyebrow">${escapeHtml(project.code)} · PROJECT DETAIL</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description || 'Описание проекта не добавлено')}</p>${projTags ? `<div style="margin-top:6px">${projTags}</div>` : ''}</div><div class="detail-actions">${canManage ? `<button class="button ghost" type="button" data-add-location>＋ Этаж / зона</button><button class="button ghost" id="editProjectMetaBtn" type="button" title="Редактировать проект">✎ Проект</button><button class="button ghost" id="exportCsvBtn" type="button" title="Экспорт work items в CSV">⬇ CSV</button><button class="button ghost" id="exportKpiBtn" type="button" title="Экспорт KPI проекта в CSV">⬇ KPI</button><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/calendar.ics" download="${encodeURIComponent(project.code||project.id)}.ics" title="Скачать вехи как iCal (.ics)">📅 iCal</a><a class="button ghost" href="/api/v1/projects/${encodeURIComponent(project.id)}/report.html" target="_blank" title="Открыть HTML-отчёт проекта">📄 Отчёт</a><button class="button ghost" id="exportProjectBtn" type="button" title="Экспорт данных проекта (JSON)">⬇ JSON</button><label class="button ghost" style="cursor:pointer" title="Импорт данных проекта из JSON">⬆ Импорт<input type="file" id="importProjectInput" accept="application/json" style="display:none"></label>` : ''}${canProgress ? `<button class="button ghost" id="smartNoteBtn" type="button" title="AI parse of free-form field note">✦ Smart note</button>` : ''}<button class="button ghost" id="riskMatrixBtn" type="button" title="Матрица рисков проекта">⚠ Риски</button><button class="button ghost" id="dailyLogReportBtn" type="button" title="Сформировать дневной лог за сегодня">📋 Daily log</button><button class="button primary" type="button" data-daily-update ${canProgress ? '' : 'disabled style="opacity:.4;cursor:not-allowed"'}>＋ Отчет за сегодня</button></div></header>
     <section class="detail-kpis">${(() => {
       const now = Date.now();
       const week = 7 * 86400000;
@@ -4605,6 +4605,107 @@ container.innerHTML = `<header class="detail-header"><div><a href="#projects">�
   container.querySelectorAll('[data-open-location]').forEach(button => button.addEventListener('click', () => { location.hash=`project/${encodeURIComponent(project.id)}/location/${encodeURIComponent(button.dataset.openLocation)}`; }));
 
   container.querySelector('#smartNoteBtn')?.addEventListener('click', () => openFieldNoteDialog(project.id));
+
+  container.querySelector('#riskMatrixBtn')?.addEventListener('click', async () => {
+    const pid = selectedProjectId;
+    const r = await apiFetch(`/api/v1/projects/${pid}/risks`).catch(() => null);
+    const { risks = [] } = r?.ok ? await r.json() : {};
+    const LEVELS = ['low','medium','high'];
+    const SCORE = { low:1, medium:2, high:3 };
+    const RISK_COLOR = { 1:'#4adc84', 2:'#4adc84', 3:'#e8a84c', 4:'#e8a84c', 6:'#e8a84c', 9:'#f46' };
+    function cellColor(p, i) { return RISK_COLOR[SCORE[p]*SCORE[i]] || '#778195'; }
+    const existing = document.getElementById('riskMatrixOverlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'riskMatrixOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    const STATUS_COLOR = { open:'#e8a84c', mitigated:'#4adc84', closed:'#778195', accepted:'#a78bfa' };
+    const STATUS_LABEL = { open:'Открыт', mitigated:'Снижен', closed:'Закрыт', accepted:'Принят' };
+    // Build 3×3 matrix grid
+    const matrixRows = LEVELS.slice().reverse().map(prob =>
+      LEVELS.map(imp => {
+        const cell = risks.filter(r => r.probability === prob && r.impact === imp && r.status === 'open');
+        const color = cellColor(prob, imp);
+        return `<div style="background:${color}22;border:1px solid ${color}44;border-radius:6px;min-height:52px;padding:5px;display:flex;flex-direction:column;gap:2px">
+          ${cell.map(r => `<div style="font-size:9px;background:${color}33;border-radius:3px;padding:2px 4px;cursor:default" title="${escapeHtml(r.title)}">${escapeHtml(r.title.slice(0,22))}${r.title.length>22?'…':''}</div>`).join('')}
+          ${!cell.length ? `<span style="font-size:9px;color:${color}77;margin:auto">—</span>` : ''}
+        </div>`;
+      }).join('')
+    ).join('');
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:14px;width:100%;max-width:680px;max-height:88vh;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)">
+          <h3 style="margin:0;font-size:14px">⚠ Матрица рисков <span style="font-size:11px;color:var(--text-muted)">(${risks.length} рисков)</span></h3>
+          <div style="display:flex;gap:8px">
+            <button id="addRiskBtn" class="button ghost" style="font-size:11px">＋ Риск</button>
+            <button id="riskDismiss" class="button ghost" style="font-size:11px">✕</button>
+          </div>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:14px 18px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <p style="font-size:10px;color:var(--text-muted);width:52px;text-align:right;writing-mode:vertical-rl;transform:rotate(180deg);margin:0">ВЕРОЯТНОСТЬ ↑</p>
+            <div style="flex:1">
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:4px">
+                <p style="text-align:center;font-size:9px;color:var(--text-muted);margin:0">Низкий</p>
+                <p style="text-align:center;font-size:9px;color:var(--text-muted);margin:0">Средний</p>
+                <p style="text-align:center;font-size:9px;color:var(--text-muted);margin:0">Высокий</p>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,auto);gap:5px">
+                ${matrixRows}
+              </div>
+              <p style="text-align:center;font-size:9px;color:var(--text-muted);margin:6px 0 0">ВЛИЯНИЕ →</p>
+            </div>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
+          <p style="font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.07em;margin:0 0 8px">ВСЕ РИСКИ</p>
+          ${!risks.length ? '<p class="empty-copy" style="font-size:12px">Рисков нет. Нажмите ＋ для добавления.</p>' :
+            risks.map(rsk => `
+            <div class="risk-row" data-rid="${rsk.id}" style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+              <div style="flex:1">
+                <strong style="font-size:12px">${escapeHtml(rsk.title)}</strong>
+                <span style="font-size:10px;color:${STATUS_COLOR[rsk.status]||'#778195'};margin-left:8px">${STATUS_LABEL[rsk.status]||rsk.status}</span>
+                <div style="font-size:10px;color:var(--text-muted)">P:${rsk.probability} × I:${rsk.impact}${rsk.owner?' · '+escapeHtml(rsk.owner):''}${rsk.due_date?' · до '+rsk.due_date.slice(0,10):''}</div>
+                ${rsk.mitigation ? `<div style="font-size:10px;color:#4adc84">✓ ${escapeHtml(rsk.mitigation.slice(0,80))}</div>` : ''}
+              </div>
+              <div style="display:flex;gap:5px">
+                <button class="button ghost risk-edit-btn" data-rid="${rsk.id}" style="font-size:10px">✎</button>
+                <button class="button ghost risk-del-btn" data-rid="${rsk.id}" style="font-size:10px;color:#f46">✕</button>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#riskDismiss')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelectorAll('.risk-del-btn').forEach(btn => btn.addEventListener('click', async () => {
+      if (!confirm('Удалить риск?')) return;
+      await apiFetch(`/api/v1/projects/${pid}/risks/${btn.dataset.rid}/delete`, { method:'POST', headers:apiHeaders() });
+      overlay.remove(); container.querySelector('#riskMatrixBtn')?.click();
+    }));
+    overlay.querySelectorAll('.risk-edit-btn').forEach(btn => btn.addEventListener('click', async () => {
+      const rsk = risks.find(r => r.id === btn.dataset.rid); if (!rsk) return;
+      const newStatus = prompt(`Статус (open/mitigated/closed/accepted):`, rsk.status); if (!newStatus) return;
+      const mitigation = prompt('Меры по снижению:', rsk.mitigation || '');
+      await apiFetch(`/api/v1/projects/${pid}/risks/${rsk.id}/update`, {
+        method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ status: newStatus, mitigation }),
+      });
+      overlay.remove(); container.querySelector('#riskMatrixBtn')?.click();
+    }));
+    overlay.querySelector('#addRiskBtn')?.addEventListener('click', async () => {
+      const title = prompt('Название риска:'); if (!title?.trim()) return;
+      const probability = prompt('Вероятность (low/medium/high):', 'medium') || 'medium';
+      const impact = prompt('Влияние (low/medium/high):', 'medium') || 'medium';
+      const owner = prompt('Ответственный:', '') || '';
+      const mitigation = prompt('Меры по снижению (необязательно):', '') || '';
+      const r2 = await apiFetch(`/api/v1/projects/${pid}/risks`, {
+        method:'POST', headers:apiHeaders({'Content-Type':'application/json'}),
+        body: JSON.stringify({ title: title.trim(), probability, impact, owner, mitigation }),
+      });
+      if (r2.ok) { overlay.remove(); container.querySelector('#riskMatrixBtn')?.click(); }
+      else toast(`Ошибка: ${(await r2.json()).error?.message || r2.status}`);
+    });
+  });
 
   container.querySelector('#dailyLogReportBtn')?.addEventListener('click', async () => {
     const today = new Date().toISOString().slice(0, 10);
