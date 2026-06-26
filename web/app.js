@@ -641,7 +641,7 @@ function renderRoute() {
   if (route === 'api') hydrateApiMetrics();
   if (route === 'overview') hydrateGrowthChart();
   if (route === 'inventory') { hydrateInventory(); }
-  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
+  if (route === 'admin') { Promise.all([hydrateComputeNodes(),hydratePlatformSettings(),hydrateGitSyncSettings(),hydrateWorkflowConfiguration(),hydrateCustomFieldDefinitions(),hydrateSecretsVault(),hydrateFeatureDocs(),hydrateAIGateway(),hydratePrivacy(),hydrateMFA(),hydrateRetrievalEval(),hydrateAIApprovals(),hydrateTeam(),hydrateTimeTracking(),hydrateConflictQueue(),hydrateServiceMonitors(),hydrateConnectors(),hydrateTemplatesAdmin(),hydrateSessionsAdmin(),hydrateOrgSettings(),hydrateEmailInboxes(),hydrateLabels()]); renderAITeam(); hydrateDigest(); document.dispatchEvent(new CustomEvent('routeChange',{detail:'admin'})); }
   if (route === 'tech') hydrateTechView(techSubRoute || 'home');
 }
 
@@ -1257,7 +1257,47 @@ const PURPOSE_LABELS = {
 const OUTCOME_STYLE = { ok: 'color:#31d4a2', denied: 'color:#e05353', error: 'color:#f59e0b' };
 
 async function hydratePrivacy() {
-  await Promise.all([hydratePrivacySettings(), hydrateAuditLog(), hydrateUserActivityReport()]);
+  await Promise.all([hydratePrivacySettings(), hydrateAuditLog(), hydrateUserActivityReport(), hydrateLabels()]);
+}
+
+async function hydrateLabels() {
+  const el = document.getElementById('labelsList');
+  if (!el) return;
+  el.innerHTML = '<p style="font-size:12px;color:var(--text-muted)">Загрузка…</p>';
+  try {
+    const { labels = [] } = await apiFetch('/api/v1/labels').then(r => r.json());
+    if (!labels.length) {
+      el.innerHTML = '<p class="empty-copy">Меток пока нет. Нажмите ＋ Метка.</p>';
+    } else {
+      el.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px">${labels.map(l => `
+        <span style="display:inline-flex;align-items:center;gap:6px;background:${escapeHtml(l.color)}22;border:1px solid ${escapeHtml(l.color)};border-radius:12px;padding:4px 10px 4px 8px;font-size:12px">
+          <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${escapeHtml(l.color)}"></span>
+          <span style="color:var(--text)">${escapeHtml(l.name)}</span>
+          <span style="font-size:9px;color:var(--text-muted);font-family:monospace">${l.id.slice(0,6)}</span>
+          <button class="text-button" data-del-label="${l.id}" style="font-size:11px;color:var(--text-muted);padding:0 2px" title="Удалить">✕</button>
+        </span>`).join('')}</div>`;
+      el.querySelectorAll('[data-del-label]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Удалить метку?')) return;
+          const r = await apiFetch(`/api/v1/labels/${btn.dataset.delLabel}/delete`, {
+            method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}), body: '{}',
+          });
+          if (r.ok) { toast('Метка удалена'); hydrateLabels(); }
+          else toast('Ошибка удаления');
+        });
+      });
+    }
+  } catch { el.innerHTML = '<p class="empty-copy">Ошибка загрузки.</p>'; }
+  document.getElementById('addLabelBtn')?.addEventListener('click', async () => {
+    const name = prompt('Название метки:'); if (!name?.trim()) return;
+    const color = prompt('Цвет (HEX, напр. #4f8ef7):', '#4f8ef7') || '#4f8ef7';
+    const r = await apiFetch('/api/v1/labels', {
+      method: 'POST', headers: apiHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ name: name.trim(), color }),
+    });
+    if (r.ok) { toast('Метка создана'); hydrateLabels(); }
+    else toast(`Ошибка: ${(await r.json()).error?.message || r.status}`);
+  });
 }
 
 async function hydrateUserActivityReport() {
