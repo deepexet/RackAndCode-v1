@@ -8287,16 +8287,42 @@ async function setup() {
   document.getElementById('mfaCode')?.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('mfaSubmitBtn')?.click(); });
   document.getElementById('mfaBackBtn')?.addEventListener('click', _hideMfaStep);
 
+  // Dev login button (no credentials required)
+  document.getElementById('devLoginBtn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('devLoginBtn');
+    btn.disabled = true; btn.textContent = 'Вход…';
+    try {
+      const resp = await fetch('/api/v1/auth/dev-login', { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error?.message || 'Ошибка');
+      await _finishLogin(data);
+    } catch (err) {
+      const errEl = document.getElementById('loginError');
+      if (errEl) { errEl.textContent = err.message; errEl.style.display = 'block'; }
+    } finally {
+      btn.disabled = false; btn.innerHTML = '<span>⚡</span> Войти как Администратор (dev)';
+    }
+  });
+
   // Logout button
   const logoutBtn = document.getElementById('logoutButton');
   if (logoutBtn) logoutBtn.addEventListener('click', () => logout());
 
-  // Restore role from session, or show login
+  // Restore role from session — or auto dev-login if running locally
   const session = getSession();
   if (session?.token) {
     if (session.role) setCurrentRole(session.role);
   } else {
-    showLoginModal();
+    // Auto-login in dev mode (localhost or LAN): try dev-login silently first
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || /^192\.168\.|^10\.|^172\.(1[6-9]|2\d|3[01])\./.test(location.hostname);
+    if (isLocal) {
+      fetch('/api/v1/auth/dev-login', { method: 'POST' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data?.token) _finishLogin(data); else showLoginModal(); })
+        .catch(() => showLoginModal());
+    } else {
+      showLoginModal();
+    }
   }
 
   setupMFA();

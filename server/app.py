@@ -10508,6 +10508,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/auth/login":
             self._handle_auth_login()
             return
+        if path == "/api/v1/auth/dev-login":
+            self._handle_dev_login()
+            return
         if path == "/api/v1/auth/mfa/verify":
             self._handle_mfa_verify()
             return
@@ -12816,6 +12819,23 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
+
+    def _handle_dev_login(self) -> None:
+        """Dev-only: auto-login as local-admin without credentials. Safe for LAN/local use."""
+        with self.store._connect() as conn:
+            user = conn.execute(
+                "SELECT u.id, u.display_name, m.organization_id, m.role "
+                "FROM users u JOIN memberships m ON m.user_id = u.id "
+                "WHERE u.id = 'local-admin' AND m.status = 'active' LIMIT 1",
+            ).fetchone()
+        if not user:
+            self._error(HTTPStatus.NOT_FOUND, "no_local_admin", "No local-admin user found")
+            return
+        ip = self.headers.get("X-Forwarded-For", self.client_address[0])
+        ua = self.headers.get("User-Agent", "")
+        result = self.store._create_session(user, "admin@local.rackpilot", ip_address=ip, user_agent=ua)
+        self.store.audit(user["organization_id"], user["id"], user["role"], "dev_login", "session", None, "ok", ip)
+        self._json(HTTPStatus.OK, result)
 
     def _handle_auth_login(self) -> None:
         try:
