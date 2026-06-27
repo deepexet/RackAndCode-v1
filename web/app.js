@@ -14,10 +14,10 @@ const ORGANIZATION_ID = 'local-dev';
 const state = loadState();
 const $ = selector => document.querySelector(selector);
 const ROLE_POLICIES = {
-  Technician: { label: 'Technician', routes: ['overview', 'projects'], permissions: ['projectRead', 'fieldProgress'] },
-  Supervisor: { label: 'Supervisor', routes: ['overview', 'projects', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead'] },
-  ProjectManager: { label: 'Project Manager', routes: ['overview', 'projects', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead', 'developmentWorkspace'] },
-  Administrator: { label: 'Administrator', routes: ['overview', 'projects', 'logs', 'api', 'admin'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead', 'apiMonitor', 'adminPanel', 'developmentWorkspace'] },
+  Technician:    { label: 'Technician',       routes: ['overview', 'projects', 'tech'], permissions: ['projectRead', 'fieldProgress'] },
+  Supervisor:    { label: 'Supervisor',        routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead'] },
+  ProjectManager:{ label: 'Project Manager',  routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead', 'developmentWorkspace'] },
+  Administrator: { label: 'Administrator',    routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs', 'api', 'admin'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead', 'apiMonitor', 'adminPanel', 'developmentWorkspace'] },
 };
 let syncTimer;
 let syncInFlight = false;
@@ -617,7 +617,7 @@ function renderRoute() {
   selectedProjectId = routeParts[0] === 'project' && routeParts[1] ? decodeURIComponent(routeParts[1]) : null;
   selectedLocationId = routeParts[2] === 'location' && routeParts[3] ? decodeURIComponent(routeParts[3]) : null;
   const techSubRoute = routeParts[0] === 'tech' ? (routeParts[1] || 'home') : null;
-  let route = selectedProjectId ? 'projects' : (['overview', 'projects', 'logs', 'api', 'admin', 'tech'].includes(routeParts[0]) ? routeParts[0] : 'overview');
+  let route = selectedProjectId ? 'projects' : (['overview', 'projects', 'inventory', 'work-orders', 'logs', 'api', 'admin', 'tech'].includes(routeParts[0]) ? routeParts[0] : 'overview');
   if (routeParts[0] === 'tech') route = 'tech';
   if (!routeAllowed(route)) {
     route = 'overview';

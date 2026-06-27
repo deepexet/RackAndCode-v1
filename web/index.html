@@ -66,7 +66,7 @@
       </div>
       <button id="notificationBellBtn" type="button" style="position:relative;background:none;border:none;cursor:pointer;padding:4px;color:var(--text-secondary);font-size:18px" title="Уведомления" aria-label="Уведомления">
         🔔
-        <span id="notifBadge" style="display:none;position:absolute;top:0;right:0;width:16px;height:16px;background:#e05353;border-radius:50%;font-size:9px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center;line-height:1"></span>
+        <span id="notifBadge" style="display:none;position:absolute;top:0;right:0;width:16px;height:16px;background:#e05353;border-radius:50%;font-size:9px;font-weight:700;color:#fff;align-items:center;justify-content:center;line-height:1"></span>
       </button>
       <div id="notificationPanel" style="display:none;position:fixed;top:52px;right:12px;width:340px;max-height:400px;overflow-y:auto;background:var(--surface-raised,#1a2130);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:1000">
         <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
@@ -94,14 +94,15 @@
       </dialog>
       <div id="devModeBadge" style="display:none;align-items:center;gap:5px;font-size:10px;font-weight:700;color:#f5a623;background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.25);border-radius:6px;padding:3px 8px;cursor:default" title="Сессия не активна — используется dev-mode (X-RackPilot-Role). Войдите для полной аутентификации.">⚠ DEV</div>
       <label class="role-switcher" data-i18n-label="ROLE_LABEL">Role<select id="roleSwitcher" aria-label="Current role preview"><option value="Administrator">Administrator</option><option value="ProjectManager">Project Manager</option><option value="Supervisor">Supervisor</option><option value="Technician">Technician</option></select></label>
-      <button id="langToggleBtn" type="button" class="button ghost" title="Switch language / Сменить язык" style="padding:4px 8px;font-size:12px;font-weight:700;min-width:36px">EN</button>
       <div class="top-actions">
-        <span class="save-state" id="saveState"><i></i> <span data-i18n="SAVE_STATE_OK">Saved locally</span></span>
-        <button class="button ghost" id="exportButton" type="button" data-permission="developmentWorkspace" data-i18n="HDR_EXPORT_WS">⬇ Workspace</button>
-        <label class="button ghost file-button" data-permission="developmentWorkspace"><span data-i18n="HDR_IMPORT_WS">⬆ Workspace</span><input id="importInput" type="file" accept="application/json"></label>
-        <button class="button primary" id="addTaskButton" type="button" data-permission="developmentWorkspace" data-i18n="HDR_NEW_TASK">＋ New task</button>
+        <span class="save-state" id="saveState"><i></i> <span data-i18n="SAVE_STATE_OK">Saved</span></span>
+        <button class="button primary" id="addTaskButton" type="button" data-permission="developmentWorkspace" data-i18n="HDR_NEW_TASK">＋ Task</button>
         <button class="button ghost" id="logoutButton" type="button" style="padding:6px 10px" data-i18n="HDR_LOGOUT">⏻</button>
       </div>
+      <!-- workspace tools moved to admin panel -->
+      <button id="langToggleBtn" type="button" style="display:none" title="Switch language">EN</button>
+      <button class="button ghost" id="exportButton" type="button" style="display:none" data-permission="developmentWorkspace" data-i18n="HDR_EXPORT_WS">⬇ Workspace</button>
+      <label class="file-button" data-permission="developmentWorkspace" style="display:none"><span data-i18n="HDR_IMPORT_WS">⬆ Workspace</span><input id="importInput" type="file" accept="application/json"></label>
     </div>
   </header>
 
@@ -745,11 +746,12 @@
 
       <section class="detail-section" id="aiTeamSection" data-permission="adminPanel">
         <div class="detail-section-title">
-          <div><p class="eyebrow">AI AGENTS</p><h2>Technical &amp; Documentation</h2></div>
+          <div><p class="eyebrow">КОМАНДА АГЕНТОВ</p><h2>AI Team</h2></div>
           <select id="aiAgentProjectFilter" style="padding:6px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
             <option value="">All projects</option>
           </select>
         </div>
+        <div id="aiTeamGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px"></div>
         <div style="display:flex;gap:8px;margin-bottom:12px">
           <button class="button ghost" id="selectTechAgent" type="button" style="font-size:12px">⚙ Technical</button>
           <button class="button ghost" id="selectDocAgent" type="button" style="font-size:12px">📄 Documentation</button>
