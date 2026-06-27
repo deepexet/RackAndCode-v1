@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0C0F1A">
+  <title>RackPilot</title>
+  <link rel="stylesheet" href="/src/styles/main.css">
+</head>
+<body>
+
+<!-- Login modal (shown before auth) -->
+<div id="loginModal" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <div class="modal-logo">
+      <div class="logo-mark"><i class="ti ti-radio-tower"></i></div>
+      <div>
+        <div class="logo-name">RackPilot</div>
+        <div class="logo-sub">by Valeronix</div>
+      </div>
+    </div>
+    <form id="loginForm" autocomplete="on">
+      <div class="field-group">
+        <label class="field-label" for="loginEmail">Email</label>
+        <input class="field-input" type="email" id="loginEmail" name="email" placeholder="you@company.com" autocomplete="email" required>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="loginPassword">Password</label>
+        <input class="field-input" type="password" id="loginPassword" name="password" placeholder="••••••••" autocomplete="current-password" required>
+      </div>
+      <div id="loginError" class="field-error" style="display:none"></div>
+      <div id="mfaField" class="field-group" style="display:none">
+        <label class="field-label" for="loginMfa">Authenticator code</label>
+        <input class="field-input field-input--center" type="text" id="loginMfa" name="mfa" placeholder="000 000" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+      </div>
+      <button type="submit" class="btn btn--primary btn--full">Sign in</button>
+    </form>
+  </div>
+</div>
+
+<!-- App shell -->
+<div id="app" class="app" style="display:none">
+
+  <!-- ── Desktop sidebar (hidden on mobile) ──────────────────────────── -->
+  <nav class="sidebar" id="sidebar" aria-label="Main navigation">
+    <div class="sidebar-logo">
+      <div class="logo-mark"><i class="ti ti-radio-tower"></i></div>
+      <div>
+        <div class="logo-name">RackPilot</div>
+        <div class="logo-sub">by Valeronix</div>
+      </div>
+    </div>
+
+    <div class="sidebar-nav" role="list">
+      <a class="nav-item" href="#overview" data-route-link="overview" role="listitem">
+        <i class="ti ti-layout-dashboard" aria-hidden="true"></i>
+        <span>Overview</span>
+      </a>
+      <a class="nav-item" href="#projects" data-route-link="projects" role="listitem">
+        <i class="ti ti-briefcase" aria-hidden="true"></i>
+        <span>Projects</span>
+        <span class="nav-badge" id="badge-projects"></span>
+      </a>
+      <a class="nav-item" href="#inventory" data-route-link="inventory" role="listitem">
+        <i class="ti ti-packages" aria-hidden="true"></i>
+        <span>Inventory</span>
+        <span class="nav-badge nav-badge--warn" id="badge-inventory"></span>
+      </a>
+      <a class="nav-item" href="#work-orders" data-route-link="work-orders" role="listitem">
+        <i class="ti ti-clipboard-list" aria-hidden="true"></i>
+        <span>Work orders</span>
+        <span class="nav-badge nav-badge--warn" id="badge-workorders"></span>
+      </a>
+      <a class="nav-item" href="#tech" data-route-link="tech" role="listitem">
+        <i class="ti ti-map-pin" aria-hidden="true"></i>
+        <span>Field</span>
+      </a>
+      <a class="nav-item" href="#logs" data-route-link="logs" role="listitem" data-permission="logsRead">
+        <i class="ti ti-history" aria-hidden="true"></i>
+        <span>Logs</span>
+      </a>
+      <a class="nav-item" href="#admin" data-route-link="admin" role="listitem" data-permission="adminPanel">
+        <i class="ti ti-settings" aria-hidden="true"></i>
+        <span>Admin</span>
+      </a>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="user-chip" id="userChip" aria-label="User menu">
+        <div class="avatar" id="sidebarAvatar">?</div>
+        <div class="user-info">
+          <div class="user-name" id="sidebarName">—</div>
+          <div class="user-role" id="sidebarRole">—</div>
+        </div>
+        <i class="ti ti-dots-vertical" aria-hidden="true"></i>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ── Main content area ───────────────────────────────────────────── -->
+  <div class="main-wrap">
+
+    <!-- Desktop topbar -->
+    <header class="topbar" id="topbar">
+      <div class="topbar-breadcrumb" id="topbarBreadcrumb">
+        <span>Overview</span>
+      </div>
+      <div class="topbar-right">
+        <button class="search-trigger" id="searchTrigger" aria-label="Search (⌘K)">
+          <i class="ti ti-search" aria-hidden="true"></i>
+          <span class="search-hint">Search</span>
+          <kbd>⌘K</kbd>
+        </button>
+        <button class="icon-btn" id="notifBtn" aria-label="Notifications">
+          <i class="ti ti-bell" aria-hidden="true"></i>
+          <span class="notif-dot" id="notifDot" style="display:none"></span>
+        </button>
+        <button class="icon-btn mobile-only" id="mobileMenuBtn" aria-label="Menu">
+          <i class="ti ti-menu-2" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Page views (one per route) -->
+    <main class="content" id="mainContent" role="main">
+      <div data-view="overview" class="view"></div>
+      <div data-view="projects" class="view"></div>
+      <div data-view="inventory" class="view"></div>
+      <div data-view="work-orders" class="view"></div>
+      <div data-view="tech" class="view"></div>
+      <div data-view="logs" class="view"></div>
+      <div data-view="admin" class="view"></div>
+    </main>
+
+  </div>
+
+  <!-- ── Mobile bottom navigation ────────────────────────────────────── -->
+  <nav class="bottom-nav" id="bottomNav" aria-label="Mobile navigation">
+    <a class="bottom-nav-item" href="#overview" data-route-link="overview">
+      <i class="ti ti-home" aria-hidden="true"></i>
+      <span>Home</span>
+    </a>
+    <a class="bottom-nav-item" href="#work-orders" data-route-link="work-orders">
+      <i class="ti ti-clipboard-list" aria-hidden="true"></i>
+      <span>Tasks</span>
+      <span class="bottom-badge" id="mobile-badge-wo" style="display:none"></span>
+    </a>
+    <a class="bottom-nav-item" href="#tech" data-route-link="tech">
+      <i class="ti ti-qrcode" aria-hidden="true"></i>
+      <span>Scan</span>
+    </a>
+    <a class="bottom-nav-item" href="#inventory" data-route-link="inventory">
+      <i class="ti ti-packages" aria-hidden="true"></i>
+      <span>Stock</span>
+      <span class="bottom-badge bottom-badge--warn" id="mobile-badge-inv" style="display:none"></span>
+    </a>
+    <a class="bottom-nav-item" href="#projects" data-route-link="projects">
+      <i class="ti ti-briefcase" aria-hidden="true"></i>
+      <span>Projects</span>
+    </a>
+  </nav>
+
+</div>
+
+<!-- Toast notifications -->
+<div id="toast" class="toast" role="alert" aria-live="polite"></div>
+
+<!-- Command palette placeholder (⌘K) -->
+<div id="commandPalette" class="cmd-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Command search">
+  <div class="cmd-box">
+    <div class="cmd-search-row">
+      <i class="ti ti-search" aria-hidden="true"></i>
+      <input type="text" id="cmdInput" placeholder="Search projects, tasks, inventory..." autocomplete="off" aria-label="Command search input">
+      <kbd class="cmd-esc">Esc</kbd>
+    </div>
+    <div class="cmd-results" id="cmdResults"></div>
+  </div>
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

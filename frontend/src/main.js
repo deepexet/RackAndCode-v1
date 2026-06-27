@@ -67,6 +67,26 @@ window.addEventListener('rp:unauthorized', () => {
 // ── Router setup (lazy modules) ───────────────────────────────────────────
 
 function startApp() {
+  // Show app shell, hide login
+  const app = document.getElementById('app')
+  const loginModal = document.getElementById('loginModal')
+  if (app) app.style.display = 'flex'
+  if (loginModal) loginModal.style.display = 'none'
+
+  // Update sidebar user info
+  const session = getSession()
+  if (session) {
+    const name = session.name || session.email || '?'
+    const initials = name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+    const av = document.getElementById('sidebarAvatar')
+    const nm = document.getElementById('sidebarName')
+    const rl = document.getElementById('sidebarRole')
+    if (av) av.textContent = initials
+    if (nm) nm.textContent = name
+    if (rl) rl.textContent = session.role || ''
+  }
+
+  // Register routes
   router
     .on('overview',     () => import('./modules/overview.js').then(m => m.mount()))
     .on('projects',     () => import('./modules/projects.js').then(m => m.mount()))
@@ -76,7 +96,70 @@ function startApp() {
     .on('logs',         () => import('./modules/logs.js').then(m => m.mount()))
     .on('api',          () => import('./modules/api_metrics.js').then(m => m.mount()))
     .on('admin',        () => import('./modules/admin.js').then(m => m.mount()))
-    .start()
+
+  // Update breadcrumb on route change
+  window.addEventListener('rp:route', e => {
+    const labels = {
+      overview: 'Overview', projects: 'Projects', inventory: 'Inventory',
+      'work-orders': 'Work orders', tech: 'Field', logs: 'Logs', admin: 'Admin',
+    }
+    const bc = document.getElementById('topbarBreadcrumb')
+    if (bc) bc.innerHTML = `<span>${labels[e.detail.route] || e.detail.route}</span>`
+  })
+
+  // Command palette (⌘K)
+  initCommandPalette()
+
+  router.start()
+}
+
+// ── Command palette ───────────────────────────────────────────────────────
+
+function initCommandPalette() {
+  const overlay = document.getElementById('commandPalette')
+  const input = document.getElementById('cmdInput')
+  const results = document.getElementById('cmdResults')
+  const trigger = document.getElementById('searchTrigger')
+  if (!overlay || !input) return
+
+  const open = () => { overlay.style.display = 'flex'; input.focus(); input.value = ''; showResults('') }
+  const close = () => { overlay.style.display = 'none' }
+
+  trigger?.addEventListener('click', open)
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); open() }
+    if (e.key === 'Escape') close()
+  })
+  overlay.addEventListener('click', e => { if (e.target === overlay) close() })
+
+  input.addEventListener('input', () => showResults(input.value))
+
+  const quickLinks = [
+    { icon: 'ti-layout-dashboard', label: 'Overview', hash: '#overview' },
+    { icon: 'ti-briefcase', label: 'Projects', hash: '#projects' },
+    { icon: 'ti-packages', label: 'Inventory', hash: '#inventory' },
+    { icon: 'ti-clipboard-list', label: 'Work orders', hash: '#work-orders' },
+    { icon: 'ti-map-pin', label: 'Field', hash: '#tech' },
+    { icon: 'ti-settings', label: 'Admin', hash: '#admin' },
+  ]
+
+  function showResults(q) {
+    const filtered = q.trim()
+      ? quickLinks.filter(l => l.label.toLowerCase().includes(q.toLowerCase()))
+      : quickLinks
+    if (!filtered.length) {
+      results.innerHTML = `<div class="cmd-result-empty">No results for "${q}"</div>`
+      return
+    }
+    results.innerHTML = filtered.map(l => `
+      <div class="cmd-result-item" data-hash="${l.hash}">
+        <i class="ti ${l.icon}" aria-hidden="true"></i>
+        ${l.label}
+      </div>`).join('')
+    results.querySelectorAll('.cmd-result-item').forEach(el => {
+      el.addEventListener('click', () => { location.hash = el.dataset.hash; close() })
+    })
+  }
 }
 
 // ── Global UI utilities ───────────────────────────────────────────────────
