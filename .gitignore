@@ -12,3 +12,16 @@ __pycache__/
 data/.master_key
 docs/AGENT_CONTEXT.json
 data/objects
+
+# Frontend build
+frontend/dist/
+frontend/node_modules/
+
+# Python virtual envs
+backend/.venv/
+.venv/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage

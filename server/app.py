@@ -9203,9 +9203,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             return
         # Digital Twin: GET /api/v1/projects/:id/twin, GET /api/v1/assets, GET /api/v1/assets/:id/relationships
         _twin_parts = path.strip("/").split("/")
-        if len(_twin_parts) == 5 and _twin_parts[2] == "v1" and _twin_parts[3] == "projects" and _twin_parts[4] == "twin":
+        if len(_twin_parts) == 6 and _twin_parts[2] == "v1" and _twin_parts[3] == "projects" and _twin_parts[5] == "twin":
             if not self._require_permission("projectRead"): return
-            project_id = _twin_parts[3]
+            project_id = _twin_parts[4]
             self._json(HTTPStatus.OK, self.store.get_digital_twin(self.organization_id, project_id))
             return
         if path == "/api/v1/assets":

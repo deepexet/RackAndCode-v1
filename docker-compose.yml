@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    image: rackpilot:latest
+    container_name: rackpilot
+    restart: unless-stopped
+    ports:
+      - "${PORT:-4173}:4173"
+    volumes:
+      - ./data:/data          # persistent database and uploads
+      - ./backups:/backups    # backup storage
+    environment:
+      - HOST=0.0.0.0
+      - PORT=4173
+      - DB_PATH=/data/fieldos.db
+      - SESSION_SECRET=${SESSION_SECRET:-change-me-in-production}
+      - MASTER_KEY=${MASTER_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - LAN_MODE=${LAN_MODE:-true}
+      - DEBUG=${DEBUG:-false}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4173/api/v1/auth/me')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Development only: Vite dev server ────────────────────────────────────
+  frontend-dev:
+    image: node:22-alpine
+    container_name: rackpilot-frontend-dev
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    command: sh -c "npm ci && npm run dev -- --host"
+    profiles:
+      - dev
+    depends_on:
+      - api
