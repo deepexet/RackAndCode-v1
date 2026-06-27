@@ -17,13 +17,23 @@ async function bootstrap() {
       setSession({ ...stored, ...me })
       appState.set({ session: getSession() })
       startApp()
+      return
     } catch {
       clearSession()
-      showLoginModal()
     }
-  } else {
-    showLoginModal()
   }
+  // Auto dev-login on LAN / localhost
+  const isLocal = /^(localhost|127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname)
+  if (isLocal) {
+    try {
+      const data = await apiJSON('/api/v1/auth/dev-login', { method: 'POST' })
+      setSession(data)
+      appState.set({ session: data })
+      startApp()
+      return
+    } catch {}
+  }
+  showLoginModal()
 }
 
 function showLoginModal() {
@@ -36,6 +46,13 @@ function hideLoginModal() {
   if (modal) modal.style.display = 'none'
 }
 
+async function finishLogin(data) {
+  setSession(data)
+  appState.set({ session: data })
+  hideLoginModal()
+  startApp()
+}
+
 // ── Login form ────────────────────────────────────────────────────────────
 
 document.getElementById('loginForm')?.addEventListener('submit', async e => {
@@ -43,6 +60,8 @@ document.getElementById('loginForm')?.addEventListener('submit', async e => {
   const email = document.getElementById('loginEmail').value.trim()
   const password = document.getElementById('loginPassword').value
   const errEl = document.getElementById('loginError')
+  const btn = e.target.querySelector('[type="submit"]')
+  btn.disabled = true
 
   try {
     const data = await apiJSON('/api/v1/auth/login', {
@@ -50,12 +69,26 @@ document.getElementById('loginForm')?.addEventListener('submit', async e => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     })
-    setSession(data)
-    appState.set({ session: data })
-    hideLoginModal()
-    startApp()
+    await finishLogin(data)
   } catch (err) {
     if (errEl) { errEl.textContent = err.message; errEl.style.display = 'block' }
+    btn.disabled = false
+  }
+})
+
+// Dev login button
+document.getElementById('devLoginBtn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('devLoginBtn')
+  btn.disabled = true
+  btn.innerHTML = '<i class="ti ti-loader-2"></i> Вход…'
+  try {
+    const data = await apiJSON('/api/v1/auth/dev-login', { method: 'POST' })
+    await finishLogin(data)
+  } catch (err) {
+    const errEl = document.getElementById('loginError')
+    if (errEl) { errEl.textContent = err.message; errEl.style.display = 'block' }
+    btn.disabled = false
+    btn.innerHTML = '<i class="ti ti-bolt"></i> Войти без пароля (dev)'
   }
 })
 

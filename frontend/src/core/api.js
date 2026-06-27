@@ -5,19 +5,21 @@
 
 let _session = null  // { token, role, userId, orgId }
 
+const SESSION_KEY = 'rp.session.v1'
+
 export function setSession(session) {
   _session = session
   if (session) {
-    sessionStorage.setItem('rp_session', JSON.stringify(session))
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session))
   } else {
-    sessionStorage.removeItem('rp_session')
+    localStorage.removeItem(SESSION_KEY)
   }
 }
 
 export function getSession() {
   if (_session) return _session
   try {
-    const raw = sessionStorage.getItem('rp_session')
+    const raw = localStorage.getItem(SESSION_KEY)
     if (raw) _session = JSON.parse(raw)
   } catch { _session = null }
   return _session
@@ -25,7 +27,7 @@ export function getSession() {
 
 export function clearSession() {
   _session = null
-  sessionStorage.removeItem('rp_session')
+  localStorage.removeItem(SESSION_KEY)
 }
 
 function buildHeaders(extra = {}) {

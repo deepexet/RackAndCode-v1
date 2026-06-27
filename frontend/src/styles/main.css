@@ -345,7 +345,16 @@ body {
 .btn--primary { background: var(--blue); color: #fff; }
 .btn--ghost   { background: rgba(255,255,255,0.07); color: var(--text-2); border: 1px solid var(--border-2); }
 .btn--danger  { background: var(--red-bg); color: var(--red); border: 1px solid rgba(242,87,87,0.25); }
+.btn--dev     { background: var(--green-bg); color: var(--green); border: 1px solid rgba(43,203,160,0.3); }
+.btn--dev:hover { background: rgba(43,203,160,0.22); }
 .btn--full    { width: 100%; justify-content: center; height: 44px; }
+
+.login-dev-divider {
+  display: flex; align-items: center; gap: 10px;
+  margin: 16px 0; color: var(--text-4); font-size: 12px;
+}
+.login-dev-divider::before,
+.login-dev-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
 
 /* Tap-safe buttons on mobile */
 @media (max-width: 767px) {
