@@ -215,10 +215,12 @@ async def save_workspace(body: dict[str, Any], store: StoreOnly):
 
 # ── Frontend (SPA) ────────────────────────────────────────────────────────
 
-_static_dir = settings.static_dir
+ROOT = Path(__file__).parent.parent.parent  # project root
+_static_dir = settings.static_dir           # frontend/dist (new)
+_web_dir = ROOT / "web"                     # web/ (legacy fallback)
 
 if _static_dir.exists():
-    # Production: serve built frontend
+    # Production / post-build: serve new frontend
     app.mount("/assets", StaticFiles(directory=_static_dir / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -226,14 +228,17 @@ if _static_dir.exists():
         index = _static_dir / "index.html"
         if index.exists():
             return FileResponse(index)
-        return JSONResponse({"error": "Frontend not built. Run: cd frontend && npm run build"}, status_code=404)
+        return JSONResponse({"error": "Frontend not built."}, status_code=404)
+
+elif _web_dir.exists():
+    # Dev / migration: serve legacy web/ so platform is fully usable on :4173
+    app.mount("/", StaticFiles(directory=_web_dir, html=True), name="web_legacy")
 
 else:
-    # Dev: redirect to Vite dev server info
     @app.get("/", include_in_schema=False)
     async def dev_root():
         return JSONResponse({
-            "message": "RackPilot API running. Frontend dev server: http://localhost:5173",
+            "message": "RackPilot API running. Frontend: cd frontend && npm run dev",
             "api_docs": "/api/docs",
         })
 

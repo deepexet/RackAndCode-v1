@@ -89,7 +89,7 @@ function startApp() {
   // Register routes
   router
     .on('overview',     () => import('./modules/overview.js').then(m => m.mount()))
-    .on('projects',     () => import('./modules/projects.js').then(m => m.mount()))
+    .on('projects',     (params) => import('./modules/projects.js').then(m => m.mount(params)))
     .on('inventory',    () => import('./modules/inventory.js').then(m => m.mount()))
     .on('work-orders',  () => import('./modules/work_orders.js').then(m => m.mount()))
     .on('tech',         () => import('./modules/tech.js').then(m => m.mount()))
