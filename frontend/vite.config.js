@@ -30,7 +30,7 @@ export default defineConfig({
     // Proxy API calls to FastAPI backend in development
     proxy: {
       '/api': {
-        target: 'http://localhost:4173',
+        target: 'http://127.0.0.1:4173',
         changeOrigin: true,
       },
     },
