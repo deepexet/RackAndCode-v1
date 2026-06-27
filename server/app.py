@@ -5871,6 +5871,45 @@ Rules:
             ).fetchall()
         return [dict(r) for r in rows if LEVELS.index(r["level"]) >= min_idx]
 
+    # ── Work item dependencies ────────────────────────────────────────────
+    def add_wi_dependency(self, org: str, blocker_id: str, blocked_id: str) -> dict[str, Any]:
+        if blocker_id == blocked_id: raise ValueError("A work item cannot block itself")
+        did = _uid(); now = utc_now()
+        with self._connect() as conn:
+            # Verify both WIs belong to this org
+            for wid in (blocker_id, blocked_id):
+                row = conn.execute("SELECT id FROM project_work_items WHERE id=? AND organization_id=?", (wid, org)).fetchone()
+                if not row: raise LookupError(f"Work item {wid} not found")
+            conn.execute(
+                "INSERT OR IGNORE INTO work_item_blockers (id,organization_id,blocker_id,blocked_id,created_at) VALUES (?,?,?,?,?)",
+                (did, org, blocker_id, blocked_id, now)
+            )
+        return {"blockerId": blocker_id, "blockedId": blocked_id}
+
+    def remove_wi_dependency(self, org: str, blocker_id: str, blocked_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_item_blockers WHERE organization_id=? AND blocker_id=? AND blocked_id=?",
+                (org, blocker_id, blocked_id)
+            )
+
+    def get_wi_dependencies(self, org: str, wi_id: str) -> dict[str, list[dict[str, Any]]]:
+        """Returns blockers[] (this WI is blocked by) and blocking[] (this WI blocks others)."""
+        with self._connect() as conn:
+            blockers = conn.execute(
+                "SELECT d.blocker_id as id, w.title, w.status FROM work_item_blockers d "
+                "JOIN project_work_items w ON w.id=d.blocker_id "
+                "WHERE d.organization_id=? AND d.blocked_id=?",
+                (org, wi_id)
+            ).fetchall()
+            blocking = conn.execute(
+                "SELECT d.blocked_id as id, w.title, w.status FROM work_item_blockers d "
+                "JOIN project_work_items w ON w.id=d.blocked_id "
+                "WHERE d.organization_id=? AND d.blocker_id=?",
+                (org, wi_id)
+            ).fetchall()
+        return {"blockers": [dict(r) for r in blockers], "blocking": [dict(r) for r in blocking]}
+
     # ── Project risks ─────────────────────────────────────────────────────
     def list_project_risks(self, org: str, project_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -8979,6 +9018,8 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         except _RateLimited:
             return
         path = urlparse(self.path).path
+        parts = path.strip("/").split("/")
+        path_depth = len(parts)
         if path in {"/api/health", "/api/v1/health"}:
             self._json(HTTPStatus.OK, {"status": "ok", "service": "rackpilot-local", "apiVersion": "v1", "schemaVersion": self.store.migration_result.current_version, "time": utc_now()})
             return
@@ -9161,9 +9202,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"documents": self.store.list_bindings_for_target(self.organization_id, target_type, target_id)})
             return
         # Digital Twin: GET /api/v1/projects/:id/twin, GET /api/v1/assets, GET /api/v1/assets/:id/relationships
-        if len(parts) == 5 and parts[3] == "projects" and parts[5] == "twin":
+        _twin_parts = path.strip("/").split("/")
+        if len(_twin_parts) == 5 and _twin_parts[2] == "v1" and _twin_parts[3] == "projects" and _twin_parts[4] == "twin":
             if not self._require_permission("projectRead"): return
-            project_id = parts[4]
+            project_id = _twin_parts[3]
             self._json(HTTPStatus.OK, self.store.get_digital_twin(self.organization_id, project_id))
             return
         if path == "/api/v1/assets":
@@ -9717,6 +9759,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             wi_id = parts[6]
             self._json(HTTPStatus.OK, {"comments": self.store.list_wi_comments(self.organization_id, wi_id)})
             return
+        # WI dependencies: GET /api/v1/work-items/:id/dependencies
+        wi_dep_parts = path.strip("/").split("/")
+        if len(wi_dep_parts) == 5 and wi_dep_parts[2] == "work-items" and wi_dep_parts[4] == "dependencies":
+            if not self._require_permission("projectRead"): return
+            deps = self.store.get_wi_dependencies(self.organization_id, wi_dep_parts[3])
+            self._json(HTTPStatus.OK, deps); return
         # Project activity feed: GET /api/v1/projects/:id/activity
         pact_parts = path.strip("/").split("/")
         if len(pact_parts) == 5 and pact_parts[2] == "projects" and pact_parts[4] == "activity":
@@ -9933,15 +9981,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not wo: self._error(HTTPStatus.NOT_FOUND, "not_found", "Work order not found"); return
             self._json(HTTPStatus.OK, {"workOrder": wo}); return
         # Cycle counts: GET /api/v1/inventory/cycle-counts  and /:id
-        if sub == "cycle-counts":
-            if not self._require_permission("projectRead"): return
-            if len(parts) == 5:  # /api/v1/inventory/cycle-counts
-                wh = self.query_params.get("warehouseId", [None])[0]
-                self._json(HTTPStatus.OK, {"counts": self.store.list_cycle_counts(self.organization_id, wh)}); return
-            if len(parts) == 6:  # /api/v1/inventory/cycle-counts/:id
-                cc = self.store.get_cycle_count(self.organization_id, parts[5])
-                if not cc: self._error(HTTPStatus.NOT_FOUND, "not_found", "Cycle count not found"); return
-                self._json(HTTPStatus.OK, {"count": cc}); return
+        if path.startswith("/api/v1/inventory/cycle-counts"):
+            _cc_parts = path.strip("/").split("/")
+            if _cc_parts[3] == "inventory" and len(_cc_parts) >= 5 and _cc_parts[4] == "cycle-counts":
+                if not self._require_permission("projectRead"): return
+                if len(_cc_parts) == 5:  # /api/v1/inventory/cycle-counts
+                    wh = self.query_params.get("warehouseId", [None])[0]
+                    self._json(HTTPStatus.OK, {"counts": self.store.list_cycle_counts(self.organization_id, wh)}); return
+                if len(_cc_parts) == 6:  # /api/v1/inventory/cycle-counts/:id
+                    cc = self.store.get_cycle_count(self.organization_id, _cc_parts[5])
+                    if not cc: self._error(HTTPStatus.NOT_FOUND, "not_found", "Cycle count not found"); return
+                    self._json(HTTPStatus.OK, {"count": cc}); return
         # WI Templates: GET /api/v1/wi-templates
         if path == "/api/v1/wi-templates":
             if not self._require_permission("projectRead"): return
@@ -11372,6 +11422,31 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 except (ValueError, LookupError) as e:
                     status2 = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status2, "invalid_request", str(e)); return
+        # WI dependencies POST: /api/v1/work-items/:id/dependencies/add|remove
+        widep_parts = path.strip("/").split("/")
+        if len(widep_parts) == 6 and widep_parts[2] == "work-items" and widep_parts[4] == "dependencies":
+            if not self._require_permission("projectManage"): return
+            action = widep_parts[5]
+            try:
+                body = self._read_json()
+                if action == "add":
+                    result = self.store.add_wi_dependency(self.organization_id, widep_parts[3], str(body.get("blockedId", widep_parts[3])))
+                    # Support both directions: add blocker for this WI, or add blocked-by
+                    if body.get("blockerFor"):
+                        result = self.store.add_wi_dependency(self.organization_id, widep_parts[3], str(body["blockerFor"]))
+                    elif body.get("blockedBy"):
+                        result = self.store.add_wi_dependency(self.organization_id, str(body["blockedBy"]), widep_parts[3])
+                    else:
+                        result = self.store.add_wi_dependency(self.organization_id, widep_parts[3], str(body.get("blockedId", "")))
+                    self._json(HTTPStatus.OK, result); return
+                elif action == "remove":
+                    blocker = body.get("blockerId") or widep_parts[3]
+                    blocked = body.get("blockedId") or widep_parts[3]
+                    self.store.remove_wi_dependency(self.organization_id, str(blocker), str(blocked))
+                    self._json(HTTPStatus.OK, {"removed": True}); return
+            except (ValueError, LookupError, json.JSONDecodeError) as e:
+                s2 = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
+                self._error(s2, "invalid_request", str(e)); return
         # Project risks POST: /api/v1/projects/:id/risks, /risks/:rid/update, /risks/:rid/delete
         risk_parts = path.strip("/").split("/")
         if len(risk_parts) == 5 and risk_parts[2] == "projects" and risk_parts[4] == "risks":
