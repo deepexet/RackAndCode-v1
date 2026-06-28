@@ -111,6 +111,26 @@
       </a>
     </div>
 
+    <!-- System stats widget -->
+    <div class="sys-widget" id="sysWidget" title="Мониторинг системы">
+      <div class="sys-row">
+        <span class="sys-label"><i class="ti ti-cpu"></i></span>
+        <div class="sys-bar-wrap"><div class="sys-bar" id="sw-cpu-bar"></div></div>
+        <span class="sys-val" id="sw-cpu">—</span>
+      </div>
+      <div class="sys-row">
+        <span class="sys-label"><i class="ti ti-database"></i></span>
+        <div class="sys-bar-wrap"><div class="sys-bar" id="sw-mem-bar"></div></div>
+        <span class="sys-val" id="sw-mem">—</span>
+      </div>
+      <div class="sys-row sys-row--bat">
+        <span class="sys-label" id="sw-bat-icon"><i class="ti ti-battery-2"></i></span>
+        <div class="sys-bar-wrap"><div class="sys-bar sys-bar--bat" id="sw-bat-bar"></div></div>
+        <span class="sys-val" id="sw-bat">—</span>
+        <span class="sys-volt" id="sw-volt"></span>
+      </div>
+    </div>
+
     <div class="sidebar-footer">
       <div class="user-chip" id="userChip" aria-label="User menu">
         <div class="avatar" id="sidebarAvatar">?</div>

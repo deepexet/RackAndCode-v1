@@ -145,6 +145,60 @@ body {
 .nav-badge--warn { background: rgba(245,166,35,0.2); color: var(--amber); }
 .nav-badge:empty { display: none; }
 
+/* ── System stats widget ──────────────────────────────────────────────── */
+.sys-widget {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sys-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 16px;
+}
+.sys-label {
+  width: 14px;
+  font-size: 11px;
+  color: var(--text-4);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.sys-label .ti { font-size: 11px; }
+.sys-bar-wrap {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-4);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.sys-bar {
+  height: 100%;
+  background: var(--blue);
+  border-radius: 2px;
+  transition: width 0.6s ease;
+  width: 0%;
+}
+.sys-bar--bat { background: var(--green); }
+.sys-val {
+  font-size: 10px;
+  color: var(--text-3);
+  min-width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.sys-volt {
+  font-size: 9px;
+  color: var(--text-4);
+  flex-shrink: 0;
+}
+.sys-row--bat .sys-label { color: var(--green); }
+
 .sidebar-footer {
   border-top: 1px solid var(--border);
   padding: 10px 8px;
@@ -1451,6 +1505,12 @@ body {
 .adm-section-header { display:flex; align-items:center; justify-content:space-between; }
 .adm-section-header h3 { font-size:15px; font-weight:600; color:var(--text); }
 
+.adm-sys-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px,1fr)); gap:12px; }
+.adm-sys-card { background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius-md); padding:16px; }
+.adm-sys-label { font-size:11px; color:var(--text-4); display:flex; align-items:center; gap:5px; margin-bottom:6px; }
+.adm-sys-label .ti { font-size:12px; }
+.adm-sys-val { font-size:24px; font-weight:700; color:var(--text); line-height:1; }
+.adm-sys-sub { font-size:11px; color:var(--text-3); margin-top:4px; }
 .adm-wt-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:10px; }
 .adm-wt-card { background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius-md); padding:14px; display:flex; flex-direction:column; gap:8px; }
 .adm-wt-top { display:flex; align-items:center; gap:8px; }

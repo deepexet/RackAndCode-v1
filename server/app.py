@@ -282,6 +282,54 @@ def ensure_agent_token(db_path: Path) -> tuple[str, Path | None]:
     return token_path.read_text(encoding="utf-8").strip(),token_path
 
 
+def _get_system_stats() -> dict[str, Any]:
+    """Read local machine stats: CPU, memory, battery (macOS via psutil + ioreg)."""
+    import time as _time, platform as _platform
+    try:
+        import psutil as _ps
+        cpu = _ps.cpu_percent(interval=0.25)
+        mem = _ps.virtual_memory()
+        disk = _ps.disk_usage("/")
+        bat = _ps.sensors_battery()
+        uptime_s = int(_time.time() - _ps.boot_time())
+
+        battery: dict[str, Any] = {}
+        if bat is not None:
+            battery = {
+                "percent": round(bat.percent, 1),
+                "plugged": bat.power_plugged,
+                "secsLeft": bat.secsleft if bat.secsleft not in (_ps.POWER_TIME_UNLIMITED, _ps.POWER_TIME_UNKNOWN) else -1,
+            }
+            # macOS battery detail via ioreg
+            try:
+                out = subprocess.check_output(["ioreg", "-rn", "AppleSmartBattery", "-l"], text=True, timeout=2)
+                def _fi(key: str):
+                    import re as _re
+                    m = _re.search(rf'"{key}"\s*=\s*(-?\d+)', out)
+                    return int(m.group(1)) if m else None
+                battery.update({
+                    "voltageMv": _fi("Voltage"),
+                    "currentMa": _fi("InstantAmperage"),
+                    "cycleCount": _fi("CycleCount"),
+                    "maxCapacity": _fi("MaxCapacity"),
+                    "designCapacity": _fi("DesignCapacity"),
+                })
+            except Exception:
+                pass
+
+        return {
+            "cpu": {"percent": round(cpu, 1), "count": _ps.cpu_count()},
+            "memory": {"percent": round(mem.percent, 1), "usedBytes": mem.used, "totalBytes": mem.total},
+            "disk": {"percent": round(disk.percent, 1), "usedBytes": disk.used, "totalBytes": disk.total},
+            "battery": battery,
+            "uptimeSeconds": uptime_s,
+            "platform": _platform.system(),
+            "hostname": _platform.node(),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _build_platform_growth() -> dict[str, Any]:
     """Return daily commit/migration/files-changed metrics from git log."""
     repo = Path(__file__).parent.parent
@@ -9366,6 +9414,10 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/admin/platform-growth":
             if not self._require_permission("adminPanel"): return
             self._json(HTTPStatus.OK, _build_platform_growth())
+            return
+        if path == "/api/v1/admin/system-stats":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, _get_system_stats())
             return
         if path == "/api/v1/projects/sla-report":
             if not self._require_permission("projectRead"): return

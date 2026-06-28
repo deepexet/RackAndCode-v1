@@ -150,6 +150,9 @@ function startApp() {
   // Mobile "More" drawer
   initMobileDrawer()
 
+  // System monitoring widget
+  startSysWidget()
+
   router.start()
 }
 
@@ -263,6 +266,64 @@ export function escapeHtml(str) {
 }
 
 window.toast = toast
+window.router = router
+
+// ── System stats widget ───────────────────────────────────────────────────
+
+function fmtBytes(b) {
+  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + 'G'
+  if (b >= 1048576) return (b / 1048576).toFixed(0) + 'M'
+  return (b / 1024).toFixed(0) + 'K'
+}
+
+async function refreshSysWidget() {
+  try {
+    const d = await (await fetch('/api/v1/admin/system-stats', {
+      headers: { 'Authorization': 'Bearer ' + (JSON.parse(localStorage.getItem('rp_session') || '{}').token || '') }
+    })).json()
+    if (!d.cpu) return
+
+    const $cpu = document.getElementById('sw-cpu')
+    const $cpuBar = document.getElementById('sw-cpu-bar')
+    const $mem = document.getElementById('sw-mem')
+    const $memBar = document.getElementById('sw-mem-bar')
+    const $bat = document.getElementById('sw-bat')
+    const $batBar = document.getElementById('sw-bat-bar')
+    const $batIcon = document.getElementById('sw-bat-icon')
+    const $volt = document.getElementById('sw-volt')
+
+    if ($cpu) $cpu.textContent = d.cpu.percent + '%'
+    if ($cpuBar) $cpuBar.style.width = d.cpu.percent + '%'
+
+    if ($mem) $mem.textContent = fmtBytes(d.memory.usedBytes)
+    if ($memBar) $memBar.style.width = d.memory.percent + '%'
+
+    if (d.battery && d.battery.percent != null) {
+      const pct = d.battery.percent
+      const plugged = d.battery.plugged
+      if ($bat) $bat.textContent = pct + '%'
+      if ($batBar) {
+        $batBar.style.width = pct + '%'
+        $batBar.style.background = pct < 20 ? 'var(--red)' : pct < 40 ? 'var(--amber)' : 'var(--green)'
+      }
+      if ($batIcon) {
+        const icon = plugged ? 'ti-battery-charging-2' : pct < 20 ? 'ti-battery-1' : pct < 50 ? 'ti-battery-2' : pct < 80 ? 'ti-battery-3' : 'ti-battery-4'
+        $batIcon.innerHTML = `<i class="ti ${icon}"></i>`
+        $batIcon.style.color = plugged ? 'var(--green)' : pct < 20 ? 'var(--red)' : 'var(--text-4)'
+      }
+      if ($volt && d.battery.voltageMv) {
+        $volt.textContent = (d.battery.voltageMv / 1000).toFixed(2) + 'V'
+      }
+    }
+  } catch {}
+}
+
+let _sysWidgetTimer = null
+function startSysWidget() {
+  refreshSysWidget()
+  _sysWidgetTimer = setInterval(refreshSysWidget, 5000)
+}
+
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 

@@ -18,6 +18,7 @@ const TABS = [
   { id: 'worktypes', label: 'Типы работ', icon: 'ti-tool' },
   { id: 'audit',     label: 'Аудит',      icon: 'ti-shield-check' },
   { id: 'metrics',   label: 'Метрики',    icon: 'ti-chart-bar' },
+  { id: 'system',    label: 'Система',    icon: 'ti-cpu' },
 ]
 
 // ── Data ─────────────────────────────────────────────────────────────────
@@ -31,6 +32,7 @@ async function load(tab) {
     case 'worktypes': d = await apiJSON('/api/v1/admin/work-types'); break
     case 'audit':     d = await apiJSON('/api/v1/admin/audit-log'); break
     case 'metrics':   d = await apiJSON('/api/v1/admin/api-metrics'); break
+    case 'system':    d = await apiJSON('/api/v1/admin/system-stats'); break
   }
   _data[tab] = d
   return d
@@ -171,6 +173,74 @@ function renderMetrics(d) {
       })}`
 }
 
+function renderSystem(d) {
+  if (d.error) return `<div class="ui-empty"><i class="ti ti-alert-circle"></i><span>Ошибка: ${esc(d.error)}</span></div>`
+  const bat = d.battery || {}
+  const fmtB = b => b >= 1073741824 ? (b/1073741824).toFixed(1)+'GB' : b >= 1048576 ? (b/1048576).toFixed(0)+'MB' : (b/1024).toFixed(0)+'KB'
+  const fmtTime = s => { if (s < 0) return '—'; const h = Math.floor(s/3600), m = Math.floor((s%3600)/60); return `${h}h ${m}m` }
+  const pctBar = (pct, color='var(--blue)') =>
+    `<div style="background:var(--bg-4);border-radius:4px;height:8px;overflow:hidden;margin-top:4px">
+      <div style="width:${pct}%;height:100%;background:${color};border-radius:4px;transition:width .6s"></div>
+    </div>`
+  const batColor = bat.percent < 20 ? 'var(--red)' : bat.percent < 40 ? 'var(--amber)' : 'var(--green)'
+
+  return `
+    <div class="adm-section">
+      <div class="adm-section-header">
+        <h3><i class="ti ti-cpu"></i> Мониторинг системы</h3>
+        <span class="ui-dim" style="font-size:12px">${esc(d.hostname || '')} · ${esc(d.platform || '')}</span>
+        <button class="ui-btn ui-btn--sm" id="adm-sys-refresh"><i class="ti ti-refresh"></i> Обновить</button>
+      </div>
+
+      <div class="adm-sys-grid">
+        <div class="adm-sys-card">
+          <div class="adm-sys-label"><i class="ti ti-cpu"></i> CPU</div>
+          <div class="adm-sys-val">${d.cpu?.percent ?? '—'}%</div>
+          <div class="adm-sys-sub">${d.cpu?.count ?? '—'} ядер</div>
+          ${pctBar(d.cpu?.percent ?? 0)}
+        </div>
+
+        <div class="adm-sys-card">
+          <div class="adm-sys-label"><i class="ti ti-database"></i> Память</div>
+          <div class="adm-sys-val">${d.memory ? fmtB(d.memory.usedBytes) : '—'}</div>
+          <div class="adm-sys-sub">${d.memory?.percent ?? '—'}% из ${d.memory ? fmtB(d.memory.totalBytes) : '—'}</div>
+          ${pctBar(d.memory?.percent ?? 0, 'var(--accent)')}
+        </div>
+
+        <div class="adm-sys-card">
+          <div class="adm-sys-label"><i class="ti ti-device-sd-card"></i> Диск</div>
+          <div class="adm-sys-val">${d.disk ? fmtB(d.disk.usedBytes) : '—'}</div>
+          <div class="adm-sys-sub">${d.disk?.percent ?? '—'}% из ${d.disk ? fmtB(d.disk.totalBytes) : '—'}</div>
+          ${pctBar(d.disk?.percent ?? 0, 'var(--amber)')}
+        </div>
+
+        <div class="adm-sys-card">
+          <div class="adm-sys-label"><i class="ti ${bat.plugged ? 'ti-battery-charging-2' : 'ti-battery-2'}"></i> Батарея</div>
+          <div class="adm-sys-val" style="color:${batColor}">${bat.percent ?? '—'}%</div>
+          <div class="adm-sys-sub">
+            ${bat.plugged ? 'Подключено к сети' : `Осталось ${fmtTime(bat.secsLeft)}`}
+            ${bat.voltageMv ? `· ${(bat.voltageMv/1000).toFixed(2)}V` : ''}
+            ${bat.currentMa ? `· ${Math.abs(bat.currentMa)}mA` : ''}
+          </div>
+          ${pctBar(bat.percent ?? 0, batColor)}
+        </div>
+      </div>
+
+      <div class="adm-section" style="margin-top:16px">
+        <div class="adm-section-header"><h3>Детали батареи</h3></div>
+        ${kvList([
+          ['Заряд',         `${bat.percent ?? '—'}%`],
+          ['Состояние',     bat.plugged ? 'Зарядка / Сеть' : 'Батарея'],
+          ['Напряжение',    bat.voltageMv ? `${(bat.voltageMv/1000).toFixed(3)} V` : '—'],
+          ['Ток',           bat.currentMa != null ? `${bat.currentMa} mA` : '—'],
+          ['Циклы заряда',  bat.cycleCount ?? '—'],
+          ['Ёмкость',       bat.maxCapacity != null && bat.designCapacity ? `${bat.maxCapacity} / ${bat.designCapacity} mAh` : '—'],
+          ['Аптайм',        d.uptimeSeconds != null ? fmtTime(d.uptimeSeconds) : '—'],
+        ])}
+      </div>
+    </div>`
+}
+
 // ── Render & navigation ───────────────────────────────────────────────────
 
 function render() {
@@ -200,6 +270,7 @@ async function switchTab() {
       case 'worktypes': html = renderWorkTypes(d);  break
       case 'audit':     html = renderAudit(d);      break
       case 'metrics':   html = renderMetrics(d);    break
+      case 'system':    html = renderSystem(d);     break
     }
     body.innerHTML = html
     bindTabEvents()
@@ -208,7 +279,15 @@ async function switchTab() {
   }
 }
 
+function bindSystemRefresh() {
+  document.getElementById('adm-sys-refresh')?.addEventListener('click', () => {
+    delete _data.system
+    switchTab()
+  })
+}
+
 function bindTabEvents() {
+  if (_tab === 'system') { bindSystemRefresh(); return }
   document.getElementById('adm-edit-settings')?.addEventListener('click', () => {
     const s = _data.settings?.settings || {}
     const { close } = openModal({

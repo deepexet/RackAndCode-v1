@@ -288,3 +288,67 @@ async def save_smtp(body: dict[str, Any], ctx: Auth):
 async def platform_growth(ctx: Auth):
     from server.app import _build_platform_growth
     return _build_platform_growth()
+
+
+# ── System stats (local machine) ──────────────────────────────────────────
+
+def _get_battery_ioreg() -> dict:
+    """Read battery voltage, current and cycle count via ioreg (macOS only)."""
+    import re, subprocess
+    try:
+        out = subprocess.check_output(
+            ["ioreg", "-rn", "AppleSmartBattery", "-l"],
+            text=True, timeout=2,
+        )
+        def _find(key: str):
+            m = re.search(rf'"{key}"\s*=\s*(-?\d+)', out)
+            return int(m.group(1)) if m else None
+        return {
+            "voltageMv": _find("Voltage"),
+            "currentMa": _find("InstantAmperage"),
+            "cycleCount": _find("CycleCount"),
+            "designCapacity": _find("DesignCapacity"),
+            "maxCapacity": _find("MaxCapacity"),
+        }
+    except Exception:
+        return {}
+
+
+@router.get("/system-stats")
+async def system_stats(ctx: Auth):
+    import asyncio, time, platform
+    import psutil
+
+    cpu = psutil.cpu_percent(interval=0.25)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    bat = psutil.sensors_battery()
+    boot_ts = psutil.boot_time()
+    uptime_s = int(time.time() - boot_ts)
+
+    battery: dict = {}
+    if bat is not None:
+        battery = {
+            "percent": round(bat.percent, 1),
+            "plugged": bat.power_plugged,
+            "secsleft": bat.secsleft if bat.secsleft != psutil.POWER_TIME_UNLIMITED else -1,
+        }
+        battery.update(_get_battery_ioreg())
+
+    return {
+        "cpu": {"percent": round(cpu, 1), "count": psutil.cpu_count()},
+        "memory": {
+            "percent": round(mem.percent, 1),
+            "usedBytes": mem.used,
+            "totalBytes": mem.total,
+        },
+        "disk": {
+            "percent": round(disk.percent, 1),
+            "usedBytes": disk.used,
+            "totalBytes": disk.total,
+        },
+        "battery": battery,
+        "uptimeSeconds": uptime_s,
+        "platform": platform.system(),
+        "hostname": platform.node(),
+    }
