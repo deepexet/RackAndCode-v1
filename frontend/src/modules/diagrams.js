@@ -16,9 +16,9 @@ const TERM_R    = 5     // terminal circle radius
 const TERM_GAP  = 22    // spacing between terminals on same side
 const TERM_PAD  = 14    // padding from corner to first terminal
 const STUB      = 20    // wire stub length off terminal (must be multiple of GRID)
-const BUNDLE_SPACING = 6  // extra stub px per wire in a parallel bundle
+const BUNDLE_SPACING = 12  // extra stub px per wire in a parallel bundle
 const OBS_MARGIN = 20   // obstacle avoidance margin around components
-const HOP_R      = 7    // wire crossing bridge arc radius
+const HOP_R      = 9    // wire crossing bridge arc radius
 
 // ── Wire Colors ────────────────────────────────────────────────────────────
 const WIRE_COLORS = [
@@ -303,7 +303,7 @@ const CATEGORIES = {
   ict:     { label:'ICT Access Control', icon:'ti-cpu' },
   door:    { label:'Дверное оборудование', icon:'ti-door' },
   power:   { label:'Питание',            icon:'ti-bolt' },
-  lv:      { label:'Low Voltage / HVAC', icon:'ti-circuit-switchboard' },
+  lv:      { label:'Low Voltage / HVAC', icon:'ti-schema' },
   generic: { label:'Generic',            icon:'ti-square' },
 }
 
@@ -1736,12 +1736,12 @@ function renderDiagramList() {
 
   list.innerHTML = !_diagrams.length
     ? `<div class="dg-list-empty">
-        <i class="ti ti-circuit-switchboard"></i>
+        <i class="ti ti-schema"></i>
         <p>Нет сохранённых схем. Создайте первую!</p>
        </div>`
     : _diagrams.map(d => `
         <div class="dg-diagram-card" data-id="${esc(d.id)}">
-          <div class="dg-diagram-card-icon"><i class="ti ti-circuit-switchboard"></i></div>
+          <div class="dg-diagram-card-icon"><i class="ti ti-schema"></i></div>
           <div class="dg-diagram-card-info">
             <div class="dg-diagram-card-name">${esc(d.title)}</div>
             <div class="dg-diagram-card-meta">${esc(d.updated_by||'')} · ${d.updated_at?.slice(0,10)||''}</div>
@@ -1754,6 +1754,35 @@ function renderDiagramList() {
       const id = el.closest('[data-id]')?.dataset?.id || el.dataset.id
       const page = _diagrams.find(d => d.id === id)
       if (page) openDiagram(page)
+    })
+  })
+}
+
+function renderLibraryCustomDefs() {
+  const catEl = _el?.querySelector('.dg-lib-cat')
+  if (!catEl) return
+  const defs = _diagram.customDefs || []
+  const items = defs.map(def => `
+    <div class="dg-lib-item" draggable="true" data-type="${esc(def.id)}" style="position:relative">
+      <i class="ti ti-puzzle" style="color:${esc(def.hue||'#4a90e2')}"></i>
+      <span>${esc(def.label)}</span>
+      <button class="dg-edit-custom-btn" data-def-id="${esc(def.id)}" title="Редактировать" style="margin-left:auto;padding:2px 5px;background:transparent;border:none;cursor:pointer;color:var(--text-4);font-size:13px">✏️</button>
+    </div>`).join('')
+  catEl.innerHTML = `
+    <div class="dg-lib-cat-label"><i class="ti ti-tools"></i> Кастом</div>
+    ${items}
+    <button class="dg-add-custom-btn" id="dg-add-custom">
+      <i class="ti ti-plus"></i> Новый элемент
+    </button>`
+  catEl.querySelectorAll('[draggable]').forEach(el => {
+    el.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', el.dataset.type); _dragType = el.dataset.type })
+  })
+  catEl.querySelector('#dg-add-custom')?.addEventListener('click', () => openCustomCompModal())
+  catEl.querySelectorAll('.dg-edit-custom-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation()
+      const existingDef = (_diagram.customDefs || []).find(d => d.id === btn.dataset.defId)
+      if (existingDef) openCustomCompModal(existingDef)
     })
   })
 }
@@ -1773,6 +1802,7 @@ function showEditor() {
   renderCanvas()
   updateToolbar()
   renderProps()
+  renderLibraryCustomDefs()
 
   // Mobile: show touch hint once
   if (window.innerWidth <= 768 && _svgEl) {
@@ -1801,7 +1831,7 @@ function render() {
     <div class="dg-home">
       <div class="dg-home-header">
         <div>
-          <h1 class="dg-home-title"><i class="ti ti-circuit-switchboard"></i> Схемы подключения</h1>
+          <h1 class="dg-home-title"><i class="ti ti-schema"></i> Схемы подключения</h1>
           <p class="dg-home-sub">Конструктор монтажных схем — ICT Access Control, Low Voltage, HVAC</p>
         </div>
         <button class="ui-btn ui-btn--primary" id="dg-new-btn">
