@@ -127,6 +127,9 @@ function startApp() {
     .on('work-orders',  () => import('./modules/work_orders.js').then(m => m.mount()))
     .on('tech',         () => import('./modules/tech.js').then(m => m.mount()))
     .on('logs',         () => import('./modules/logs.js').then(m => m.mount()))
+    .on('wiki',         () => import('./modules/wiki.js').then(m => m.mount()))
+    .on('diagrams',     () => import('./modules/diagrams.js').then(m => m.mount()))
+    .on('docs',         () => import('./modules/docs.js').then(m => m.mount()))
     .on('api',          () => import('./modules/api_metrics.js').then(m => m.mount()))
     .on('admin',        () => import('./modules/admin.js').then(m => m.mount()))
 
@@ -134,7 +137,8 @@ function startApp() {
   window.addEventListener('rp:route', e => {
     const labels = {
       overview: 'Overview', projects: 'Projects', inventory: 'Inventory',
-      'work-orders': 'Work orders', tech: 'Field', logs: 'Logs', admin: 'Admin',
+      'work-orders': 'Work orders', tech: 'Field', logs: 'Logs',
+      wiki: 'Wiki', diagrams: 'Схемы', docs: 'Platform Docs', admin: 'Admin',
     }
     const bc = document.getElementById('topbarBreadcrumb')
     if (bc) bc.innerHTML = `<span>${labels[e.detail.route] || e.detail.route}</span>`
@@ -142,6 +146,9 @@ function startApp() {
 
   // Command palette (⌘K)
   initCommandPalette()
+
+  // Mobile "More" drawer
+  initMobileDrawer()
 
   router.start()
 }
@@ -193,6 +200,47 @@ function initCommandPalette() {
       el.addEventListener('click', () => { location.hash = el.dataset.hash; close() })
     })
   }
+}
+
+// ── Mobile drawer ─────────────────────────────────────────────────────────
+
+function initMobileDrawer() {
+  const btn      = document.getElementById('mobileMoreBtn')
+  const drawer   = document.getElementById('mobileDrawer')
+  const backdrop = document.getElementById('mobileDrawerBackdrop')
+  if (!btn || !drawer || !backdrop) return
+
+  const open = () => {
+    drawer.classList.add('open')
+    backdrop.classList.add('open')
+    drawer.setAttribute('aria-hidden', 'false')
+    btn.classList.add('active')
+  }
+  const close = () => {
+    drawer.classList.remove('open')
+    backdrop.classList.remove('open')
+    drawer.setAttribute('aria-hidden', 'true')
+    btn.classList.remove('active')
+  }
+
+  btn.addEventListener('click', () => drawer.classList.contains('open') ? close() : open())
+  backdrop.addEventListener('click', close)
+
+  // Close drawer when any item inside is tapped (event delegation)
+  drawer.addEventListener('click', e => {
+    if (e.target.closest('[data-drawer-close]')) close()
+  })
+
+  // Also close drawer on any route change (belt + suspenders)
+  window.addEventListener('rp:route', close)
+
+  // Sync active state for drawer items
+  window.addEventListener('rp:route', e => {
+    drawer.querySelectorAll('.mobile-drawer-item').forEach(el => {
+      const route = el.getAttribute('data-route-link')
+      el.classList.toggle('active', route === e.detail.route)
+    })
+  })
 }
 
 // ── Global UI utilities ───────────────────────────────────────────────────

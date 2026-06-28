@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     reload: bool = False
 
     # Database
-    db_path: Path = ROOT / "data" / "fieldos.db"
+    db_path: Path = ROOT / "data" / "rackpilot.db"
     db_wal: bool = True
 
     # Migrations

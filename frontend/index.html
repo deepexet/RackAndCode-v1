@@ -8,6 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#0C0F1A">
   <title>RackPilot</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.33.0/dist/tabler-icons.min.css">
   <link rel="stylesheet" href="/src/styles/main.css">
 </head>
 <body>
@@ -84,11 +85,27 @@
         <i class="ti ti-map-pin" aria-hidden="true"></i>
         <span>Field</span>
       </a>
-      <a class="nav-item" href="#logs" data-route-link="logs" role="listitem" data-permission="logsRead">
+      <a class="nav-item" href="#logs" data-route-link="logs" role="listitem">
         <i class="ti ti-history" aria-hidden="true"></i>
         <span>Logs</span>
       </a>
-      <a class="nav-item" href="#admin" data-route-link="admin" role="listitem" data-permission="adminPanel">
+      <a class="nav-item" href="#wiki" data-route-link="wiki" role="listitem">
+        <i class="ti ti-notebook" aria-hidden="true"></i>
+        <span>Wiki</span>
+      </a>
+      <a class="nav-item" href="#diagrams" data-route-link="diagrams" role="listitem">
+        <i class="ti ti-circuit-switchboard" aria-hidden="true"></i>
+        <span>Схемы</span>
+      </a>
+      <a class="nav-item" href="#docs" data-route-link="docs" role="listitem">
+        <i class="ti ti-book-2" aria-hidden="true"></i>
+        <span>Docs</span>
+      </a>
+      <a class="nav-item" href="#api" data-route-link="api" role="listitem">
+        <i class="ti ti-activity" aria-hidden="true"></i>
+        <span>API Monitor</span>
+      </a>
+      <a class="nav-item" href="#admin" data-route-link="admin" role="listitem">
         <i class="ti ti-settings" aria-hidden="true"></i>
         <span>Admin</span>
       </a>
@@ -138,6 +155,10 @@
       <div data-view="work-orders" class="view"></div>
       <div data-view="tech" class="view"></div>
       <div data-view="logs" class="view"></div>
+      <div data-view="wiki" class="view"></div>
+      <div data-view="diagrams" class="view" style="padding:0"></div>
+      <div data-view="docs" class="view"></div>
+      <div data-view="api" class="view"></div>
       <div data-view="admin" class="view"></div>
     </main>
 
@@ -147,27 +168,64 @@
   <nav class="bottom-nav" id="bottomNav" aria-label="Mobile navigation">
     <a class="bottom-nav-item" href="#overview" data-route-link="overview">
       <i class="ti ti-home" aria-hidden="true"></i>
-      <span>Home</span>
+      <span>Главная</span>
     </a>
     <a class="bottom-nav-item" href="#work-orders" data-route-link="work-orders">
       <i class="ti ti-clipboard-list" aria-hidden="true"></i>
-      <span>Tasks</span>
+      <span>Наряды</span>
       <span class="bottom-badge" id="mobile-badge-wo" style="display:none"></span>
-    </a>
-    <a class="bottom-nav-item" href="#tech" data-route-link="tech">
-      <i class="ti ti-qrcode" aria-hidden="true"></i>
-      <span>Scan</span>
     </a>
     <a class="bottom-nav-item" href="#inventory" data-route-link="inventory">
       <i class="ti ti-packages" aria-hidden="true"></i>
-      <span>Stock</span>
+      <span>Склад</span>
       <span class="bottom-badge bottom-badge--warn" id="mobile-badge-inv" style="display:none"></span>
     </a>
     <a class="bottom-nav-item" href="#projects" data-route-link="projects">
       <i class="ti ti-briefcase" aria-hidden="true"></i>
-      <span>Projects</span>
+      <span>Проекты</span>
     </a>
+    <button class="bottom-nav-item bottom-nav-more" id="mobileMoreBtn" type="button" aria-label="Все разделы">
+      <i class="ti ti-grid-dots" aria-hidden="true"></i>
+      <span>Ещё</span>
+    </button>
   </nav>
+
+  <!-- ── Mobile "More" drawer ─────────────────────────────────────────── -->
+  <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop"></div>
+  <div class="mobile-drawer" id="mobileDrawer" aria-hidden="true">
+    <div class="mobile-drawer-handle"></div>
+    <div class="mobile-drawer-title">Все разделы</div>
+    <div class="mobile-drawer-grid">
+      <a class="mobile-drawer-item" href="#tech" data-route-link="tech" data-drawer-close>
+        <span class="mobile-drawer-icon"><i class="ti ti-qrcode"></i></span>
+        <span>Field / Scan</span>
+      </a>
+      <a class="mobile-drawer-item" href="#logs" data-route-link="logs" data-drawer-close>
+        <span class="mobile-drawer-icon"><i class="ti ti-list-details"></i></span>
+        <span>Журнал</span>
+      </a>
+      <a class="mobile-drawer-item" href="#wiki" data-route-link="wiki" data-drawer-close>
+        <span class="mobile-drawer-icon"><i class="ti ti-notes"></i></span>
+        <span>Wiki</span>
+      </a>
+      <a class="mobile-drawer-item" href="#diagrams" data-route-link="diagrams" data-drawer-close>
+        <span class="mobile-drawer-icon"><i class="ti ti-vector-bezier"></i></span>
+        <span>Схемы</span>
+      </a>
+      <a class="mobile-drawer-item" href="#docs" data-route-link="docs" data-drawer-close>
+        <span class="mobile-drawer-icon"><i class="ti ti-book-2"></i></span>
+        <span>Docs</span>
+      </a>
+      <a class="mobile-drawer-item" href="#api" data-route-link="api" data-drawer-close>
+        <span class="mobile-drawer-icon"><i class="ti ti-activity"></i></span>
+        <span>API Monitor</span>
+      </a>
+      <a class="mobile-drawer-item" href="#admin" data-route-link="admin" data-drawer-close>
+        <span class="mobile-drawer-icon"><i class="ti ti-settings"></i></span>
+        <span>Admin</span>
+      </a>
+    </div>
+  </div>
 
 </div>
 

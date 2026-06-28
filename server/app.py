@@ -38,10 +38,11 @@ import subprocess
 from server.migrations import MigrationRunner
 from server.ai_router import AIRouter, classify as ai_classify
 from server.connectors import deliver_once, _RETRY_DELAYS, _MAX_ATTEMPTS, WebhookDeliveryWorker
+from server import doc_search as _doc_search
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = ROOT / "web"
-DEFAULT_DB = ROOT / "data" / "fieldos.db"
+DEFAULT_DB = ROOT / "data" / "rackpilot.db"
 MIGRATIONS_DIR = ROOT / "server" / "migrations"
 OPENAPI_PATH = ROOT / "docs" / "openapi.yaml"
 MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -1018,7 +1019,7 @@ class WorkspaceStore:
             development_tasks = [
                 task for task in all_tasks
                 if task.get("projectId") == project_id
-                or (project_id == "fieldos-platform" and not task.get("projectId"))
+                or (project_id == "rackpilot" and not task.get("projectId"))
             ]
             project_items = [dict(item) for item in work_items if item["project_id"] == project_id]
             project_buildings = [dict(building) for building in buildings if building["project_id"] == project_id]
@@ -1270,8 +1271,7 @@ class WorkspaceStore:
         project = self.get_project(organization_id, project_id)
         if project is None:
             raise LookupError("Project not found")
-        if project["kind"] != "customer":
-            raise ValueError("Field work items can only be added to customer projects")
+        # kind restriction removed — all project types support work items
         title = payload.get("title")
         status, priority = payload.get("status", "backlog"), payload.get("priority", "medium")
         if not isinstance(title, str) or not title.strip() or len(title) > 120:
@@ -1307,14 +1307,18 @@ class WorkspaceStore:
             if membership is None:
                 raise ValueError("Assignee is not an active member of this organization")
         item_id, now = str(uuid.uuid4()), utc_now()
+        created_by = payload.get("createdBy") or payload.get("created_by") or ""
+        source_type = payload.get("sourceType") or payload.get("source_type") or "user"
+        if source_type not in ("user", "agent"):
+            source_type = "user"
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO project_work_items
                    (organization_id, id, project_id, building_id, stage_id, work_type_id, title, description,
                     status, priority, assignee_user_id, start_date, due_date, estimated_minutes,
-                    actual_minutes, version, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)""",
-                (organization_id, item_id, project_id, building_id, stage_id, work_type_id, title.strip(), str(payload.get("description", ""))[:1000], status, priority, assignee_user_id, payload.get("startDate"), payload.get("dueDate"), estimated, now, now),
+                    actual_minutes, version, created_by, source_type, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?)""",
+                (organization_id, item_id, project_id, building_id, stage_id, work_type_id, title.strip(), str(payload.get("description", ""))[:1000], status, priority, assignee_user_id, payload.get("startDate"), payload.get("dueDate"), estimated, created_by, source_type, now, now),
             )
             connection.executemany(
                 """INSERT INTO work_item_dependencies
@@ -5977,16 +5981,20 @@ Rules:
     def create_work_order(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
         title = str(payload.get("title","")).strip()
         if not title: raise ValueError("title required")
-        now = utc_now(); woid = _uid()
+        now = utc_now(); woid = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO work_orders (id,organization_id,title,description,status,priority,asset_id,sku_id,warehouse_id,assigned_to,due_date,notes,created_by,created_at,updated_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (woid, org, title, str(payload.get("description",""))[:2000],
+                (woid, org, title, str(payload.get("description", payload.get("description","")))[:2000],
                  str(payload.get("status","open")), str(payload.get("priority","medium")),
-                 payload.get("assetId"), payload.get("skuId"), payload.get("warehouseId"),
-                 str(payload.get("assignedTo","")), payload.get("dueDate"),
-                 str(payload.get("notes","")), str(payload.get("createdBy","")), now, now)
+                 payload.get("asset_id", payload.get("assetId")),
+                 payload.get("sku_id", payload.get("skuId")),
+                 payload.get("warehouse_id", payload.get("warehouseId")),
+                 str(payload.get("assigned_to", payload.get("assignedTo",""))),
+                 payload.get("due_date", payload.get("dueDate")),
+                 str(payload.get("notes","")),
+                 str(payload.get("created_by", payload.get("createdBy",""))), now, now)
             )
             row = conn.execute("SELECT * FROM work_orders WHERE id=?", (woid,)).fetchone()
         return dict(row)
@@ -6004,8 +6012,8 @@ Rules:
                 (str(payload.get("title", row["title"])).strip() or row["title"],
                  str(payload.get("description", row["description"]))[:2000],
                  new_status, str(payload.get("priority", row["priority"])),
-                 str(payload.get("assignedTo", row["assigned_to"])),
-                 payload.get("dueDate", row["due_date"]),
+                 str(payload.get("assigned_to", payload.get("assignedTo", row["assigned_to"]))),
+                 payload.get("due_date", payload.get("dueDate", row["due_date"])),
                  str(payload.get("notes", row["notes"])),
                  completed_at, now, wo_id, org)
             )
@@ -6762,6 +6770,273 @@ Rules:
         except OSError: pass
         with self._connect() as conn:
             conn.execute("DELETE FROM project_documents WHERE id=? AND organization_id=?", (doc_id, org))
+
+    # ── Wiki pages ────────────────────────────────────────────────────────────
+    def list_wiki_pages(self, org: str, project_id: str | None = None,
+                        category: str | None = None) -> list[dict[str, Any]]:
+        where = "organization_id=?"
+        params: list[Any] = [org]
+        if project_id is not None:
+            where += " AND project_id=?"; params.append(project_id)
+        else:
+            where += " AND project_id IS NULL"
+        if category:
+            where += " AND category=?"; params.append(category)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM wiki_pages WHERE {where} ORDER BY updated_at DESC", params
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_wiki_page(self, org: str, page_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM wiki_pages WHERE id=? AND organization_id=?", (page_id, org)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_wiki_page(self, org: str, data: dict[str, Any], actor: str = '') -> dict[str, Any]:
+        import uuid, json as _json
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        page_id = data.get('id') or str(uuid.uuid4())
+        tags = data.get('tags', [])
+        if isinstance(tags, list): tags = _json.dumps(tags)
+        metadata = data.get('metadata', {})
+        if isinstance(metadata, dict): metadata = _json.dumps(metadata)
+        row = {
+            'id': page_id,
+            'organization_id': org,
+            'project_id': data.get('projectId') or data.get('project_id'),
+            'title': data.get('title', 'Без названия'),
+            'content': data.get('content', ''),
+            'category': data.get('category', ''),
+            'page_type': data.get('pageType') or data.get('page_type', 'general'),
+            'tags': tags,
+            'metadata': metadata,
+            'created_by': actor,
+            'updated_by': actor,
+            'created_at': now,
+            'updated_at': now,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO wiki_pages
+                   (id,organization_id,project_id,title,content,category,page_type,
+                    tags,metadata,created_by,updated_by,created_at,updated_at)
+                   VALUES
+                   (:id,:organization_id,:project_id,:title,:content,:category,:page_type,
+                    :tags,:metadata,:created_by,:updated_by,:created_at,:updated_at)""",
+                row
+            )
+            # Index in FTS
+            conn.execute(
+                "INSERT OR REPLACE INTO wiki_fts(page_id,organization_id,title,content,category) VALUES(?,?,?,?,?)",
+                (page_id, org, row['title'], row['content'], row['category'])
+            )
+        self.audit(org, actor, None, 'wiki.create', 'wiki_page', page_id)
+        return self.get_wiki_page(org, page_id)
+
+    def update_wiki_page(self, org: str, page_id: str, data: dict[str, Any],
+                         actor: str = '') -> dict[str, Any] | None:
+        import json as _json
+        from datetime import datetime, timezone
+        page = self.get_wiki_page(org, page_id)
+        if not page: return None
+        now = datetime.now(timezone.utc).isoformat()
+        tags = data.get('tags', page.get('tags', '[]'))
+        if isinstance(tags, list): tags = _json.dumps(tags)
+        metadata = data.get('metadata', page.get('metadata', '{}'))
+        if isinstance(metadata, dict): metadata = _json.dumps(metadata)
+        new_title = data.get('title', page['title'])
+        new_content = data.get('content', page['content'])
+        new_category = data.get('category', page['category'])
+        new_type = data.get('pageType') or data.get('page_type', page.get('page_type', 'general'))
+        with self._connect() as conn:
+            conn.execute(
+                """UPDATE wiki_pages SET title=?,content=?,category=?,page_type=?,
+                   tags=?,metadata=?,updated_by=?,updated_at=?
+                   WHERE id=? AND organization_id=?""",
+                (new_title, new_content, new_category, new_type,
+                 tags, metadata, actor, now, page_id, org)
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO wiki_fts(page_id,organization_id,title,content,category) VALUES(?,?,?,?,?)",
+                (page_id, org, new_title, new_content, new_category)
+            )
+        self.audit(org, actor, None, 'wiki.update', 'wiki_page', page_id)
+        return self.get_wiki_page(org, page_id)
+
+    def delete_wiki_page(self, org: str, page_id: str, actor: str = '') -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM wiki_pages WHERE id=? AND organization_id=?", (page_id, org))
+            conn.execute("DELETE FROM wiki_fts WHERE page_id=? AND organization_id=?", (page_id, org))
+        self.audit(org, actor, None, 'wiki.delete', 'wiki_page', page_id)
+
+    def track_wiki_view(self, org: str, page_id: str, viewer_id: str = '') -> None:
+        import uuid
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO wiki_page_views(id,organization_id,page_id,viewer_id,viewed_at) VALUES(?,?,?,?,?)",
+                (str(uuid.uuid4()), org, page_id, viewer_id, now)
+            )
+            conn.execute(
+                "UPDATE wiki_pages SET view_count=view_count+1 WHERE id=? AND organization_id=?",
+                (page_id, org)
+            )
+
+    def rate_wiki_page(self, org: str, page_id: str, helpful: bool) -> dict[str, Any] | None:
+        col = 'helpful_count' if helpful else 'not_helpful_count'
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE wiki_pages SET {col}={col}+1 WHERE id=? AND organization_id=?",
+                (page_id, org)
+            )
+        return self.get_wiki_page(org, page_id)
+
+    def search_wiki(self, org: str, query: str, project_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        if not query.strip(): return []
+        where_extra = "AND wp.project_id=?" if project_id else "AND wp.project_id IS NULL"
+        params = [org, query, org]
+        if project_id: params.append(project_id)
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(f"""
+                SELECT wp.*, snippet(wiki_fts, 3, '<mark>', '</mark>', '…', 20) as snippet
+                FROM wiki_fts wf
+                JOIN wiki_pages wp ON wp.id=wf.page_id
+                WHERE wf.organization_id=? AND wiki_fts MATCH ? AND wp.organization_id=?
+                {where_extra}
+                ORDER BY rank LIMIT ?
+            """, params).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Wiki attachments ──────────────────────────────────────────────────
+
+    def download_wiki_attachment(
+        self, org: str, page_id: str | None, url: str, filename: str, actor: str = ""
+    ) -> dict[str, Any]:
+        """Download a file from `url` and store it locally. Returns attachment record."""
+        import urllib.request as _urlr
+        import mimetypes as _mt
+
+        att_dir = Path(__file__).parent.parent / "data" / "attachments"
+        att_dir.mkdir(parents=True, exist_ok=True)
+
+        att_id = str(uuid.uuid4())
+        # Derive extension from URL or filename
+        ext = Path(filename).suffix or (Path(url.split("?")[0]).suffix) or ".bin"
+        safe_name = re.sub(r"[^\w\-.]", "_", filename)[:80] + ext if not filename.endswith(ext) else re.sub(r"[^\w\-.]", "_", filename)[:80]
+        local_path = att_dir / f"{att_id}{ext}"
+
+        req = _urlr.Request(url, headers={"User-Agent": "Mozilla/5.0 (RackPilot/1.0)"})
+        with _urlr.urlopen(req, timeout=30) as resp:
+            data_bytes = resp.read()
+
+        local_path.write_bytes(data_bytes)
+        mime = _mt.guess_type(filename)[0] or "application/octet-stream"
+        rel_path = f"{att_id}{ext}"
+        now = utc_now()
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO wiki_attachments
+                   (id, organization_id, page_id, original_url, filename, file_path, file_size, mime_type, created_by, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (att_id, org, page_id, url, safe_name, rel_path, len(data_bytes), mime, actor, now),
+            )
+            if page_id:
+                self.audit(org, actor, None, "wiki.attach", "wiki_attachment", att_id)
+
+        return {
+            "id": att_id, "pageId": page_id, "filename": safe_name,
+            "fileSize": len(data_bytes), "mimeType": mime, "originalUrl": url,
+            "localUrl": f"/api/v1/wiki/attachments/{att_id}",
+        }
+
+    def list_wiki_attachments(self, org: str, page_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, page_id, original_url, filename, file_size, mime_type, created_at "
+                "FROM wiki_attachments WHERE organization_id=? AND page_id=? ORDER BY created_at",
+                (org, page_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def serve_wiki_attachment(self, org: str, att_id: str) -> tuple[bytes, str, str] | None:
+        """Returns (bytes, mime_type, filename) or None if not found."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT file_path, mime_type, filename FROM wiki_attachments WHERE id=? AND organization_id=?",
+                (att_id, org),
+            ).fetchone()
+        if not row:
+            return None
+        att_dir = Path(__file__).parent.parent / "data" / "attachments"
+        local = att_dir / row["file_path"]
+        if not local.exists():
+            return None
+        return local.read_bytes(), row["mime_type"], row["filename"]
+
+    def get_critical_tasks(self, org: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Return critical-priority work items across all projects, user-created first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT wi.id, wi.title, wi.status, wi.priority, wi.source_type,
+                          wi.created_by, wi.due_date, wi.assignee_user_id,
+                          wi.created_at, wi.updated_at,
+                          p.id as project_id, p.name as project_name
+                   FROM project_work_items wi
+                   JOIN projects p ON p.id = wi.project_id
+                   WHERE wi.organization_id = ?
+                     AND wi.priority = 'critical'
+                     AND wi.status NOT IN ('done')
+                   ORDER BY
+                     CASE wi.source_type WHEN 'user' THEN 0 ELSE 1 END,
+                     CASE wi.status
+                       WHEN 'progress' THEN 0 WHEN 'ready' THEN 1 WHEN 'review' THEN 2
+                       WHEN 'testing' THEN 3 WHEN 'backlog' THEN 4 WHEN 'blocked' THEN 5
+                       ELSE 6 END,
+                     wi.due_date NULLS LAST,
+                     wi.created_at
+                   LIMIT ?""",
+                (org, limit)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def wiki_analytics(self, org: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM wiki_pages WHERE organization_id=?", (org,)).fetchone()[0]
+            by_type = conn.execute(
+                "SELECT page_type, COUNT(*) as cnt FROM wiki_pages WHERE organization_id=? GROUP BY page_type",
+                (org,)
+            ).fetchall()
+            by_author = conn.execute(
+                "SELECT created_by, COUNT(*) as cnt FROM wiki_pages WHERE organization_id=? GROUP BY created_by ORDER BY cnt DESC LIMIT 10",
+                (org,)
+            ).fetchall()
+            most_viewed = conn.execute(
+                "SELECT id,title,page_type,category,view_count,helpful_count,not_helpful_count FROM wiki_pages WHERE organization_id=? ORDER BY view_count DESC LIMIT 10",
+                (org,)
+            ).fetchall()
+            most_helpful = conn.execute(
+                "SELECT id,title,page_type,category,helpful_count,view_count FROM wiki_pages WHERE organization_id=? AND helpful_count>0 ORDER BY helpful_count DESC LIMIT 10",
+                (org,)
+            ).fetchall()
+            recent_views = conn.execute(
+                "SELECT wv.page_id,wp.title,wv.viewer_id,wv.viewed_at FROM wiki_page_views wv JOIN wiki_pages wp ON wp.id=wv.page_id WHERE wv.organization_id=? ORDER BY wv.viewed_at DESC LIMIT 20",
+                (org,)
+            ).fetchall()
+        return {
+            'total': total,
+            'byType': [{'type': r['page_type'], 'count': r['cnt']} for r in by_type],
+            'byAuthor': [{'author': r['created_by'], 'count': r['cnt']} for r in by_author],
+            'mostViewed': [dict(r) for r in most_viewed],
+            'mostHelpful': [dict(r) for r in most_helpful],
+            'recentViews': [dict(r) for r in recent_views],
+        }
 
     # ── Risk register ──────────────────────────────────────────────────────────
     def list_risks(self, org: str, project_id: str, status: str | None = None) -> list[dict[str, Any]]:
@@ -9232,6 +9507,70 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             days = min(int(self.query_params.get("days", ["30"])[0]), 365)
             self._json(HTTPStatus.OK, {"utilization": self.store.get_member_utilization(self.organization_id, days)})
             return
+        # Wiki analytics: GET /api/v1/wiki/analytics
+        # Serve local attachment: GET /api/v1/wiki/attachments/:id
+        # parts = ['api','v1','wiki','attachments', '<id>'] → len=5
+        if path.startswith("/api/v1/wiki/attachments/") and len(parts) == 5:
+            if not self._require_permission("projectRead"): return
+            att_id = parts[4]
+            result = self.store.serve_wiki_attachment(self.organization_id, att_id)
+            if not result:
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Attachment not found"); return
+            file_bytes, mime, filename = result
+            safe_fn = filename.replace('"', '')
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(file_bytes)))
+            self.send_header("Content-Disposition", f'inline; filename="{safe_fn}"')
+            self.send_header("Cache-Control", "private, max-age=86400")
+            self.end_headers()
+            self.wfile.write(file_bytes)
+            return
+        # List attachments for a page: GET /api/v1/wiki/:pageId/attachments
+        # parts = ['api','v1','wiki','<pageId>','attachments'] → len=5
+        if len(parts) == 5 and parts[2] == "wiki" and parts[4] == "attachments":
+            if not self._require_permission("projectRead"): return
+            page_id = parts[3]
+            self._json(HTTPStatus.OK, {"attachments": self.store.list_wiki_attachments(self.organization_id, page_id)})
+            return
+        if path == "/api/v1/wiki/analytics":
+            if not self._require_permission("adminPanel"): return
+            self._json(HTTPStatus.OK, self.store.wiki_analytics(self.organization_id))
+            return
+        # Wiki search: GET /api/v1/wiki/search?q=...&projectId=...
+        if path == "/api/v1/wiki/search":
+            if not self._require_permission("projectRead"): return
+            query = parse_qs(urlparse(self.path).query)
+            q = query.get("q", [""])[0]
+            project_id = query.get("projectId", [None])[0] or None
+            results = self.store.search_wiki(self.organization_id, q, project_id=project_id)
+            self._json(HTTPStatus.OK, {"results": results, "query": q})
+            return
+        # Wiki: GET /api/v1/wiki, GET /api/v1/wiki/:id, GET /api/v1/wiki/projects/:pid
+        if path == "/api/v1/wiki":
+            if not self._require_permission("projectRead"): return
+            query = parse_qs(urlparse(self.path).query)
+            category = query.get("category", [None])[0]
+            pages = self.store.list_wiki_pages(self.organization_id, project_id=None, category=category)
+            categories = sorted({p["category"] for p in pages if p.get("category")})
+            self._json(HTTPStatus.OK, {"pages": pages, "categories": categories})
+            return
+        if path.startswith("/api/v1/wiki/projects/") and len(parts) == 5:
+            if not self._require_permission("projectRead"): return
+            project_id = parts[4]
+            query = parse_qs(urlparse(self.path).query)
+            category = query.get("category", [None])[0]
+            pages = self.store.list_wiki_pages(self.organization_id, project_id=project_id, category=category)
+            categories = sorted({p["category"] for p in pages if p.get("category")})
+            self._json(HTTPStatus.OK, {"pages": pages, "categories": categories, "projectId": project_id})
+            return
+        if path.startswith("/api/v1/wiki/") and len(parts) == 4 and parts[3] != "projects":
+            if not self._require_permission("projectRead"): return
+            page = self.store.get_wiki_page(self.organization_id, parts[3])
+            if not page: self._error(HTTPStatus.NOT_FOUND, "not_found", "Wiki page not found"); return
+            self._json(HTTPStatus.OK, {"page": page})
+            return
+
         # Team members: GET /api/v1/team, GET /api/v1/team/:id
         if path == "/api/v1/team":
             if not self._require_permission("projectRead"): return
@@ -9269,6 +9608,35 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/development-agent/status":
             if not self._require_organization(): return
             self._json(HTTPStatus.OK,{"organizationId":self.organization_id,"agent":self.store.get_development_agent_status(self.organization_id)})
+            return
+        if path == "/api/v1/overview/kpi":
+            if not self._require_organization(): return
+            with self.store._connect() as conn:
+                org = self.organization_id
+                active_projects = conn.execute(
+                    "SELECT COUNT(*) FROM projects WHERE organization_id=? AND status NOT IN ('completed','archived')", (org,)
+                ).fetchone()[0]
+                open_wo = conn.execute(
+                    "SELECT COUNT(*) FROM work_orders WHERE organization_id=? AND status IN ('open','in_progress')", (org,)
+                ).fetchone()[0]
+                overdue_wo = conn.execute(
+                    "SELECT COUNT(*) FROM work_orders WHERE organization_id=? AND status IN ('open','in_progress') AND due_date IS NOT NULL AND due_date < date('now')", (org,)
+                ).fetchone()[0]
+                stock_alerts = conn.execute(
+                    "SELECT COUNT(*) FROM v_stock_alerts WHERE organization_id=?", (org,)
+                ).fetchone()[0] if conn.execute("SELECT name FROM sqlite_master WHERE type='view' AND name='v_stock_alerts'").fetchone() else 0
+            self._json(HTTPStatus.OK, {
+                "activeProjects": active_projects,
+                "openWorkOrders": open_wo,
+                "overdueCount": overdue_wo,
+                "stockAlerts": stock_alerts,
+                "techsOnline": 0,
+            })
+            return
+        if path == "/api/v1/critical-tasks":
+            if not self._require_permission("projectRead"): return
+            tasks = self.store.get_critical_tasks(self.organization_id)
+            self._json(HTTPStatus.OK, {"tasks": tasks, "count": len(tasks)})
             return
         if path == "/api/v1/projects":
             if not self._require_permission("projectRead"):
@@ -9494,9 +9862,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"log": log})
             return
         # Inventory: GET /api/v1/inventory/warehouses|skus|stock|movements|pending
-        if len(parts) >= 4 and parts[3] == "inventory":
+        if len(parts) >= 3 and parts[2] == "inventory":
             if not self._require_permission("projectRead"): return
-            sub = parts[4] if len(parts) > 4 else ""
+            sub = parts[3] if len(parts) > 3 else ""
             org = self.organization_id
             if sub == "warehouses":
                 self._json(HTTPStatus.OK, {"warehouses": self.store.list_warehouses(org)}); return
@@ -9983,15 +10351,36 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         # Cycle counts: GET /api/v1/inventory/cycle-counts  and /:id
         if path.startswith("/api/v1/inventory/cycle-counts"):
             _cc_parts = path.strip("/").split("/")
-            if _cc_parts[3] == "inventory" and len(_cc_parts) >= 5 and _cc_parts[4] == "cycle-counts":
+            if _cc_parts[2] == "inventory" and len(_cc_parts) >= 4 and _cc_parts[3] == "cycle-counts":
                 if not self._require_permission("projectRead"): return
-                if len(_cc_parts) == 5:  # /api/v1/inventory/cycle-counts
+                if len(_cc_parts) == 4:  # /api/v1/inventory/cycle-counts
                     wh = self.query_params.get("warehouseId", [None])[0]
                     self._json(HTTPStatus.OK, {"counts": self.store.list_cycle_counts(self.organization_id, wh)}); return
-                if len(_cc_parts) == 6:  # /api/v1/inventory/cycle-counts/:id
-                    cc = self.store.get_cycle_count(self.organization_id, _cc_parts[5])
+                if len(_cc_parts) == 5:  # /api/v1/inventory/cycle-counts/:id
+                    cc = self.store.get_cycle_count(self.organization_id, _cc_parts[4])
                     if not cc: self._error(HTTPStatus.NOT_FOUND, "not_found", "Cycle count not found"); return
                     self._json(HTTPStatus.OK, {"count": cc}); return
+        # Tracked Assets: GET /api/v1/tracked-assets
+        if path == "/api/v1/tracked-assets":
+            if not self._require_permission("projectRead"): return
+            with self.store._connect() as conn:
+                status_f = self.query_params.get("status", [None])[0]
+                q = "SELECT * FROM tracked_assets WHERE organization_id=?"
+                params = [self.organization_id]
+                if status_f:
+                    q += " AND status=?"; params.append(status_f)
+                q += " ORDER BY name ASC"
+                rows = conn.execute(q, params).fetchall()
+            self._json(HTTPStatus.OK, {"assets": [dict(r) for r in rows]})
+            return
+        if path.startswith("/api/v1/tracked-assets/") and len(path.strip("/").split("/")) == 4:
+            if not self._require_permission("projectRead"): return
+            asset_id = path.strip("/").split("/")[3]
+            with self.store._connect() as conn:
+                row = conn.execute("SELECT * FROM tracked_assets WHERE id=? AND organization_id=?", (asset_id, self.organization_id)).fetchone()
+            if not row: self._error(HTTPStatus.NOT_FOUND, "not_found", "Asset not found"); return
+            self._json(HTTPStatus.OK, {"asset": dict(row)})
+            return
         # WI Templates: GET /api/v1/wi-templates
         if path == "/api/v1/wi-templates":
             if not self._require_permission("projectRead"): return
@@ -10824,6 +11213,199 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, "not_found", "Project not found"); return
             except (ValueError, json.JSONDecodeError) as err:
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err)); return
+        # Wiki view tracking: POST /api/v1/wiki/:id/view
+        if path.startswith("/api/v1/wiki/") and parts[-1] == "view" and len(parts) == 5:
+            if not self._require_permission("projectRead"): return
+            viewer = (self.session_context or {}).get("userId", "")
+            self.store.track_wiki_view(self.organization_id, parts[3], viewer_id=viewer)
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
+        # Wiki rating: POST /api/v1/wiki/:id/rate  body: { helpful: true/false }
+        if path.startswith("/api/v1/wiki/") and parts[-1] == "rate" and len(parts) == 5:
+            if not self._require_permission("projectRead"): return
+            payload = self._read_json()
+            page = self.store.rate_wiki_page(self.organization_id, parts[3], bool(payload.get("helpful", True)))
+            self._json(HTTPStatus.OK, {"page": page})
+            return
+        # Download and store attachment: POST /api/v1/wiki/attachments
+        if path == "/api/v1/wiki/attachments":
+            if not self._require_permission("projectRead"): return
+            try:
+                payload = self._read_json()
+                url = payload.get("url", "").strip()
+                title = payload.get("title", "").strip() or "document"
+                page_id = payload.get("pageId") or None
+                if not url:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "url required"); return
+                actor = (self.session_context or {}).get("userId", "")
+                att = self.store.download_wiki_attachment(self.organization_id, page_id, url, title, actor=actor)
+                self._json(HTTPStatus.CREATED, {"attachment": att})
+            except Exception as e:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "download_error", str(e))
+            return
+        # Download attachment for a specific page: POST /api/v1/wiki/:pageId/attachments
+        if len(parts) == 5 and parts[2] == "wiki" and parts[4] == "attachments":
+            if not self._require_permission("projectRead"): return
+            try:
+                page_id = parts[4]
+                payload = self._read_json()
+                url = payload.get("url", "").strip()
+                title = payload.get("title", "").strip() or "document"
+                if not url:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "url required"); return
+                actor = (self.session_context or {}).get("userId", "")
+                att = self.store.download_wiki_attachment(self.organization_id, page_id, url, title, actor=actor)
+                self._json(HTTPStatus.CREATED, {"attachment": att})
+            except Exception as e:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "download_error", str(e))
+            return
+        # Wiki AI assistant: POST /api/v1/wiki/ai-lookup
+        if path == "/api/v1/wiki/ai-lookup":
+            if not self._require_permission("projectRead"): return
+            try:
+                payload = self._read_json()
+                query = payload.get("query", "").strip()
+                context_pages = payload.get("contextPages", [])
+                image_b64 = payload.get("imageBase64")
+                search_web = payload.get("searchWeb", True)
+                if not query:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "query required"); return
+
+                # 1. Check existing wiki pages for this query
+                existing_pages = self.store.search_wiki(self.organization_id, query, limit=3)
+
+                # 2. Build AI prompt
+                ai_router = self.store.get_ai_router(self.organization_id)
+                system = """You are a field technician AI assistant for RackPilot.
+You help technicians find documentation, connection diagrams, and troubleshooting guides for security, ICT, AV, and low-voltage equipment.
+
+When asked about equipment:
+1. Identify the manufacturer and model
+2. Provide: Overview, Key Specs, Connection/Wiring terminals, Common Issues, Installation Notes
+3. Format in clear Markdown with headers (##)
+4. Be specific and technical — these are professional installers
+5. Search the web for official documentation links (PDFs, manuals, datasheets) and include them
+
+When asked a technical question:
+1. Answer directly with step-by-step instructions
+2. Include wiring details when relevant (terminal names, wire colors, pin numbers)
+3. Reference specific terminals, pins, or connectors by name
+4. Search for relevant documentation if helpful
+
+Always respond in the same language as the user's query (Russian or English).
+Always include a ## Documentation section at the end with official links when found via web search."""
+
+                user_prompt = query
+                if context_pages:
+                    ctx_text = "\n\n---\n".join([
+                        f"**{p.get('title','')}**\n{p.get('content','')[:800]}"
+                        for p in context_pages[:3]
+                    ])
+                    user_prompt = f"Wiki context:\n{ctx_text}\n\n---\n\nQuestion: {query}"
+
+                # 3. Call AI with web search tool enabled
+                doc_links: list[dict] = []
+                if search_web:
+                    result = ai_router.invoke_with_search(user_prompt, system=system, max_tokens=2000)
+                    doc_links = result.get("docLinks", [])
+                else:
+                    result = ai_router.invoke(user_prompt, system=system, max_tokens=2000)
+
+                text = result.get("content", result.get("text", "")) if isinstance(result, dict) else str(result)
+                self._json(HTTPStatus.OK, {
+                    "answer": text,
+                    "query": query,
+                    "docLinks": doc_links,
+                    "existingWikiPages": existing_pages,
+                })
+            except Exception as e:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "ai_error", str(e))
+            return
+        # Wiki AI diagram generation: POST /api/v1/wiki/generate-diagram
+        if path == "/api/v1/wiki/generate-diagram":
+            if not self._require_permission("projectRead"): return
+            try:
+                payload = self._read_json()
+                prompt = payload.get("prompt", "").strip()
+                if not prompt:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "prompt required"); return
+                ai_router = self.store.get_ai_router(self.organization_id)
+                _DIAGRAM_GEN_SYSTEM = """You are a wiring diagram generator for RackPilot, a field-ops platform for ICT access control and low-voltage systems.
+Generate a JSON wiring diagram. Return ONLY valid JSON — no markdown fences, no explanation.
+Schema: {"name":"Title in Russian","components":[{"id":"c1","type":"TYPE","x":100,"y":100}],"wires":[{"id":"w1","color":"#hex","from":{"compId":"c1","termId":"TERM"},"to":{"compId":"c2","termId":"TERM"}}],"labels":[]}
+Types and terminals (side:id):
+- ict_wx: L:r1_12v r1_d0 r1_d1 r1_gnd r1_led r1_buz | R:d1_com d1_no d1_nc d1_in1 d1_in2 d1_inc | B:pwr_v pwr_g | T:eth
+- ict_door_exp: T:rs_a rs_b | L:r1_v r1_d0 r1_d1 r1_g r2_v r2_d0 r2_d1 r2_g | R:d1_c d1_no d1_i d2_c d2_no d2_i | B:pwr_v pwr_g
+- reader_wiegand: R:v12 gnd d0 d1 led buz
+- reader_osdp: R:v12 gnd a b
+- electric_strike: L:com no nc
+- maglock: L:pos neg
+- dps: R:com no nc
+- rex_pir: R:v12 gnd com no
+- push_exit: R:com no
+- psu_12v: T:ac_l ac_n ac_g | B:pos neg | R:bat
+- psu_24v: T:ac_l ac_n ac_g | B:pos neg
+- relay_spdt: L:com no nc | R:coil_p coil_n
+- eol_resistor: L:a | R:b
+- terminal_block: L:t1 t2 t3 t4 t5 t6 | R:t1 t2 t3 t4 t5 t6
+- butt_connector: L:l1 l2 | R:r1 r2
+Colors: #e53935=+12V/+24V, #1a1a1a=GND, #1565c0=D0, #f9a825=D1, #2e7d32=relay, #e65100=RS-485, #757575=signal
+Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680. Start y=60, space 100px. Range 40-1000."""
+                result = ai_router.invoke(prompt, system=_DIAGRAM_GEN_SYSTEM, max_tokens=2000)
+                text = (result.get("text") or result.get("content") or "").strip()
+                import re as _re2
+                text = _re2.sub(r'^```(?:json)?\s*', '', text)
+                text = _re2.sub(r'\s*```$', '', text.strip())
+                m = _re2.search(r'\{[\s\S]*\}', text)
+                if not m:
+                    self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "ai_error", "AI returned no JSON"); return
+                import json as _j2
+                diagram = _j2.loads(m.group())
+                self._json(HTTPStatus.OK, {"diagram": diagram})
+            except Exception as e:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "ai_error", str(e))
+            return
+
+        # Wiki CRUD: POST /api/v1/wiki, POST /api/v1/wiki/:id, POST /api/v1/wiki/:id/delete
+        # Also: POST /api/v1/wiki/projects/:pid (create project wiki page)
+        if path == "/api/v1/wiki":
+            if not self._require_permission("projectRead"): return
+            try:
+                payload = self._read_json()
+                actor = (self.session_context or {}).get("userId", "")
+                page = self.store.create_wiki_page(self.organization_id, payload, actor=actor)
+                self._json(HTTPStatus.CREATED, {"page": page})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/wiki/projects/") and len(parts) == 5:
+            if not self._require_permission("projectRead"): return
+            try:
+                payload = self._read_json()
+                payload["projectId"] = parts[4]
+                actor = (self.session_context or {}).get("userId", "")
+                page = self.store.create_wiki_page(self.organization_id, payload, actor=actor)
+                self._json(HTTPStatus.CREATED, {"page": page})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/wiki/") and len(parts) == 4 and parts[3] != "projects":
+            if not self._require_permission("projectRead"): return
+            try:
+                actor = (self.session_context or {}).get("userId", "")
+                page = self.store.update_wiki_page(self.organization_id, parts[3], self._read_json(), actor=actor)
+                if not page: self._error(HTTPStatus.NOT_FOUND, "not_found", "Wiki page not found"); return
+                self._json(HTTPStatus.OK, {"page": page})
+            except (ValueError, json.JSONDecodeError) as err:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
+            return
+        if path.startswith("/api/v1/wiki/") and parts[-1] == "delete" and len(parts) == 5:
+            if not self._require_permission("projectRead"): return
+            actor = (self.session_context or {}).get("userId", "")
+            self.store.delete_wiki_page(self.organization_id, parts[3], actor=actor)
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
+
         # Team members CRUD
         if path == "/api/v1/team":
             if not self._require_permission("projectManage"): return
@@ -11001,19 +11583,19 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._error(status, "poll_error", str(err))
                 return
         # Inventory POST routes
-        if len(parts) >= 4 and parts[3] == "inventory":
+        if len(parts) >= 3 and parts[2] == "inventory":
             org = self.organization_id
-            sub = parts[4] if len(parts) > 4 else ""
+            sub = parts[3] if len(parts) > 3 else ""
             try:
                 if sub == "warehouses":
                     if not self._require_permission("adminPanel"): return
                     wh = self.store.create_warehouse(org, self._read_json())
                     self._json(HTTPStatus.CREATED, {"warehouse": wh}); return
-                if len(parts) == 7 and sub == "warehouses" and parts[6] == "delete":
+                if len(parts) == 6 and sub == "warehouses" and parts[5] == "delete":
                     if not self._require_permission("adminPanel"): return
-                    self.store.delete_warehouse(org, parts[5])
+                    self.store.delete_warehouse(org, parts[4])
                     self._json(HTTPStatus.OK, {"deleted": True}); return
-                if sub == "skus" and len(parts) == 6 and parts[5] == "import-csv":
+                if sub == "skus" and len(parts) == 5 and parts[4] == "import-csv":
                     if not self._require_permission("projectManage"): return
                     cl = int(self.headers.get("Content-Length","0"))
                     if cl > 2_000_000:
@@ -11030,7 +11612,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._json(HTTPStatus.CREATED, {"sku": sku}); return
                 if sub == "movements":
                     if not self._require_permission("projectManage"): return
-                    if len(parts) == 7 and parts[6] == "batch":
+                    if len(parts) == 6 and parts[5] == "batch":
                         payload = self._read_json()
                         items = payload.get("items") if isinstance(payload, dict) else None
                         if not isinstance(items, list):
@@ -11042,9 +11624,9 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                             self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
                     result = self.store.record_movement(org, self._read_json())
                     self._json(HTTPStatus.CREATED, result); return
-                if sub == "pending" and len(parts) == 7 and parts[6] in ("approve","reject"):
+                if sub == "pending" and len(parts) == 6 and parts[5] in ("approve","reject"):
                     if not self._require_permission("projectManage"): return
-                    pending_id = parts[5]; action = parts[6]
+                    pending_id = parts[4]; action = parts[5]
                     payload = self._read_json()
                     reviewer = payload.get("reviewer", self.current_role)
                     if action == "approve":
@@ -11133,12 +11715,12 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                         requested_by=payload.get("requestedBy", self.current_role),
                     )
                     self._json(HTTPStatus.CREATED, r); return
-                if sub == "reorder-requests" and len(parts) == 7 and parts[6] in ("ordered","received","cancelled"):
+                if sub == "reorder-requests" and len(parts) == 6 and parts[5] in ("ordered","received","cancelled"):
                     if not self._require_permission("projectManage"): return
-                    result = self.store.update_reorder_status(org, parts[5], parts[6], self.current_role)
+                    result = self.store.update_reorder_status(org, parts[4], parts[5], self.current_role)
                     self._json(HTTPStatus.OK, result); return
-                if sub == "skus" and len(parts) == 7 and parts[6] in ("update","delete"):
-                    sku_id = parts[5]; action = parts[6]
+                if sub == "skus" and len(parts) == 6 and parts[5] in ("update","delete"):
+                    sku_id = parts[4]; action = parts[5]
                     if not self._require_permission("projectManage"): return
                     if action == "update":
                         sku = self.store.update_sku(org, sku_id, self._read_json(), actor=self.current_role)
@@ -11395,17 +11977,17 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     status = HTTPStatus.NOT_FOUND if isinstance(err, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status, "invalid_request", str(err)); return
         # Cycle counts POST endpoints: /api/v1/inventory/cycle-counts[/:id/line|close]
-        if len(parts) >= 5 and parts[3] == "inventory" and parts[4] == "cycle-counts":
+        if len(parts) >= 4 and parts[2] == "inventory" and parts[3] == "cycle-counts":
             if not self._require_permission("projectManage"): return
-            if len(parts) == 5:  # POST /api/v1/inventory/cycle-counts
+            if len(parts) == 4:  # POST /api/v1/inventory/cycle-counts
                 try:
                     cc = self.store.create_cycle_count(self.organization_id, self._read_json())
                     self._json(HTTPStatus.CREATED, {"count": cc}); return
                 except (ValueError, LookupError) as e:
                     status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
                     self._error(status, "invalid_request", str(e)); return
-            if len(parts) == 7 and parts[6] == "line":  # POST /api/v1/inventory/cycle-counts/:id/line
-                count_id = parts[5]
+            if len(parts) == 6 and parts[5] == "line":  # POST /api/v1/inventory/cycle-counts/:id/line
+                count_id = parts[4]
                 try:
                     payload = self._read_json()
                     sku_id = str(payload.get("skuId","")).strip()
@@ -11415,8 +11997,8 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     self._json(HTTPStatus.OK, {"line": line}); return
                 except (ValueError, LookupError) as e:
                     self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
-            if len(parts) == 7 and parts[6] == "close":  # POST /api/v1/inventory/cycle-counts/:id/close
-                count_id = parts[5]
+            if len(parts) == 6 and parts[5] == "close":  # POST /api/v1/inventory/cycle-counts/:id/close
+                count_id = parts[4]
                 try:
                     payload = self._read_json() if self.headers.get("Content-Length","0") != "0" else {}
                     apply = bool(payload.get("applyAdjustments", False)) if isinstance(payload, dict) else False
@@ -11502,6 +12084,60 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             if not self._require_permission("projectManage"): return
             self.store.delete_team_skill(self.organization_id, ts_parts[4])
             self._json(HTTPStatus.OK, {"deleted": True}); return
+        # Tracked Assets POST: /api/v1/tracked-assets, /api/v1/tracked-assets/:id
+        if path == "/api/v1/tracked-assets":
+            if not self._require_permission("projectManage"): return
+            try:
+                p = self._read_json()
+                name = str(p.get("name","")).strip()
+                if not name: self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "name required"); return
+                now = utc_now(); aid = str(uuid.uuid4())
+                with self.store._connect() as conn:
+                    conn.execute(
+                        "INSERT INTO tracked_assets (id,organization_id,name,asset_tag,category,manufacturer,model,serial_number,status,location_id,project_id,sku_id,installed_at,warranty_until,notes,created_by,created_at,updated_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (aid, self.organization_id, name,
+                         str(p.get("asset_tag","")), str(p.get("category","")),
+                         str(p.get("manufacturer","")), str(p.get("model","")),
+                         str(p.get("serial_number","")), str(p.get("status","active")),
+                         p.get("location_id"), p.get("project_id"), p.get("sku_id"),
+                         p.get("installed_at"), p.get("warranty_until"),
+                         str(p.get("notes","")),
+                         str((self.session_context or {}).get("userId","")), now, now)
+                    )
+                    row = conn.execute("SELECT * FROM tracked_assets WHERE id=?", (aid,)).fetchone()
+                self._json(HTTPStatus.CREATED, {"asset": dict(row)}); return
+            except Exception as e:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "error", str(e)); return
+        a_parts = path.strip("/").split("/")
+        if len(a_parts) == 4 and a_parts[2] == "tracked-assets":
+            if not self._require_permission("projectManage"): return
+            try:
+                p = self._read_json(); now = utc_now()
+                with self.store._connect() as conn:
+                    row = conn.execute("SELECT * FROM tracked_assets WHERE id=? AND organization_id=?", (a_parts[3], self.organization_id)).fetchone()
+                    if not row: self._error(HTTPStatus.NOT_FOUND, "not_found", "Asset not found"); return
+                    conn.execute(
+                        "UPDATE tracked_assets SET name=?,asset_tag=?,category=?,manufacturer=?,model=?,serial_number=?,status=?,location_id=?,project_id=?,sku_id=?,installed_at=?,warranty_until=?,notes=?,updated_at=? WHERE id=? AND organization_id=?",
+                        (str(p.get("name", row["name"])).strip() or row["name"],
+                         str(p.get("asset_tag", row["asset_tag"])),
+                         str(p.get("category", row["category"])),
+                         str(p.get("manufacturer", row["manufacturer"])),
+                         str(p.get("model", row["model"])),
+                         str(p.get("serial_number", row["serial_number"])),
+                         str(p.get("status", row["status"])),
+                         p.get("location_id", row["location_id"]),
+                         p.get("project_id", row["project_id"]),
+                         p.get("sku_id", row["sku_id"]),
+                         p.get("installed_at", row["installed_at"]),
+                         p.get("warranty_until", row["warranty_until"]),
+                         str(p.get("notes", row["notes"])),
+                         now, a_parts[3], self.organization_id)
+                    )
+                    updated = conn.execute("SELECT * FROM tracked_assets WHERE id=?", (a_parts[3],)).fetchone()
+                self._json(HTTPStatus.OK, {"asset": dict(updated)}); return
+            except Exception as e:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "error", str(e)); return
         # Work orders POST: /api/v1/work-orders and /:id/update
         if path == "/api/v1/work-orders":
             if not self._require_permission("projectManage"): return
@@ -13052,7 +13688,27 @@ class FieldOSServer(ThreadingHTTPServer):
         self.ai_gateway = AIGateway(store)
 
 
+def _load_dotenv() -> None:
+    """Load .env from project root (next to server/) if present."""
+    env_path = Path(__file__).parent.parent / ".env"
+    if not env_path.exists():
+        return
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
 def main() -> None:
+    _load_dotenv()
     parser = argparse.ArgumentParser(description="RackPilot local development server")
     parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "4173")))

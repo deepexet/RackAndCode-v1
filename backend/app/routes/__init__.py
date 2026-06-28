@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from . import auth, projects, inventory, work_orders, assets, admin, ai, notifications, tech, dev_agent
+from . import auth, projects, inventory, work_orders, assets, admin, ai, notifications, tech, dev_agent, wiki
 
 api_router = APIRouter(prefix="/api/v1")
 
@@ -13,3 +13,4 @@ api_router.include_router(ai.router,           prefix="/ai",                tags
 api_router.include_router(notifications.router,prefix="/notifications",     tags=["Notifications"])
 api_router.include_router(tech.router,         prefix="/tech",              tags=["Field Tech"])
 api_router.include_router(dev_agent.router,    prefix="/development-agent", tags=["Dev Agent"])
+api_router.include_router(wiki.router,         prefix="/wiki",              tags=["Wiki"])

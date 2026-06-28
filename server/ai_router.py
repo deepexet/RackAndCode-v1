@@ -69,34 +69,65 @@ def _anthropic_request(
     messages: list[dict],
     max_tokens: int,
     temperature: float,
+    tools: list[dict] | None = None,
 ) -> dict[str, Any]:
-    body = json.dumps({
+    payload: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "system": system,
         "messages": messages,
-    }).encode()
+    }
+    if tools:
+        payload["tools"] = tools
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages",
         data=body,
         headers={
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
+            "anthropic-beta": "web-search-2025-03-05",
             "content-type": "application/json",
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read())
     content = data.get("content", [])
     text = "".join(c.get("text", "") for c in content if c.get("type") == "text")
+
+    # Extract search results from web_search_tool_result blocks
+    doc_links: list[dict] = []
+    seen_urls: set[str] = set()
+    for block in content:
+        if block.get("type") == "web_search_tool_result":
+            for item in block.get("content", []):
+                if item.get("type") == "web_search_result":
+                    url = item.get("url", "")
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    doc_links.append({
+                        "url": url,
+                        "title": item.get("title", ""),
+                        "snippet": item.get("page_age", ""),
+                        "isPdf": ".pdf" in url.lower(),
+                        "displayUrl": _extract_display_url(url),
+                    })
+
     usage = data.get("usage", {})
     return {
         "text": text,
+        "docLinks": doc_links,
         "prompt_tokens": usage.get("input_tokens", 0),
         "completion_tokens": usage.get("output_tokens", 0),
     }
+
+
+def _extract_display_url(url: str) -> str:
+    import re as _re
+    return _re.sub(r"https?://", "", url).split("/")[0] if url else ""
 
 
 def _openai_request(
@@ -208,6 +239,51 @@ class AIRouter:
         result["model"] = self._model
         return result
 
+    def invoke_with_search(
+        self,
+        prompt: str,
+        system: str = "",
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """Like invoke() but enables Anthropic's built-in web_search tool.
+
+        Returns: {text, docLinks: [{url, title, isPdf, displayUrl}], ...}
+        Falls back to regular invoke() if provider is not anthropic.
+        """
+        if self._provider != "anthropic":
+            result = self.invoke(prompt, system=system, max_tokens=max_tokens)
+            result.setdefault("docLinks", [])
+            return result
+
+        if self._provider == "local":
+            return {"text": f"[local] {classify(prompt)}", "docLinks": [], "prompt_tokens": 0, "completion_tokens": 0}
+
+        api_key = os.environ.get(self._env_key_var, "")
+        if not api_key:
+            raise RuntimeError(f"API key env var {self._env_key_var!r} is not set")
+
+        mt = max_tokens if max_tokens is not None else self._max_tokens
+        messages = [{"role": "user", "content": prompt}]
+        web_search_tool = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]
+
+        import time as _time
+        t0 = _time.monotonic()
+        try:
+            result = _anthropic_request(api_key, self._model, system, messages, mt, self._temperature, tools=web_search_tool)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            # If web search not supported by model, fall back to regular
+            if exc.code in (400, 404):
+                result = _anthropic_request(api_key, self._model, system, messages, mt, self._temperature)
+                result.setdefault("docLinks", [])
+            else:
+                raise RuntimeError(f"LLM API error {exc.code}: {body[:200]}") from exc
+
+        result["latency_ms"] = int((_time.monotonic() - t0) * 1000)
+        result["provider"] = self._provider
+        result["model"] = self._model
+        return result
+
     def summarize(self, text: str, max_words: int = 120) -> dict[str, Any]:
         system = "You are a concise technical summarizer. Reply only with the summary, no preamble."
         prompt = f"Summarize the following in {max_words} words or fewer:\n\n{text}"
@@ -217,11 +293,14 @@ class AIRouter:
 
     @classmethod
     def default(cls) -> "AIRouter":
+        # Prefer Anthropic if key is available, fall back to local
+        provider = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "local"
+        model = "claude-haiku-4-5-20251001" if provider == "anthropic" else "local"
         return cls({
-            "provider": "local",
-            "model": "local",
+            "provider": provider,
+            "model": model,
             "env_key_var": "ANTHROPIC_API_KEY",
-            "max_tokens": 1024,
+            "max_tokens": 1500,
             "temperature": 0.3,
             "enabled": True,
         })
