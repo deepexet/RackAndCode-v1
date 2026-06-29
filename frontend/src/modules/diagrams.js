@@ -341,6 +341,8 @@ let _editId    = null     // currently open diagram id
 
 let _diagram = newDiagram()
 let _undoStack = []
+let _redoStack = []
+let _clipboard = null        // copied component def for Ctrl+V paste
 let _svgEventsBound = false  // guard: SVG-level events bound only once
 let _simulating = false       // current-flow animation active
 
@@ -790,7 +792,47 @@ function computeAllWirePts() {
   for (const w of _diagram.wires) {
     map[w.id] = buildWirePts(w, exitExtra[w.id] || 0, entryExtra[w.id] || 0)
   }
+  applyParallelOffset(map)
   return map
+}
+
+// Offset wires that share the same rectilinear segment so they're visually distinct.
+// Works on the computed point arrays in-place (only interior points, not terminals).
+function applyParallelOffset(map) {
+  const OFF = 3   // px offset per wire in a shared-segment group
+  // Collect all segments keyed by canonical form
+  // H segment: "H:y:xmin:xmax"  V segment: "V:x:ymin:ymax"
+  const segMap = {}  // key -> [{wireId, ptIdx (of end point), dir}]
+  for (const [wid, pts] of Object.entries(map)) {
+    for (let i = 1; i < pts.length; i++) {
+      const [x1,y1] = pts[i-1], [x2,y2] = pts[i]
+      const isH = Math.abs(y1-y2) < 0.5
+      const isV = Math.abs(x1-x2) < 0.5
+      if (!isH && !isV) continue
+      const key = isH
+        ? `H:${Math.round(y1)}:${Math.round(Math.min(x1,x2))}:${Math.round(Math.max(x1,x2))}`
+        : `V:${Math.round(x1)}:${Math.round(Math.min(y1,y2))}:${Math.round(Math.max(y1,y2))}`
+      ;(segMap[key] = segMap[key] || []).push({ wid, i, isH })
+    }
+  }
+  // For each group with >1 wire, assign symmetric offsets
+  for (const group of Object.values(segMap)) {
+    if (group.length < 2) continue
+    const n = group.length
+    const start = -Math.floor(n / 2) * OFF + (n % 2 === 0 ? OFF / 2 : 0)
+    group.forEach(({ wid, i, isH }, idx) => {
+      const pts = map[wid]
+      const off = start + idx * OFF
+      // Offset both endpoints of the segment, but clamp to interior points only
+      const applyOff = (pi) => {
+        if (pi <= 0 || pi >= pts.length - 1) return  // skip terminal points
+        if (isH) pts[pi] = [pts[pi][0], pts[pi][1] + off]
+        else     pts[pi] = [pts[pi][0] + off, pts[pi][1]]
+      }
+      applyOff(i - 1)
+      applyOff(i)
+    })
+  }
 }
 
 // Returns {x,y} if an H and a V segment strictly cross, else null
@@ -899,12 +941,23 @@ function hitTestComp(x, y) {
 function saveUndo() {
   _undoStack.push(JSON.stringify(_diagram))
   if (_undoStack.length > 50) _undoStack.shift()
+  _redoStack = []  // any new action clears redo history
 }
 
 function undo() {
   if (!_undoStack.length) return
+  _redoStack.push(JSON.stringify(_diagram))
   _diagram = JSON.parse(_undoStack.pop())
-  renderCanvas()
+  _selected = null
+  renderCanvas(); renderProps()
+}
+
+function redo() {
+  if (!_redoStack.length) return
+  _undoStack.push(JSON.stringify(_diagram))
+  _diagram = JSON.parse(_redoStack.pop())
+  _selected = null
+  renderCanvas(); renderProps()
 }
 
 // ── SVG Rendering ──────────────────────────────────────────────────────────
@@ -1906,7 +1959,7 @@ async function openDiagram(page) {
   _diagram.name = page.title || _diagram.name
   _diagram.customDefs = _diagram.customDefs || []
   _editId = page.id
-  _undoStack = []
+  _undoStack = []; _redoStack = []
   showEditor()
 }
 
@@ -2132,7 +2185,7 @@ function render() {
   _svgEl = _el.querySelector('#dg-canvas')
 
   _el.querySelector('#dg-new-btn')?.addEventListener('click', () => {
-    _diagram = newDiagram(); _editId = null; _undoStack = []
+    _diagram = newDiagram(); _editId = null; _undoStack = []; _redoStack = []
     showEditor()
   })
 
@@ -2235,7 +2288,27 @@ function render() {
   let _modeBeforeSpace = null
   const keyHandler = (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+      if (_selected?.type === 'comp') {
+        const comp = _diagram.components.find(c => c.id === _selected.id)
+        if (comp) { _clipboard = JSON.parse(JSON.stringify(comp)); e.preventDefault() }
+      }
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+      if (_clipboard) {
+        e.preventDefault()
+        saveUndo()
+        const pasted = { ..._clipboard, id: uid(), x: _clipboard.x + 20, y: _clipboard.y + 20 }
+        _diagram.components.push(pasted)
+        _diagram.modified = true
+        _selected = { type:'comp', id: pasted.id }
+        renderCanvas(); renderProps()
+      }
+      return
+    }
     if (e.key === 'v' || e.key === 'V') { _mode='select'; updateToolbar() }
     if (e.key === 'w' || e.key === 'W') { _mode='wire'; updateToolbar() }
     if (e.key === 's' || e.key === 'S') { _el?.querySelector('#dg-simulate')?.click() }
@@ -2420,7 +2493,7 @@ export async function mount() {
     window._rpPendingDiagram = null
     _diagram = { name: gen.name || 'Новая схема', components: gen.components || [], wires: gen.wires || [], labels: gen.labels || [], customDefs: gen.customDefs || [], modified: true }
     _editId = null
-    _undoStack = []
+    _undoStack = []; _redoStack = []
     await loadDiagramList()
     setTimeout(() => showEditor(), 40)
     return unmount
