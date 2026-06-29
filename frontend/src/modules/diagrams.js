@@ -1404,9 +1404,10 @@ function bindSvgEvents() {
     })
   })
 
-  // Wire selection
+  // Wire selection — use mousedown (not click) so it fires before the SVG-level
+  // mousedown handler that resets _selected and rebuilds the DOM.
   _svgEl.querySelectorAll('.dg-wire').forEach(el => {
-    el.addEventListener('click', e => {
+    el.addEventListener('mousedown', e => {
       if (_mode !== 'select') return
       e.stopPropagation()
       _selected = { type:'wire', id: el.dataset.id }
