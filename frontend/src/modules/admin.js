@@ -267,6 +267,10 @@ function renderAgents(d) {
         ${!controlsReady ? 'disabled' : ''}><i class="ti ti-check"></i> Approve</button>`)
       buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--danger" data-coordinator-action="reject" data-job-id="${esc(job.id)}"
         ${!controlsReady ? 'disabled' : ''}><i class="ti ti-x"></i> Reject</button>`)
+    } else if (['failed', 'cancelled', 'rate_limited'].includes(job.status)) {
+      buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--primary" data-coordinator-action="retry" data-job-id="${esc(job.id)}"
+        ${!controlsReady || !health.executionEnabled ? 'disabled title="Enable autonomous execution to retry jobs"' : ''}>
+        <i class="ti ti-refresh"></i> Retry</button>`)
     }
     return buttons.length ? `<div class="adm-agent-actions">${buttons.join('')}</div>` : '<span class="ui-dim">—</span>'
   }
@@ -373,6 +377,7 @@ function bindTabEvents() {
         const jobId = button.dataset.jobId
         const confirmations = {
           start: 'Start this agent job now?',
+          retry: 'Retry this agent job now?',
           cancel: 'Cancel this agent job?',
           approve: 'Approve this completed job?',
           reject: 'Reject this job and mark it failed?',

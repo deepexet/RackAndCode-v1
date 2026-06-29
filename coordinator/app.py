@@ -178,6 +178,26 @@ async def start_job(job_id: str, x_coordinator_token: str | None = Header(defaul
     return {"job": store.get_job(job_id)}
 
 
+@app.post("/api/v1/jobs/{job_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+async def retry_job(job_id: str, x_coordinator_token: str | None = Header(default=None)):
+    require_control_token(x_coordinator_token)
+    if not EXECUTION_ENABLED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Agent execution is disabled")
+    try:
+        job = store.get_job(job_id)
+        validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
+        if job["status"] not in {"failed", "cancelled", "rate_limited"}:
+            raise ValueError("Only a failed, cancelled or rate-limited job can be retried")
+        store.transition_job(job_id, "queued", actor="owner")
+        store.transition_job(job_id, "running", actor="owner")
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"agent-{job_id[:8]}").start()
+    return {"job": store.get_job(job_id)}
+
+
 @app.post("/api/v1/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, x_coordinator_token: str | None = Header(default=None)):
     require_control_token(x_coordinator_token)

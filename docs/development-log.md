@@ -152,3 +152,10 @@ For each material release, append a dated section containing product version, us
 - Improved FastAPI error details displayed by the frontend.
 - Enabled local execution for the isolated preview stack without automatically starting queued jobs.
 - Verification: 7 focused FastAPI/Coordinator tests, Python compile check, production frontend build and authenticated live API smoke test passed.
+
+## 2026-06-29 — Claude CLI retry repair
+
+- Diagnosed the first Claude job failure from captured stderr: current Claude Code requires `--verbose` with print-mode `stream-json` output.
+- Updated the shell-free Claude command contract and added an exact regression assertion.
+- Added an audited Retry action for failed, cancelled and rate-limited jobs; Retry resets the prior run state and immediately starts a new isolated run.
+- Verification: 8 focused Coordinator/FastAPI tests, Python compile check and production frontend build passed.

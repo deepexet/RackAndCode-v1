@@ -52,4 +52,4 @@ queued -> running -> review -> waiting_approval -> completed
                   -> failed | cancelled | rate_limited
 ```
 
-The Administrator-only FastAPI proxy exposes agents, worktrees, queue and execution state. Status-aware Start, Cancel, Approve and Reject controls are available when execution and the server-side token are configured. The coordinator token never reaches browser code, and every successful action is written to the workspace audit log.
+The Administrator-only FastAPI proxy exposes agents, worktrees, queue and execution state. Status-aware Start, Retry, Cancel, Approve and Reject controls are available when execution and the server-side token are configured. Retry is limited to failed, cancelled and rate-limited jobs and starts a fresh run in the same validated worktree. The coordinator token never reaches browser code, and every successful action is written to the workspace audit log.

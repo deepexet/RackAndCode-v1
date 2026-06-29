@@ -61,6 +61,7 @@ class CoordinatorStoreTests(unittest.TestCase):
         claude_cmd = build_agent_command(claude_job, "/usr/local/bin/claude")
         self.assertEqual(claude_cmd[0], "/usr/local/bin/claude")
         self.assertIn("dontAsk", claude_cmd)
+        self.assertIn("--verbose", claude_cmd)
 
         codex_job = self.store.create_job(
             self.payload(assigned_agent="codex", branch_name="codex/feature")
@@ -68,6 +69,18 @@ class CoordinatorStoreTests(unittest.TestCase):
         codex_cmd = build_agent_command(codex_job, "/usr/local/bin/codex")
         self.assertEqual(codex_cmd[:3], ["/usr/local/bin/codex", "exec", "--json"])
         self.assertIn("workspace-write", codex_cmd)
+
+    def test_failed_job_can_be_requeued_for_retry(self):
+        job = self.store.create_job(self.payload())
+        self.store.transition_job(job["id"], "running")
+        self.store.transition_job(job["id"], "failed", error="cli contract changed", exit_code=1)
+
+        queued = self.store.transition_job(job["id"], "queued", actor="owner")
+
+        self.assertEqual(queued["status"], "queued")
+        self.assertIsNone(queued["startedAt"])
+        self.assertIsNone(queued["completedAt"])
+        self.assertEqual(queued["error"], "")
 
 
 if __name__ == "__main__":

@@ -163,6 +163,7 @@ def build_agent_command(job: dict[str, Any], executable: str) -> list[str]:
             instructions,
             "--output-format",
             "stream-json",
+            "--verbose",
             "--max-turns",
             str(max_turns),
             "--permission-mode",
@@ -364,11 +365,16 @@ class CoordinatorStore:
             "running": {"review", "waiting_approval", "completed", "failed", "cancelled", "rate_limited"},
             "review": {"waiting_approval", "completed", "failed", "cancelled"},
             "waiting_approval": {"completed", "failed", "cancelled", "queued"},
+            "failed": {"queued"},
+            "cancelled": {"queued"},
+            "rate_limited": {"queued"},
         }
         if status not in allowed.get(current["status"], set()):
             raise ValueError(f"invalid transition {current['status']} -> {status}")
         now = utc_now()
-        started_at = now if status == "running" and not current["startedAt"] else current["startedAt"]
+        started_at = None if status == "queued" else (
+            now if status == "running" and not current["startedAt"] else current["startedAt"]
+        )
         completed_at = now if status in TERMINAL_STATUSES else None
         with self._lock, self._connect() as connection:
             connection.execute(
