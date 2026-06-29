@@ -57,3 +57,5 @@ The Administrator-only FastAPI proxy exposes agents, worktrees, queue and execut
 ## Live activity
 
 Coordinator stores bounded, line-oriented agent output while a process is running. Admin → Agents → Live polls incrementally and presents elapsed time, status transitions, commands, file changes, agent messages, errors and the retained console stream. Each job keeps its latest 2,000 log records; older runs created before this capability retain only their final result summary.
+
+Every start or retry increments the job attempt number. Live activity defaults to the current attempt so output from an earlier failed run cannot be confused with the active run; retained records remain queryable by attempt. Claude `allowed_warning` usage events are informational and do not become `rate_limited`. Only an actual rejected limit or an error result with a rate-limit reason changes the job to that state.

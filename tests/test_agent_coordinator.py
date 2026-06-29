@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from collections import deque
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,6 +35,7 @@ class CoordinatorStoreTests(unittest.TestCase):
         job = self.store.create_job(self.payload())
         self.assertEqual(job["status"], "queued")
         self.assertEqual(job["assignedAgent"], "claude")
+        self.assertEqual(job["attempt"], 0)
         events = self.store.list_events(job["id"])
         self.assertEqual(events[0]["eventType"], "job.created")
 
@@ -97,6 +99,21 @@ class CoordinatorStoreTests(unittest.TestCase):
         incremental = self.store.list_job_logs(job["id"], after_id=first["id"])
         self.assertEqual([entry["id"] for entry in incremental], [second["id"]])
 
+    def test_retry_logs_are_scoped_to_the_latest_attempt(self):
+        job = self.store.create_job(self.payload())
+        first_run = self.store.transition_job(job["id"], "running")
+        self.assertEqual(first_run["attempt"], 1)
+        self.store.append_job_log(job["id"], "first attempt")
+        self.store.transition_job(job["id"], "failed", error="retry me")
+        self.store.transition_job(job["id"], "queued", actor="owner")
+        second_run = self.store.transition_job(job["id"], "running", actor="owner")
+        self.assertEqual(second_run["attempt"], 2)
+        self.store.append_job_log(job["id"], "second attempt")
+
+        latest = self.store.list_job_logs(job["id"], attempt=second_run["attempt"])
+        self.assertEqual([entry["message"] for entry in latest], ["second attempt"])
+        self.assertEqual(latest[0]["attempt"], 2)
+
     def test_runner_streams_output_before_review(self):
         from coordinator import app as coordinator_app
 
@@ -125,6 +142,20 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertIn("first", messages)
         self.assertIn("second", messages)
         self.assertEqual(self.store.get_job(job["id"])["status"], "review")
+
+    def test_allowed_claude_usage_warning_is_not_a_rate_limit(self):
+        from coordinator.app import _is_rate_limited_output
+
+        allowed = deque([
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","utilization":0.83}}',
+            '{"type":"result","subtype":"success","is_error":false,"result":"done"}',
+        ])
+        blocked = deque([
+            '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","utilization":1.0}}',
+        ])
+
+        self.assertFalse(_is_rate_limited_output(allowed))
+        self.assertTrue(_is_rate_limited_output(blocked))
 
 
 if __name__ == "__main__":

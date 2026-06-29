@@ -174,3 +174,11 @@ For each material release, append a dated section containing product version, us
 - Reused the shared role policy but added fail-closed FastAPI guards for unauthenticated requests and unknown role names.
 - Added tenant-isolation, filter, limit, audit-chain, dashboard and permission integration tests.
 - Verification: 16 focused FastAPI/Coordinator tests, 4 legacy compatibility tests and production frontend build passed.
+
+## 2026-06-29 — Coordinator retry attempts and Claude limit classification
+
+- Verified a real Claude Code job through the user's Claude Pro login without an Anthropic API key or API-credit balance.
+- Added durable attempt numbers to jobs and logs; Live activity now reads only the current attempt while preserving prior output in SQLite.
+- Expanded human-readable Claude event rendering for sessions, tools, subtasks, progress, usage warnings and turn-limit failures.
+- Corrected rate-limit detection so Claude's permitted `allowed_warning` event does not incorrectly mark a job as `rate_limited`.
+- Verification: 10 Coordinator tests, Python compile check and Vite production build passed.

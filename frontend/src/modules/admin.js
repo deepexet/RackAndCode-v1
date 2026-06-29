@@ -325,6 +325,24 @@ function describeAgentLog(message) {
   try {
     const entry = JSON.parse(message)
     const item = entry.item || {}
+    if (entry.type === 'system' && entry.subtype === 'init') {
+      return `Claude session started · ${entry.model || 'default model'}`
+    }
+    if (entry.type === 'system' && entry.subtype === 'task_started') {
+      return `Subtask started: ${entry.description || entry.task_id || 'background task'}`
+    }
+    if (entry.type === 'system' && entry.subtype === 'task_progress') {
+      const usage = entry.usage || {}
+      return `${entry.description || 'Subtask running'} · ${usage.tool_uses ?? 0} tools · ${usage.total_tokens ?? 0} tokens`
+    }
+    if (entry.type === 'system' && entry.subtype === 'task_completed') {
+      return `Subtask completed: ${entry.description || entry.task_id || 'background task'}`
+    }
+    if (entry.type === 'rate_limit_event') {
+      const info = entry.rate_limit_info || {}
+      const pct = Number.isFinite(info.utilization) ? ` · ${Math.round(info.utilization * 100)}% used` : ''
+      return info.status === 'allowed_warning' ? `Claude usage warning${pct}; execution continues` : `Claude limit: ${info.status || 'unknown'}${pct}`
+    }
     if (entry.type === 'thread.started') return 'Agent session started'
     if (entry.type === 'turn.started') return 'Agent began working'
     if (entry.type === 'turn.completed') return 'Agent turn completed'
@@ -342,8 +360,18 @@ function describeAgentLog(message) {
     if (entry.type === 'assistant' && entry.message?.content) {
       const text = entry.message.content.find(value => value.type === 'text')?.text
       if (text) return text
+      const tool = entry.message.content.find(value => value.type === 'tool_use')
+      if (tool) return `Using ${tool.name || 'tool'}${tool.input?.file_path ? `: ${tool.input.file_path}` : ''}`
     }
-    if (entry.type === 'result') return entry.result || entry.subtype || 'Agent result received'
+    if (entry.type === 'user' && entry.message?.content) {
+      const result = entry.message.content.find(value => value.type === 'tool_result')
+      if (result?.is_error) return `Tool error: ${String(result.content || '').slice(0, 500)}`
+      if (result) return 'Tool result received'
+    }
+    if (entry.type === 'result') {
+      if (entry.subtype === 'error_max_turns') return 'Agent reached the configured turn limit'
+      return entry.result || entry.subtype || 'Agent result received'
+    }
   } catch {}
   return message
 }
@@ -362,6 +390,7 @@ function openAgentJobDetails(jobId) {
   let timer = null
   let logs = []
   let lastLogId = 0
+  let currentAttempt = null
   const { el } = openModal({
     title: 'Agent job activity',
     width: 920,
@@ -377,6 +406,12 @@ function openAgentJobDetails(jobId) {
     if (closed || !target?.isConnected) return
     try {
       const data = await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(jobId)}?after=${lastLogId}`)
+      const incomingAttempt = data.job?.attempt ?? 0
+      if (currentAttempt !== null && incomingAttempt !== currentAttempt) {
+        logs = []
+        lastLogId = 0
+      }
+      currentAttempt = incomingAttempt
       if (data.logs?.length) {
         logs = logs.concat(data.logs).slice(-500)
         lastLogId = data.logs[data.logs.length - 1].id
@@ -396,6 +431,7 @@ function openAgentJobDetails(jobId) {
           <span><b>Elapsed</b>${esc(formatElapsed(job.startedAt, job.completedAt))}</span>
           <span><b>Started</b>${esc(fmtDate(job.startedAt))}</span>
           <span><b>Exit code</b>${esc(job.exitCode ?? '—')}</span>
+          <span><b>Attempt</b>${esc(job.attempt ?? 0)}</span>
         </div>
         <div class="adm-agent-live-grid">
           <section>

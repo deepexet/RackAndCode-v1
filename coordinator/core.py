@@ -204,6 +204,7 @@ class CoordinatorStore:
                     created_by TEXT NOT NULL,
                     requires_review INTEGER NOT NULL,
                     max_turns INTEGER NOT NULL,
+                    attempt INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
@@ -229,6 +230,7 @@ class CoordinatorStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     job_id TEXT NOT NULL,
                     stream TEXT NOT NULL,
+                    attempt INTEGER NOT NULL DEFAULT 0,
                     message TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(job_id) REFERENCES coordinator_jobs(id)
@@ -237,6 +239,12 @@ class CoordinatorStore:
                     ON coordinator_job_logs(job_id, id);
                 """
             )
+            job_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coordinator_jobs)")}
+            if "attempt" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
+            log_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coordinator_job_logs)")}
+            if "attempt" not in log_columns:
+                connection.execute("ALTER TABLE coordinator_job_logs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
 
     @staticmethod
     def _job(row: sqlite3.Row) -> dict[str, Any]:
@@ -251,6 +259,7 @@ class CoordinatorStore:
             "createdBy": row["created_by"],
             "requiresReview": bool(row["requires_review"]),
             "maxTurns": row["max_turns"],
+            "attempt": row["attempt"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
             "startedAt": row["started_at"],
@@ -341,19 +350,26 @@ class CoordinatorStore:
             raise KeyError(job_id)
         return self._job(row)
 
-    def append_job_log(self, job_id: str, message: str, stream: str = "stdout") -> dict[str, Any]:
+    def append_job_log(
+        self,
+        job_id: str,
+        message: str,
+        stream: str = "stdout",
+        attempt: int | None = None,
+    ) -> dict[str, Any]:
         if stream not in {"stdout", "stderr", "system"}:
             raise ValueError("unknown log stream")
         entry = {
             "jobId": job_id,
             "stream": stream,
+            "attempt": self.get_job(job_id)["attempt"] if attempt is None else max(0, attempt),
             "message": message[:8192],
             "createdAt": utc_now(),
         }
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO coordinator_job_logs(job_id,stream,message,created_at) VALUES(?,?,?,?)",
-                (entry["jobId"], entry["stream"], entry["message"], entry["createdAt"]),
+                "INSERT INTO coordinator_job_logs(job_id,stream,attempt,message,created_at) VALUES(?,?,?,?,?)",
+                (entry["jobId"], entry["stream"], entry["attempt"], entry["message"], entry["createdAt"]),
             )
             entry["id"] = cursor.lastrowid
             connection.execute(
@@ -367,24 +383,42 @@ class CoordinatorStore:
             )
         return entry
 
-    def list_job_logs(self, job_id: str, after_id: int = 0, limit: int = 250) -> list[dict[str, Any]]:
+    def list_job_logs(
+        self,
+        job_id: str,
+        after_id: int = 0,
+        limit: int = 250,
+        attempt: int | None = None,
+    ) -> list[dict[str, Any]]:
         self.get_job(job_id)
         limit = max(1, min(limit, 1000))
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT id,job_id,stream,message,created_at
-                FROM coordinator_job_logs
-                WHERE job_id=? AND id>?
-                ORDER BY id ASC LIMIT ?
-                """,
-                (job_id, max(0, after_id), limit),
-            ).fetchall()
+            if attempt is None:
+                rows = connection.execute(
+                    """
+                    SELECT id,job_id,stream,attempt,message,created_at
+                    FROM coordinator_job_logs
+                    WHERE job_id=? AND id>?
+                    ORDER BY id ASC LIMIT ?
+                    """,
+                    (job_id, max(0, after_id), limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT id,job_id,stream,attempt,message,created_at
+                    FROM coordinator_job_logs
+                    WHERE job_id=? AND attempt=? AND id>?
+                    ORDER BY id ASC LIMIT ?
+                    """,
+                    (job_id, max(0, attempt), max(0, after_id), limit),
+                ).fetchall()
         return [
             {
                 "id": row["id"],
                 "jobId": row["job_id"],
                 "stream": row["stream"],
+                "attempt": row["attempt"],
                 "message": row["message"],
                 "createdAt": row["created_at"],
             }
@@ -437,6 +471,7 @@ class CoordinatorStore:
         )
         completed_at = now if status in TERMINAL_STATUSES else None
         reset_run = status in {"queued", "running"}
+        next_attempt = current["attempt"] + 1 if status == "running" else current["attempt"]
         next_exit_code = None if reset_run else (current["exitCode"] if exit_code is None else exit_code)
         next_result = "" if reset_run else (current["resultSummary"] if result_summary is None else result_summary)
         next_error = "" if reset_run else (current["error"] if error is None else error)
@@ -444,16 +479,31 @@ class CoordinatorStore:
             connection.execute(
                 """
                 UPDATE coordinator_jobs
-                SET status=?,updated_at=?,started_at=?,completed_at=?,exit_code=?,result_summary=?,error=?
+                SET status=?,updated_at=?,started_at=?,completed_at=?,exit_code=?,result_summary=?,error=?,attempt=?
                 WHERE id=?
                 """,
-                (status, now, started_at, completed_at, next_exit_code, next_result[:65536], next_error[:8192], job_id),
+                (
+                    status,
+                    now,
+                    started_at,
+                    completed_at,
+                    next_exit_code,
+                    next_result[:65536],
+                    next_error[:8192],
+                    next_attempt,
+                    job_id,
+                ),
             )
             self.append_event(
                 "job.status_changed",
                 job_id=job_id,
                 actor=actor,
-                payload={"from": current["status"], "to": status, "exitCode": next_exit_code},
+                payload={
+                    "from": current["status"],
+                    "to": status,
+                    "exitCode": next_exit_code,
+                    "attempt": next_attempt,
+                },
                 connection=connection,
             )
         return self.get_job(job_id)

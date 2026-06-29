@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import threading
 from collections import deque
@@ -53,6 +54,29 @@ class JobRequest(BaseModel):
     maxTurns: int = Field(default=8, ge=1, le=20)
 
 
+def _is_rate_limited_output(lines: deque[str]) -> bool:
+    """Recognize an actual limit rejection, not Claude's allowed usage warning."""
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            lowered = line.lower()
+            if "rate limit" in lowered and any(word in lowered for word in ("exceeded", "blocked", "retry after")):
+                return True
+            continue
+        if entry.get("type") == "rate_limit_event":
+            limit_status = str(entry.get("rate_limit_info", {}).get("status", "")).lower()
+            if limit_status and limit_status not in {"allowed", "allowed_warning"}:
+                return True
+            continue
+        if entry.get("type") == "result" and entry.get("is_error"):
+            result = str(entry.get("result", "")).lower()
+            subtype = str(entry.get("subtype", "")).lower()
+            if "rate limit" in result or "rate_limit" in result or "rate_limit" in subtype:
+                return True
+    return False
+
+
 def require_control_token(x_coordinator_token: str | None) -> None:
     if not CONTROL_TOKEN:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Coordinator control token is not configured")
@@ -98,9 +122,14 @@ async def job(job_id: str):
 
 
 @app.get("/api/v1/jobs/{job_id}/logs")
-async def job_logs(job_id: str, after: int = 0, limit: int = 250):
+async def job_logs(job_id: str, after: int = 0, limit: int = 250, attempt: int | None = None):
     try:
-        return {"logs": store.list_job_logs(job_id, after_id=after, limit=limit)}
+        job = store.get_job(job_id)
+        selected_attempt = job["attempt"] if attempt is None else attempt
+        return {
+            "attempt": selected_attempt,
+            "logs": store.list_job_logs(job_id, after_id=after, limit=limit, attempt=selected_attempt),
+        }
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
 
@@ -170,8 +199,7 @@ def _run_job(job_id: str) -> None:
         return
     combined = "\n".join(output_lines)[-65536:]
     error_text = combined[-8192:] if process.returncode else ""
-    lowered = combined.lower()
-    if "rate limit" in lowered or "rate_limit" in lowered:
+    if _is_rate_limited_output(output_lines):
         store.transition_job(job_id, "rate_limited", exit_code=process.returncode, result_summary=combined, error=error_text)
     elif process.returncode != 0:
         store.transition_job(job_id, "failed", exit_code=process.returncode, result_summary=combined, error=error_text)
