@@ -55,6 +55,8 @@ class CoordinatorStoreTests(unittest.TestCase):
 
         approved = self.store.transition_job(job["id"], "completed", actor="owner")
         self.assertEqual(approved["status"], "completed")
+        self.assertEqual(approved["resultSummary"], "done")
+        self.assertEqual(approved["exitCode"], 0)
         self.assertIsNotNone(approved["completedAt"])
 
     def test_agent_commands_do_not_use_shell(self):
