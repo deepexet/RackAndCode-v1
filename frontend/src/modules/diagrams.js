@@ -343,6 +343,8 @@ let _diagram = newDiagram()
 let _undoStack = []
 let _redoStack = []
 let _clipboard = null        // copied component def for Ctrl+V paste
+let _multiSel  = new Set()   // IDs of multi-selected components
+let _rubberBand = null       // {x0,y0,x1,y1} in SVG coords while rubber-banding
 let _svgEventsBound = false  // guard: SVG-level events bound only once
 let _simulating = false       // current-flow animation active
 
@@ -1124,13 +1126,32 @@ function renderCanvas() {
 
       <!-- Components -->
       <g id="comps-layer">
-        ${_diagram.components.map(c => renderCompSvg(c, sel?.type==='comp'&&sel.id===c.id)).join('')}
+        ${_diagram.components.map(c => renderCompSvg(c, sel?.type==='comp'&&sel.id===c.id, _multiSel.has(c.id))).join('')}
       </g>
 
       <!-- Labels -->
       <g id="labels-layer">
         ${_diagram.labels.map(l => renderLabelSvg(l, sel?.type==='label'&&sel.id===l.id)).join('')}
       </g>
+
+      <!-- Multi-select overlays (drawn on top, independent of per-component renderer) -->
+      <g id="multisel-layer">
+        ${[..._multiSel].map(id => {
+          const c = _diagram.components.find(cc => cc.id === id)
+          if (!c) return ''
+          const def = getCompDef(c.type)
+          const w = def?.w || 160, h = def?.h || 120
+          const pad = 3
+          return `<rect x="${c.x-pad}" y="${c.y-pad}" width="${w+pad*2}" height="${h+pad*2}" rx="7"
+            fill="#4a90e210" stroke="#7ab8f0" stroke-width="${1.5/_zoom}" stroke-dasharray="${5/_zoom},${3/_zoom}" pointer-events="none"/>`
+        }).join('')}
+      </g>
+
+      <!-- Rubber-band selection rect -->
+      ${_rubberBand ? `<rect
+        x="${Math.min(_rubberBand.x0,_rubberBand.x1)}" y="${Math.min(_rubberBand.y0,_rubberBand.y1)}"
+        width="${Math.abs(_rubberBand.x1-_rubberBand.x0)}" height="${Math.abs(_rubberBand.y1-_rubberBand.y0)}"
+        fill="#4a90e215" stroke="#4a90e2" stroke-width="${1/_zoom}" stroke-dasharray="${4/_zoom},${3/_zoom}"/>` : ''}
     </g>`
 
   bindSvgEvents()
@@ -1158,15 +1179,15 @@ function renderCustomCompSvg(comp, def, sel) {
   </g>`
 }
 
-function renderCompSvg(comp, isSelected) {
+function renderCompSvg(comp, isSelected, isMultiSel) {
   const def = getCompDef(comp.type)
   if (!def) return ''
-  // Custom components use the generic box renderer
-  if (comp.type.startsWith('custom_')) return renderCustomCompSvg(comp, def, isSelected)
+  if (comp.type.startsWith('custom_')) return renderCustomCompSvg(comp, def, isSelected, isMultiSel)
   const { x, y } = comp
   const w = def.w, h = def.h
   const hue = def.hue || '#333'
   const sel = isSelected
+  const msel = isMultiSel && !isSelected
 
   // ── Junction node ────────────────────────────────────────────────────────
   if (comp.type === 'junction_node') {
@@ -1275,8 +1296,8 @@ function renderCompSvg(comp, isSelected) {
       ${esc(comp.label || def.label)}
     </text>
     ${def.terminals.map(t => renderTermSvg(comp, t)).join('')}
-    <!-- Selection glow -->
     ${isSelected ? `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" fill="none" stroke="#4a90e2" stroke-width="2" opacity="0.5"/>` : ''}
+    ${msel ? `<rect x="${x-2}" y="${y-2}" width="${w+4}" height="${h+4}" rx="7" fill="none" stroke="#7ab8f0" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.7"/>` : ''}
   </g>`
 }
 
@@ -1391,7 +1412,7 @@ function renderLabelSvg(label, isSelected) {
 function bindSvgEvents() {
   if (!_svgEl) return
 
-  // Component drag
+  // Component drag + shift-click for multi-select
   _svgEl.querySelectorAll('.dg-comp').forEach(el => {
     el.addEventListener('mousedown', e => {
       if (_mode !== 'select') return
@@ -1400,6 +1421,28 @@ function bindSvgEvents() {
       const comp = _diagram.components.find(c => c.id === id)
       if (!comp) return
       const pos = svgXY(e)
+
+      if (e.shiftKey) {
+        // Shift+click: toggle into multi-selection
+        if (_multiSel.has(id)) _multiSel.delete(id)
+        else _multiSel.add(id)
+        _selected = null
+        renderCanvas(); renderProps(); return
+      }
+
+      // If clicking a component already in multi-select, start group drag
+      if (_multiSel.has(id) && _multiSel.size > 1) {
+        const origins = {}
+        for (const sid of _multiSel) {
+          const sc = _diagram.components.find(c => c.id === sid)
+          if (sc) origins[sid] = { x: sc.x, y: sc.y }
+        }
+        _drag = { type:'multi-comp', anchorId: id, origins, ox: comp.x - pos.x, oy: comp.y - pos.y }
+        return
+      }
+
+      // Normal single-component select + drag
+      _multiSel.clear()
       _drag = { type:'comp', id, ox:comp.x - pos.x, oy:comp.y - pos.y }
       _selected = { type:'comp', id }
       renderCanvas()
@@ -1532,10 +1575,13 @@ function bindSvgEvents() {
       updateToolbar(); renderCanvas(); return
     }
     if (_mode === 'select') {
-      _selected = null
-      renderCanvas(); renderProps()
-      // Left-click drag on empty canvas pans
-      _drag = { type:'canvas', startX: e.clientX - _pan.x, startY: e.clientY - _pan.y }
+      // Start rubber-band selection on empty canvas
+      const pos = svgXY(e)
+      _selected = null; _multiSel.clear()
+      renderProps()
+      _rubberBand = { x0: pos.x, y0: pos.y, x1: pos.x, y1: pos.y }
+      _drag = { type:'rubber', startX: e.clientX, startY: e.clientY }
+      renderCanvas()
     }
   })
 
@@ -1651,6 +1697,23 @@ function bindSvgEvents() {
       }
       return
     }
+    if (_drag?.type === 'rubber' && _rubberBand) {
+      const pos = svgXY(e)
+      _rubberBand.x1 = pos.x; _rubberBand.y1 = pos.y
+      renderCanvas(); return
+    }
+    if (_drag?.type === 'multi-comp') {
+      const pos = svgXY(e)
+      const newAnchorX = snap(pos.x + _drag.ox)
+      const newAnchorY = snap(pos.y + _drag.oy)
+      const dx = newAnchorX - _drag.origins[_drag.anchorId].x
+      const dy = newAnchorY - _drag.origins[_drag.anchorId].y
+      for (const [sid, origin] of Object.entries(_drag.origins)) {
+        const sc = _diagram.components.find(c => c.id === sid)
+        if (sc) { sc.x = origin.x + dx; sc.y = origin.y + dy }
+      }
+      renderCanvas(); return
+    }
     if (_mode === 'wire' && _wireStart) {
       _wirePreview = svgXY(e)
       renderCanvas()
@@ -1658,6 +1721,35 @@ function bindSvgEvents() {
   })
 
   _svgEl.addEventListener('mouseup', e => {
+    if (_drag?.type === 'rubber') {
+      // Commit rubber-band: select all components inside rect
+      const rb = _rubberBand
+      if (rb) {
+        const x0 = Math.min(rb.x0, rb.x1), x1 = Math.max(rb.x0, rb.x1)
+        const y0 = Math.min(rb.y0, rb.y1), y1 = Math.max(rb.y0, rb.y1)
+        const moved = Math.abs(x1-x0) > 4 || Math.abs(y1-y0) > 4
+        if (moved) {
+          _multiSel.clear()
+          for (const c of _diagram.components) {
+            const def = getCompDef(c.type)
+            const w = def?.w || 160, h = def?.h || 120
+            if (c.x + w > x0 && c.x < x1 && c.y + h > y0 && c.y < y1) _multiSel.add(c.id)
+          }
+        }
+      }
+      _rubberBand = null
+      renderCanvas(); return
+    }
+    if (_drag?.type === 'multi-comp') {
+      // Finalize group move
+      _diagram.modified = true; saveUndo()
+      for (const sid of _multiSel) {
+        _diagram.wires.forEach(w => {
+          if (w.pts && (w.from?.compId === sid || w.to?.compId === sid)) w.pts = null
+        })
+      }
+      _drag = null; renderCanvas(); return
+    }
     if (_drag?.type === 'comp') {
       _diagram.modified = true
       saveUndo()
@@ -1908,6 +2000,75 @@ function updateToolbar() {
   if (redoBtn) redoBtn.style.opacity = _redoStack.length ? '1' : '0.35'
 }
 
+// ── Export ─────────────────────────────────────────────────────────────────
+function exportDiagram(format) {
+  if (!_svgEl) return
+  // Fit to content so export shows all components, not just viewport
+  fitToContent()
+
+  const clone = _svgEl.cloneNode(true)
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+  // Strip interactive overlays
+  clone.querySelectorAll('.dg-wire-handle,.dg-wire-vertex').forEach(el => el.remove())
+  const svgStr = new XMLSerializer().serializeToString(clone)
+  const name = (_diagram.name || 'diagram').replace(/[^a-zA-Zа-яА-Я0-9_\- ]/g, '')
+
+  if (format === 'svg') {
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' })
+    _triggerDownload(URL.createObjectURL(blob), name + '.svg')
+    return
+  }
+
+  if (format === 'png') {
+    const W = _svgEl.clientWidth, H = _svgEl.clientHeight
+    const scale = 2  // retina
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const img = new Image()
+    img.onload = () => {
+      const cv = document.createElement('canvas')
+      cv.width = W * scale; cv.height = H * scale
+      const ctx = cv.getContext('2d')
+      ctx.scale(scale, scale)
+      ctx.fillStyle = '#161b22'  // match BG_DARK so transparent SVG bg is solid
+      ctx.fillRect(0, 0, W, H)
+      ctx.drawImage(img, 0, 0, W, H)
+      URL.revokeObjectURL(url)
+      cv.toBlob(b => _triggerDownload(URL.createObjectURL(b), name + '.png'), 'image/png')
+    }
+    img.onerror = () => { URL.revokeObjectURL(url); window.toast?.('Ошибка экспорта PNG', 'error') }
+    img.src = url
+  }
+}
+
+function fitToContent() {
+  const comps = _diagram.components
+  if (!comps.length) { _pan = { x: 80, y: 80 }; _zoom = 1; renderCanvas(); return }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const c of comps) {
+    const def = getCompDef(c.type)
+    const w = def?.w || 160, h = def?.h || 120
+    minX = Math.min(minX, c.x); minY = Math.min(minY, c.y)
+    maxX = Math.max(maxX, c.x + w); maxY = Math.max(maxY, c.y + h)
+  }
+  const PAD = 60
+  const cw = (_svgEl?.clientWidth  || 900) - PAD * 2
+  const ch = (_svgEl?.clientHeight || 640) - PAD * 2
+  const dw = maxX - minX, dh = maxY - minY
+  _zoom = Math.min(1, Math.min(cw / (dw || 1), ch / (dh || 1)))
+  _pan.x = PAD - minX * _zoom
+  _pan.y = PAD - minY * _zoom
+  renderCanvas(); updateToolbar()
+}
+
+function _triggerDownload(url, filename) {
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  document.body.appendChild(a); a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 // ── Save / Load ────────────────────────────────────────────────────────────
 async function saveDiagram() {
   const name = _el?.querySelector('#dg-name')?.value?.trim() || _diagram.name || 'Схема'
@@ -2134,6 +2295,14 @@ function render() {
           <i class="ti ti-bolt"></i>
         </button>
 
+        <div style="position:relative;display:inline-block">
+          <button class="dg-action-btn" id="dg-export" title="Экспорт схемы"><i class="ti ti-download"></i></button>
+          <div id="dg-export-menu" style="display:none;position:absolute;top:100%;right:0;background:#1e2530;border:1px solid #ffffff22;border-radius:6px;padding:4px;z-index:100;min-width:120px;margin-top:4px">
+            <button class="dg-export-opt" data-fmt="svg" style="display:block;width:100%;text-align:left;padding:6px 10px;background:none;border:none;color:#e0e0e0;cursor:pointer;font-size:12px;border-radius:4px"><i class="ti ti-file-type-svg"></i> SVG файл</button>
+            <button class="dg-export-opt" data-fmt="png" style="display:block;width:100%;text-align:left;padding:6px 10px;background:none;border:none;color:#e0e0e0;cursor:pointer;font-size:12px;border-radius:4px"><i class="ti ti-photo"></i> PNG изображение</button>
+          </div>
+        </div>
+
         <span class="dg-zoom-label" id="dg-zoom-label" style="font-size:11px;color:#888;min-width:38px;text-align:center">${Math.round(_zoom*100)}%</span>
         <span class="dg-mode-label">Выбор</span>
         <button class="ui-btn ui-btn--primary" id="dg-save-btn">
@@ -2209,24 +2378,24 @@ function render() {
   _el.querySelector('#dg-undo')?.addEventListener('click', () => { undo(); updateToolbar() })
   _el.querySelector('#dg-redo')?.addEventListener('click', () => { redo(); updateToolbar() })
 
-  _el.querySelector('#dg-center')?.addEventListener('click', () => {
-    const comps = _diagram.components
-    if (!comps.length) { _pan = { x: 80, y: 80 }; _zoom = 1; renderCanvas(); return }
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-    for (const c of comps) {
-      const def = getCompDef(c.type)
-      const w = def?.w || 160, h = def?.h || 120
-      minX = Math.min(minX, c.x); minY = Math.min(minY, c.y)
-      maxX = Math.max(maxX, c.x + w); maxY = Math.max(maxY, c.y + h)
-    }
-    const PAD = 60
-    const cw = (_svgEl?.clientWidth  || 900) - PAD * 2
-    const ch = (_svgEl?.clientHeight || 640) - PAD * 2
-    const dw = maxX - minX, dh = maxY - minY
-    _zoom = Math.min(1, Math.min(cw / (dw || 1), ch / (dh || 1)))
-    _pan.x = PAD - minX * _zoom
-    _pan.y = PAD - minY * _zoom
-    renderCanvas()
+  _el.querySelector('#dg-center')?.addEventListener('click', fitToContent)
+
+  // Export menu toggle + format selection
+  const exportBtn = _el.querySelector('#dg-export')
+  const exportMenu = _el.querySelector('#dg-export-menu')
+  exportBtn?.addEventListener('click', e => {
+    e.stopPropagation()
+    const open = exportMenu.style.display !== 'none'
+    exportMenu.style.display = open ? 'none' : 'block'
+  })
+  document.addEventListener('click', () => { if (exportMenu) exportMenu.style.display = 'none' })
+  exportMenu?.querySelectorAll('.dg-export-opt').forEach(btn => {
+    btn.addEventListener('mouseover', () => btn.style.background = '#2a3545')
+    btn.addEventListener('mouseout',  () => btn.style.background = 'none')
+    btn.addEventListener('click', () => {
+      exportMenu.style.display = 'none'
+      exportDiagram(btn.dataset.fmt)
+    })
   })
 
   _el.querySelector('#dg-simulate')?.addEventListener('click', () => {
@@ -2237,6 +2406,12 @@ function render() {
   })
 
   _el.querySelector('#dg-delete-sel')?.addEventListener('click', () => {
+    if (_multiSel.size > 0) {
+      saveUndo()
+      _diagram.components = _diagram.components.filter(c => !_multiSel.has(c.id))
+      _diagram.wires = _diagram.wires.filter(w => !_multiSel.has(w.from?.compId) && !_multiSel.has(w.to?.compId))
+      _diagram.modified = true; _multiSel.clear(); renderCanvas(); renderProps(); return
+    }
     if (!_selected) return
     saveUndo()
     if (_selected.type === 'comp') {
@@ -2316,10 +2491,18 @@ function render() {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      e.preventDefault()
+      _multiSel = new Set(_diagram.components.map(c => c.id))
+      _selected = null; renderCanvas(); renderProps(); return
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
-      if (_selected?.type === 'comp') {
+      e.preventDefault()
+      if (_multiSel.size > 0) {
+        _clipboard = _diagram.components.filter(c => _multiSel.has(c.id)).map(c => JSON.parse(JSON.stringify(c)))
+      } else if (_selected?.type === 'comp') {
         const comp = _diagram.components.find(c => c.id === _selected.id)
-        if (comp) { _clipboard = JSON.parse(JSON.stringify(comp)); e.preventDefault() }
+        if (comp) _clipboard = JSON.parse(JSON.stringify(comp))
       }
       return
     }
@@ -2327,10 +2510,17 @@ function render() {
       if (_clipboard) {
         e.preventDefault()
         saveUndo()
-        const pasted = { ..._clipboard, id: uid(), x: _clipboard.x + 20, y: _clipboard.y + 20 }
-        _diagram.components.push(pasted)
+        const items = Array.isArray(_clipboard) ? _clipboard : [_clipboard]
+        _multiSel.clear(); _selected = null
+        items.forEach(src => {
+          const pasted = { ...src, id: uid(), x: src.x + 20, y: src.y + 20 }
+          _diagram.components.push(pasted)
+          _multiSel.add(pasted.id)
+        })
+        // Shift clipboard so repeated Ctrl+V cascades
+        if (Array.isArray(_clipboard)) _clipboard = _clipboard.map(c => ({...c, x: c.x+20, y: c.y+20}))
+        else _clipboard = {..._clipboard, x: _clipboard.x+20, y: _clipboard.y+20}
         _diagram.modified = true
-        _selected = { type:'comp', id: pasted.id }
         renderCanvas(); renderProps()
       }
       return
@@ -2345,9 +2535,11 @@ function render() {
       updateToolbar()
     }
     if (e.key === 'Escape') {
-      _wireStart = null; _wirePreview = null; _mode='select'; updateToolbar(); renderCanvas()
+      _wireStart = null; _wirePreview = null; _mode='select'
+      _multiSel.clear(); _rubberBand = null
+      updateToolbar(); renderCanvas()
     }
-    if ((e.key === 'Delete' || e.key === 'Backspace') && _selected) {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && (_selected || _multiSel.size > 0)) {
       _el.querySelector('#dg-delete-sel')?.click()
     }
   }
