@@ -215,9 +215,12 @@ def build_agent_command(job: dict[str, Any], executable: str) -> list[str]:
         ]
         if session_id:
             command.extend(["--resume", session_id])
+            feedback = str(job.get("reviewFeedback") or "").strip()
             command[2] = (
-                "Continue the assigned task from the existing session. Do not repeat completed analysis. "
-                "Finish the remaining implementation, verification, and handoff, then stop for Codex review."
+                f"Codex review feedback:\n{feedback}\n\nApply the requested corrections, verify the result, and stop for review."
+                if feedback
+                else "Continue the assigned task from the existing session. Do not repeat completed analysis. "
+                     "Finish the remaining implementation, verification, and handoff, then stop for Codex review."
             )
         return command
     raise ValueError("unsupported assigned agent")
@@ -257,6 +260,7 @@ class CoordinatorStore:
                     max_turns INTEGER NOT NULL,
                     attempt INTEGER NOT NULL DEFAULT 0,
                     agent_session_id TEXT NOT NULL DEFAULT '',
+                    review_feedback TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
@@ -296,6 +300,8 @@ class CoordinatorStore:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
             if "agent_session_id" not in job_columns:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN agent_session_id TEXT NOT NULL DEFAULT ''")
+            if "review_feedback" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN review_feedback TEXT NOT NULL DEFAULT ''")
             log_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coordinator_job_logs)")}
             if "attempt" not in log_columns:
                 connection.execute("ALTER TABLE coordinator_job_logs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
@@ -315,6 +321,7 @@ class CoordinatorStore:
             "maxTurns": row["max_turns"],
             "attempt": row["attempt"],
             "agentSessionId": row["agent_session_id"],
+            "reviewFeedback": row["review_feedback"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
             "startedAt": row["started_at"],
@@ -411,16 +418,18 @@ class CoordinatorStore:
         *,
         agent_session_id: str | None = None,
         max_turns: int | None = None,
+        review_feedback: str | None = None,
     ) -> dict[str, Any]:
         current = self.get_job(job_id)
         next_session = current["agentSessionId"] if agent_session_id is None else agent_session_id.strip()[:200]
         next_turns = current["maxTurns"] if max_turns is None else max_turns
+        next_feedback = current["reviewFeedback"] if review_feedback is None else review_feedback.strip()[:10000]
         if not 1 <= next_turns <= 20:
             raise ValueError("max_turns must be between 1 and 20")
         with self._lock, self._connect() as connection:
             connection.execute(
-                "UPDATE coordinator_jobs SET agent_session_id=?,max_turns=?,updated_at=? WHERE id=?",
-                (next_session, next_turns, utc_now(), job_id),
+                "UPDATE coordinator_jobs SET agent_session_id=?,max_turns=?,review_feedback=?,updated_at=? WHERE id=?",
+                (next_session, next_turns, next_feedback, utc_now(), job_id),
             )
         return self.get_job(job_id)
 

@@ -268,6 +268,8 @@ function renderAgents(d) {
     } else if (['review', 'waiting_approval'].includes(job.status)) {
       buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--primary" data-coordinator-action="approve" data-job-id="${esc(job.id)}"
         ${!controlsReady ? 'disabled' : ''}><i class="ti ti-check"></i> Approve</button>`)
+      buttons.push(`<button class="ui-btn ui-btn--sm" data-coordinator-feedback="${esc(job.id)}"
+        ${!controlsReady || !health.executionEnabled ? 'disabled' : ''}><i class="ti ti-message-circle"></i> Request changes</button>`)
       buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--danger" data-coordinator-action="reject" data-job-id="${esc(job.id)}"
         ${!controlsReady ? 'disabled' : ''}><i class="ti ti-x"></i> Reject</button>`)
     } else if (['failed', 'cancelled', 'rate_limited'].includes(job.status)) {
@@ -560,6 +562,41 @@ function openAgentJobCreate() {
   })
 }
 
+function openAgentFeedback(jobId) {
+  const { close } = openModal({
+    title: 'Request agent changes',
+    width: 640,
+    body: `<form class="ui-form" id="adm-agent-feedback-form">
+      <div class="ui-form-row"><label>Codex review feedback</label>
+        <textarea class="ui-input" name="feedback" rows="7" minlength="3" maxlength="10000" required
+          placeholder="State what is incorrect, what evidence is missing, and the exact acceptance condition"></textarea></div>
+      <p class="ui-dim">The agent will resume the same session in the same isolated worktree and return to Review.</p>
+    </form>`,
+    footer: `<button class="ui-btn ui-btn--primary" id="adm-agent-feedback-send"><i class="ti ti-player-play"></i> Send and continue</button>
+             <button class="ui-btn" id="adm-agent-feedback-cancel">Cancel</button>`,
+  })
+  document.getElementById('adm-agent-feedback-cancel')?.addEventListener('click', close)
+  document.getElementById('adm-agent-feedback-send')?.addEventListener('click', async event => {
+    const form = document.getElementById('adm-agent-feedback-form')
+    if (!form?.reportValidity()) return
+    const button = event.currentTarget
+    button.disabled = true
+    const feedback = String(new FormData(form).get('feedback') || '').trim()
+    try {
+      await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(jobId)}/request-changes`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }),
+      })
+      close()
+      delete _data.agents
+      window.toast?.('Review feedback sent; agent resumed', 'success')
+      switchTab()
+    } catch (err) {
+      button.disabled = false
+      window.toast?.(`Coordinator: ${err.message}`, 'error')
+    }
+  })
+}
+
 // ── Render & navigation ───────────────────────────────────────────────────
 
 function render() {
@@ -644,6 +681,9 @@ function bindTabEvents() {
     })
     document.querySelectorAll('[data-coordinator-view]').forEach(button => {
       button.addEventListener('click', () => openAgentJobDetails(button.dataset.coordinatorView))
+    })
+    document.querySelectorAll('[data-coordinator-feedback]').forEach(button => {
+      button.addEventListener('click', () => openAgentFeedback(button.dataset.coordinatorFeedback))
     })
     return
   }

@@ -55,6 +55,10 @@ class JobRequest(BaseModel):
     maxTurns: int = Field(default=8, ge=1, le=20)
 
 
+class ReviewFeedbackRequest(BaseModel):
+    feedback: str = Field(min_length=3, max_length=10000)
+
+
 def _is_rate_limited_output(lines: deque[str]) -> bool:
     """Recognize an actual limit rejection, not Claude's allowed usage warning."""
     for line in lines:
@@ -343,6 +347,34 @@ async def reject_job(job_id: str, x_coordinator_token: str | None = Header(defau
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+
+@app.post("/api/v1/jobs/{job_id}/request-changes", status_code=status.HTTP_202_ACCEPTED)
+async def request_job_changes(
+    job_id: str,
+    body: ReviewFeedbackRequest,
+    x_coordinator_token: str | None = Header(default=None),
+):
+    require_control_token(x_coordinator_token)
+    if not EXECUTION_ENABLED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Agent execution is disabled")
+    try:
+        job = store.get_job(job_id)
+        validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
+        if job["status"] not in {"review", "waiting_approval"}:
+            raise ValueError("Only a reviewed job can receive change requests")
+        store.update_execution_context(job_id, review_feedback=body.feedback)
+        store.append_job_log(job_id, f"Codex requested changes: {body.feedback}", "system")
+        if job["status"] == "review":
+            store.transition_job(job_id, "waiting_approval", actor="owner")
+        store.transition_job(job_id, "queued", actor="owner")
+        store.transition_job(job_id, "running", actor="owner")
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"agent-{job_id[:8]}").start()
+    return {"job": store.get_job(job_id)}
 
 
 @app.get("/api/v1/events")

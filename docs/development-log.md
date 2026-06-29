@@ -185,4 +185,5 @@ For each material release, append a dated section containing product version, us
 - Added resumable Claude sessions and adaptive turn budgets: Continue reuses the last session after a max-turn failure and raises the budget by four, capped at 20.
 - Added an Administrator job composer for selecting an available agent, registered worktree, instructions, turn budget, review requirement and immediate start behavior.
 - Added server-side Git worktree inspection and a Live review summary with changed paths and staged/unstaged diff statistics; source contents remain excluded from the response.
+- Added a review-feedback loop: Request changes persists Codex feedback, resumes the same Claude context and returns corrected work for another review cycle.
 - Verification: 10 Coordinator tests, Python compile check and Vite production build passed.

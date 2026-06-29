@@ -38,6 +38,7 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(job["assignedAgent"], "claude")
         self.assertEqual(job["attempt"], 0)
         self.assertEqual(job["agentSessionId"], "")
+        self.assertEqual(job["reviewFeedback"], "")
         events = self.store.list_events(job["id"])
         self.assertEqual(events[0]["eventType"], "job.created")
 
@@ -75,6 +76,10 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertIn("--resume", resumed_cmd)
         self.assertIn("session-123", resumed_cmd)
         self.assertIn("Do not repeat completed analysis", resumed_cmd[2])
+
+        with_feedback = dict(resumed, reviewFeedback="Correct the stale endpoint matrix")
+        feedback_cmd = build_agent_command(with_feedback, "/usr/local/bin/claude")
+        self.assertIn("Correct the stale endpoint matrix", feedback_cmd[2])
         self.assertIn("--verbose", claude_cmd)
 
         codex_job = self.store.create_job(
@@ -130,6 +135,11 @@ class CoordinatorStoreTests(unittest.TestCase):
         )
         self.assertEqual(updated["agentSessionId"], "claude-session")
         self.assertEqual(updated["maxTurns"], 12)
+
+        reviewed = self.store.update_execution_context(
+            job["id"], review_feedback="Add verification evidence"
+        )
+        self.assertEqual(reviewed["reviewFeedback"], "Add verification evidence")
 
     def test_worktree_review_lists_changes_without_file_contents(self):
         root = Path(self.temp_dir.name) / "review-repo"

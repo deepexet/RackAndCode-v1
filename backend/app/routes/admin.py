@@ -459,3 +459,22 @@ async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
         job_id,
     )
     return result
+
+
+@router.post("/coordinator/jobs/{job_id}/request-changes")
+async def coordinator_request_job_changes(job_id: str, body: dict[str, Any], ctx: Auth):
+    _require_authenticated_admin(ctx)
+    result = await _coordinator(
+        f"/api/v1/jobs/{job_id}/request-changes",
+        method="POST",
+        body={"feedback": str(body.get("feedback", ""))},
+    )
+    ctx.store.audit(
+        ctx.org,
+        ctx.user_id,
+        ctx.role,
+        "coordinator.job.request_changes",
+        "agent_job",
+        job_id,
+    )
+    return result

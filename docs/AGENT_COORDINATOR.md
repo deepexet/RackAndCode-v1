@@ -65,3 +65,5 @@ Every start or retry increments the job attempt number. Live activity defaults t
 Claude session identifiers are retained per job. If a job reaches its turn budget, Continue resumes that same Claude session with the existing context and increases the budget by four turns, capped at 20. This avoids paying the time and context cost of repeating a completed audit. A resumed job remains in the same registered worktree and still stops for Codex review.
 
 The Live review view independently inspects the registered Git worktree and shows bounded file status plus staged and unstaged diff statistics. It never returns file contents. Agent narration is therefore not the only evidence available before Approve.
+
+Request changes records Codex review feedback, resumes the same agent session in the same worktree, and returns the job to Review after correction. Reject remains available for work that should not continue.
