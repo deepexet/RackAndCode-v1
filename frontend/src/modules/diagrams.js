@@ -2225,6 +2225,47 @@ async function openDiagram(page) {
 }
 
 // ── Layout render ──────────────────────────────────────────────────────────
+// Generate a small SVG preview for a saved diagram page
+function makeDiagramThumb(page) {
+  try {
+    let meta = page.metadata
+    if (typeof meta === 'string') meta = JSON.parse(meta)
+    if (!meta?.diagramJson) return null
+    const dg = JSON.parse(meta.diagramJson)
+    const comps = dg.components || []
+    const wires = dg.wires || []
+    if (!comps.length) return null
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const c of comps) {
+      const def = COMP_DEFS[c.type]
+      const w = def?.w || 160, h = def?.h || 120
+      minX = Math.min(minX, c.x); minY = Math.min(minY, c.y)
+      maxX = Math.max(maxX, c.x + w); maxY = Math.max(maxY, c.y + h)
+    }
+    const TW = 180, TH = 100, PAD = 8
+    const scale = Math.min((TW-PAD*2) / Math.max(maxX-minX,1), (TH-PAD*2) / Math.max(maxY-minY,1))
+    const ox = PAD - minX * scale, oy = PAD - minY * scale
+    const wireSvg = wires.map(w => {
+      if (!w.pts || w.pts.length < 2) return ''
+      const col = w.color || '#666'
+      const pts = w.pts.map(([px,py]) => `${(ox+px*scale).toFixed(1)},${(oy+py*scale).toFixed(1)}`).join(' ')
+      return `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1" opacity="0.8"/>`
+    }).join('')
+    const compSvg = comps.map(c => {
+      const def = COMP_DEFS[c.type]
+      const w = def?.w || 160, h = def?.h || 120
+      const hue = def?.hue || '#2a3a5a'
+      const tx = (ox + c.x * scale).toFixed(1), ty = (oy + c.y * scale).toFixed(1)
+      const tw = (w * scale).toFixed(1), th = (h * scale).toFixed(1)
+      return `<rect x="${tx}" y="${ty}" width="${tw}" height="${th}" rx="2" fill="${hue}bb" stroke="${hue}" stroke-width="0.5"/>`
+    }).join('')
+    return `<svg viewBox="0 0 ${TW} ${TH}" xmlns="http://www.w3.org/2000/svg" width="${TW}" height="${TH}" style="display:block">
+      <rect width="${TW}" height="${TH}" fill="#0e1419"/>
+      ${wireSvg}${compSvg}
+    </svg>`
+  } catch { return null }
+}
+
 function renderDiagramList() {
   const list = _el?.querySelector('.dg-list')
   if (!list) return
@@ -2234,15 +2275,19 @@ function renderDiagramList() {
         <i class="ti ti-schema"></i>
         <p>Нет сохранённых схем. Создайте первую!</p>
        </div>`
-    : _diagrams.map(d => `
+    : _diagrams.map(d => {
+        const thumb = makeDiagramThumb(d)
+        return `
         <div class="dg-diagram-card" data-id="${esc(d.id)}">
-          <div class="dg-diagram-card-icon"><i class="ti ti-schema"></i></div>
+          <div class="dg-diagram-card-thumb">
+            ${thumb || `<i class="ti ti-schema" style="font-size:28px;opacity:0.4"></i>`}
+          </div>
           <div class="dg-diagram-card-info">
             <div class="dg-diagram-card-name">${esc(d.title)}</div>
             <div class="dg-diagram-card-meta">${esc(d.updated_by||'')} · ${d.updated_at?.slice(0,10)||''}</div>
           </div>
           <button class="dg-diagram-open" data-id="${esc(d.id)}"><i class="ti ti-arrow-right"></i></button>
-        </div>`).join('')
+        </div>`}).join('')
 
   list.querySelectorAll('[data-id]').forEach(el => {
     el.addEventListener('click', e => {

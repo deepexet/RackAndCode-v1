@@ -1944,9 +1944,10 @@ body {
 .dg-list-empty { grid-column:1/-1; display:flex; flex-direction:column; align-items:center; gap:10px; padding:48px 24px; text-align:center; color:var(--text-4); }
 .dg-list-empty .ti { font-size:40px; }
 .dg-list-empty p { font-size:13px; }
-.dg-diagram-card { display:flex; align-items:center; gap:12px; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; cursor:pointer; transition:border-color 0.15s; }
+.dg-diagram-card { display:flex; align-items:center; gap:12px; background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:10px 14px; cursor:pointer; transition:border-color 0.15s; }
 .dg-diagram-card:hover { border-color:var(--accent); }
 .dg-diagram-card-icon { width:36px; height:36px; background:var(--accent); border-radius:8px; display:flex; align-items:center; justify-content:center; color:#fff; font-size:18px; flex-shrink:0; }
+.dg-diagram-card-thumb { width:90px; height:54px; border-radius:6px; overflow:hidden; flex-shrink:0; border:1px solid var(--border); background:#0e1419; display:flex; align-items:center; justify-content:center; }
 .dg-diagram-card-info { flex:1; min-width:0; }
 .dg-diagram-card-name { font-size:13px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .dg-diagram-card-meta { font-size:11px; color:var(--text-4); margin-top:2px; }
