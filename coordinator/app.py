@@ -77,6 +77,24 @@ def _is_rate_limited_output(lines: deque[str]) -> bool:
     return False
 
 
+def _session_id_from_line(line: str) -> str | None:
+    try:
+        entry = json.loads(line)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    session_id = entry.get("session_id")
+    return session_id if isinstance(session_id, str) and session_id else None
+
+
+def _latest_logged_session_id(job_id: str) -> str | None:
+    logs = store.list_job_logs(job_id, limit=1000)
+    for log in reversed(logs):
+        session_id = _session_id_from_line(log["message"])
+        if session_id:
+            return session_id
+    return None
+
+
 def require_control_token(x_coordinator_token: str | None) -> None:
     if not CONTROL_TOKEN:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Coordinator control token is not configured")
@@ -165,6 +183,7 @@ def _run_job(job_id: str) -> None:
     command = build_agent_command(job, probe.executable)
     store.append_job_log(job_id, f"Starting {job['assignedAgent']} in {job['branchName']}", "system")
     output_lines: deque[str] = deque(maxlen=1000)
+    active_session_id = job["agentSessionId"]
     try:
         process = subprocess.Popen(
             command,
@@ -184,6 +203,10 @@ def _run_job(job_id: str) -> None:
                     continue
                 output_lines.append(line)
                 store.append_job_log(job_id, line)
+                session_id = _session_id_from_line(line)
+                if session_id and session_id != active_session_id:
+                    store.update_execution_context(job_id, agent_session_id=session_id)
+                    active_session_id = session_id
             process.stdout.close()
         process.wait()
     except OSError as exc:
@@ -240,6 +263,14 @@ async def retry_job(job_id: str, x_coordinator_token: str | None = Header(defaul
         validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
         if job["status"] not in {"failed", "cancelled", "rate_limited"}:
             raise ValueError("Only a failed, cancelled or rate-limited job can be retried")
+        session_id = job["agentSessionId"] or _latest_logged_session_id(job_id)
+        hit_turn_limit = "max_turns" in job["error"].lower() or "maximum number of turns" in job["error"].lower()
+        next_max_turns = min(20, job["maxTurns"] + 4) if hit_turn_limit else job["maxTurns"]
+        job = store.update_execution_context(
+            job_id,
+            agent_session_id=session_id,
+            max_turns=next_max_turns,
+        )
         store.transition_job(job_id, "queued", actor="owner")
         store.transition_job(job_id, "running", actor="owner")
     except KeyError as exc:

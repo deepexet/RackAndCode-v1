@@ -157,10 +157,12 @@ def build_agent_command(job: dict[str, Any], executable: str) -> list[str]:
             instructions,
         ]
     if job["assignedAgent"] == "claude":
-        return [
+        session_id = str(job.get("agentSessionId") or "").strip()
+        prompt = instructions
+        command = [
             executable,
             "-p",
-            instructions,
+            prompt,
             "--output-format",
             "stream-json",
             "--verbose",
@@ -169,6 +171,13 @@ def build_agent_command(job: dict[str, Any], executable: str) -> list[str]:
             "--permission-mode",
             "acceptEdits",
         ]
+        if session_id:
+            command.extend(["--resume", session_id])
+            command[2] = (
+                "Continue the assigned task from the existing session. Do not repeat completed analysis. "
+                "Finish the remaining implementation, verification, and handoff, then stop for Codex review."
+            )
+        return command
     raise ValueError("unsupported assigned agent")
 
 
@@ -205,6 +214,7 @@ class CoordinatorStore:
                     requires_review INTEGER NOT NULL,
                     max_turns INTEGER NOT NULL,
                     attempt INTEGER NOT NULL DEFAULT 0,
+                    agent_session_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
@@ -242,6 +252,8 @@ class CoordinatorStore:
             job_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coordinator_jobs)")}
             if "attempt" not in job_columns:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
+            if "agent_session_id" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN agent_session_id TEXT NOT NULL DEFAULT ''")
             log_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coordinator_job_logs)")}
             if "attempt" not in log_columns:
                 connection.execute("ALTER TABLE coordinator_job_logs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
@@ -260,6 +272,7 @@ class CoordinatorStore:
             "requiresReview": bool(row["requires_review"]),
             "maxTurns": row["max_turns"],
             "attempt": row["attempt"],
+            "agentSessionId": row["agent_session_id"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
             "startedAt": row["started_at"],
@@ -349,6 +362,25 @@ class CoordinatorStore:
         if not row:
             raise KeyError(job_id)
         return self._job(row)
+
+    def update_execution_context(
+        self,
+        job_id: str,
+        *,
+        agent_session_id: str | None = None,
+        max_turns: int | None = None,
+    ) -> dict[str, Any]:
+        current = self.get_job(job_id)
+        next_session = current["agentSessionId"] if agent_session_id is None else agent_session_id.strip()[:200]
+        next_turns = current["maxTurns"] if max_turns is None else max_turns
+        if not 1 <= next_turns <= 20:
+            raise ValueError("max_turns must be between 1 and 20")
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE coordinator_jobs SET agent_session_id=?,max_turns=?,updated_at=? WHERE id=?",
+                (next_session, next_turns, utc_now(), job_id),
+            )
+        return self.get_job(job_id)
 
     def append_job_log(
         self,

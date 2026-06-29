@@ -271,9 +271,10 @@ function renderAgents(d) {
       buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--danger" data-coordinator-action="reject" data-job-id="${esc(job.id)}"
         ${!controlsReady ? 'disabled' : ''}><i class="ti ti-x"></i> Reject</button>`)
     } else if (['failed', 'cancelled', 'rate_limited'].includes(job.status)) {
+      const continuation = String(job.error || '').includes('max_turns') || String(job.error || '').includes('maximum number of turns')
       buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--primary" data-coordinator-action="retry" data-job-id="${esc(job.id)}"
         ${!controlsReady || !health.executionEnabled ? 'disabled title="Enable autonomous execution to retry jobs"' : ''}>
-        <i class="ti ti-refresh"></i> Retry</button>`)
+        <i class="ti ti-refresh"></i> ${continuation ? 'Continue' : 'Retry'}</button>`)
     }
     return buttons.length ? `<div class="adm-agent-actions">${buttons.join('')}</div>` : '<span class="ui-dim">—</span>'
   }
@@ -431,7 +432,7 @@ function openAgentJobDetails(jobId) {
           <span><b>Elapsed</b>${esc(formatElapsed(job.startedAt, job.completedAt))}</span>
           <span><b>Started</b>${esc(fmtDate(job.startedAt))}</span>
           <span><b>Exit code</b>${esc(job.exitCode ?? '—')}</span>
-          <span><b>Attempt</b>${esc(job.attempt ?? 0)}</span>
+          <span><b>Attempt / budget</b>${esc(job.attempt ?? 0)} · ${esc(job.maxTurns ?? '—')} turns</span>
         </div>
         <div class="adm-agent-live-grid">
           <section>

@@ -36,6 +36,7 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(job["status"], "queued")
         self.assertEqual(job["assignedAgent"], "claude")
         self.assertEqual(job["attempt"], 0)
+        self.assertEqual(job["agentSessionId"], "")
         events = self.store.list_events(job["id"])
         self.assertEqual(events[0]["eventType"], "job.created")
 
@@ -67,6 +68,12 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(claude_cmd[0], "/usr/local/bin/claude")
         self.assertIn("acceptEdits", claude_cmd)
         self.assertNotIn("bypassPermissions", claude_cmd)
+
+        resumed = dict(claude_job, agentSessionId="session-123")
+        resumed_cmd = build_agent_command(resumed, "/usr/local/bin/claude")
+        self.assertIn("--resume", resumed_cmd)
+        self.assertIn("session-123", resumed_cmd)
+        self.assertIn("Do not repeat completed analysis", resumed_cmd[2])
         self.assertIn("--verbose", claude_cmd)
 
         codex_job = self.store.create_job(
@@ -114,6 +121,14 @@ class CoordinatorStoreTests(unittest.TestCase):
         latest = self.store.list_job_logs(job["id"], attempt=second_run["attempt"])
         self.assertEqual([entry["message"] for entry in latest], ["second attempt"])
         self.assertEqual(latest[0]["attempt"], 2)
+
+    def test_execution_context_persists_session_and_turn_limit(self):
+        job = self.store.create_job(self.payload())
+        updated = self.store.update_execution_context(
+            job["id"], agent_session_id="claude-session", max_turns=12
+        )
+        self.assertEqual(updated["agentSessionId"], "claude-session")
+        self.assertEqual(updated["maxTurns"], 12)
 
     def test_runner_streams_output_before_review(self):
         from coordinator import app as coordinator_app

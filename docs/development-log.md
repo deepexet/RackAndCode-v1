@@ -182,4 +182,5 @@ For each material release, append a dated section containing product version, us
 - Expanded human-readable Claude event rendering for sessions, tools, subtasks, progress, usage warnings and turn-limit failures.
 - Corrected rate-limit detection so Claude's permitted `allowed_warning` event does not incorrectly mark a job as `rate_limited`.
 - Replaced Claude's read-only-in-practice `dontAsk` mode with worktree-bounded `acceptEdits`, allowing implementation tasks to create and edit files without enabling unrestricted permission bypass.
+- Added resumable Claude sessions and adaptive turn budgets: Continue reuses the last session after a max-turn failure and raises the budget by four, capped at 20.
 - Verification: 10 Coordinator tests, Python compile check and Vite production build passed.
