@@ -1,23 +1,25 @@
 import { apiJSON } from '../core/api.js'
 import { createStore } from '../core/store.js'
 
-const state = createStore({ kpi: null, projects: [], activity: [], loading: true })
+const state = createStore({ kpi: null, projects: [], activity: [], criticalTasks: [], loading: true })
 
 export async function mount() {
   const el = document.querySelector('[data-view="overview"]')
   if (!el) return unmount
   renderSkeleton(el)
   try {
-    const [kpiData, projectsData, notifData] = await Promise.all([
+    const [kpiData, projectsData, notifData, criticalData] = await Promise.all([
       apiJSON('/api/v1/overview/kpi').catch(() => null),
       apiJSON('/api/v1/projects').catch(() => ({ projects: [] })),
       apiJSON('/api/v1/notifications').catch(() => ({ notifications: [] })),
+      apiJSON('/api/v1/critical-tasks').catch(() => ({ tasks: [] })),
     ])
     state.set({
       loading: false,
       kpi: kpiData || { activeProjects: 0, openWorkOrders: 0, stockAlerts: 0, techsOnline: 0 },
       projects: (projectsData.projects || []).filter(p => p.status !== 'completed').slice(0, 4),
       activity: (notifData.notifications || []).slice(0, 5),
+      criticalTasks: criticalData.tasks || [],
     })
     renderFull(el, state.get())
   } catch {
@@ -88,6 +90,7 @@ function renderFull(el, s) {
       </div>
     </div>
 
+    ${s.criticalTasks.length > 0 ? criticalBlock(s.criticalTasks) : ''}
     ${s.projects.length > 0 ? projectsBlock(s.projects) : emptyProjects()}
     ${s.activity.length > 0 ? activityBlock(s.activity) : ''}
   `
@@ -134,6 +137,47 @@ function activityBlock(items) {
             <div class="activity-text">${esc(n.message || n.title || '')}</div>
             <div class="activity-time">${relTime(n.createdAt)}</div>
           </div>
+        </div>`).join('')}
+    </div>`
+}
+
+function criticalBlock(tasks) {
+  const STATUS_LABEL = {
+    backlog:'Backlog', ideas:'Ideas', ready:'Ready', progress:'In Progress',
+    blocked:'Blocked', review:'Review', testing:'Testing', done:'Done'
+  }
+  const STATUS_COLOR = {
+    progress:'var(--blue)', blocked:'var(--red)', review:'var(--amber)',
+    testing:'var(--purple)', ready:'var(--green)'
+  }
+  return `
+    <div class="card mb-20" style="border-color:var(--red);border-width:1px">
+      <div class="card-header">
+        <span class="card-title" style="color:var(--red)">
+          <i class="ti ti-alert-triangle" style="margin-right:5px"></i>
+          Critical tasks (${tasks.length})
+        </span>
+        <a class="card-link" href="#projects">View projects</a>
+      </div>
+      ${tasks.map(t => `
+        <div class="card-row" style="cursor:pointer;gap:10px"
+             onclick="location.hash='#projects/${esc(t.project_id)}'">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+              ${t.source_type === 'user'
+                ? '<span style="font-size:9px;font-weight:700;color:var(--red);background:var(--red-bg,rgba(229,57,53,.12));padding:1px 5px;border-radius:3px">USER</span>'
+                : '<span style="font-size:9px;color:var(--text-4);background:var(--bg-3);padding:1px 5px;border-radius:3px">AGENT</span>'}
+              <span style="font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                ${esc(t.title)}
+              </span>
+            </div>
+            <div style="font-size:11px;color:var(--text-4)">
+              ${esc(t.project_name)} ${t.due_date ? `· due ${fmtDate(t.due_date)}` : ''}
+            </div>
+          </div>
+          <span style="font-size:11px;font-weight:500;color:${STATUS_COLOR[t.status]||'var(--text-4)'};flex-shrink:0">
+            ${STATUS_LABEL[t.status] || t.status}
+          </span>
         </div>`).join('')}
     </div>`
 }
