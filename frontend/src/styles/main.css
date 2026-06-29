@@ -2239,34 +2239,93 @@ body {
   .apm-kpi-value { font-size:18px; }
 }
 
-/* ── Diagrams: mobile touch viewer ───────────────────────────────────── */
-@media (max-width: 768px) {
-  /* Hide sidebar library and props panel — touch pan/zoom is enough for viewing */
-  .dg-library { display:none; }
-  .dg-props   { display:none; }
-  /* Give canvas all the space */
-  .dg-canvas  { touch-action:none; }
-  /* Condense toolbar so it doesn't wrap too much */
-  .dg-toolbar { padding:4px 8px; gap:4px; overflow-x:auto; flex-wrap:nowrap; }
-  .dg-name-input { width:120px; font-size:12px; }
+/* ── Diagrams: library header (close btn visible only on mobile) ──── */
+.dg-library-header { display:flex; align-items:center; justify-content:space-between; padding:10px 12px 6px; flex-shrink:0; }
+.dg-library-header .dg-library-title { margin:0; padding:0; }
+.dg-lib-close { display:none; background:none; border:none; color:var(--text-4); cursor:pointer; font-size:16px; padding:4px; }
+.dg-canvas-wrap { flex:1; position:relative; display:flex; overflow:hidden; min-width:0; }
+.dg-canvas-wrap .dg-canvas { flex:1; }
+
+/* Props header */
+.dg-props-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.dg-props-header .dg-props-title { margin:0; }
+.dg-props-close { display:none; background:none; border:none; color:var(--text-4); cursor:pointer; font-size:16px; padding:4px; }
+
+/* FAB buttons — hidden on desktop, show on mobile above bottom nav */
+.dg-fab { display:none; position:absolute;
+  bottom:calc(68px + env(safe-area-inset-bottom, 0px));
+  width:48px; height:48px; border-radius:50%;
+  border:none; font-size:20px; cursor:pointer; z-index:20; box-shadow:0 2px 8px #0008;
+  color:#fff; align-items:center; justify-content:center; transition:background 0.15s; }
+.dg-fab-lib   { left:16px;  background:var(--accent); }
+.dg-fab-props { right:16px; background:#2a3550; }
+.dg-fab:active { filter:brightness(0.85); }
+
+/* Sheet backdrop */
+.dg-sheet-backdrop { display:none; position:fixed; inset:0; background:#0007; z-index:29; }
+.dg-sheet-backdrop.visible { display:block; }
+
+/* ── Mobile: full bottom-sheet editor ───────────────────────────────── */
+@media (max-width: 900px) {
+  /* Condense toolbar */
+  .dg-toolbar { padding:4px 8px; gap:4px; overflow-x:auto; flex-wrap:nowrap; -webkit-overflow-scrolling:touch; }
+  .dg-name-input { width:110px; font-size:12px; }
   .dg-mode-label { display:none; }
-  /* Show a "view only" hint on mobile */
+  .dg-wire-color-picker { display:none; }
+  .dg-toolbar-sep { display:none; }
+  .dg-zoom-label { display:none; }
+
+  /* Library: desktop column → mobile bottom sheet (sits above bottom nav) */
+  .dg-library {
+    position:fixed; bottom:calc(60px + env(safe-area-inset-bottom,0px)); left:0; right:0; z-index:30;
+    width:auto; max-height:60vh; border-right:none;
+    border-top:1px solid var(--border); border-radius:16px 16px 0 0;
+    transform:translateY(calc(100% + 60px)); transition:transform 0.28s cubic-bezier(.2,.8,.4,1);
+    overflow:hidden; display:flex; flex-direction:column;
+  }
+  .dg-library.open { transform:translateY(0); }
+  .dg-lib-close { display:flex; }
+
+  /* Props: mobile bottom sheet */
+  .dg-props {
+    position:fixed; bottom:calc(60px + env(safe-area-inset-bottom,0px)); left:0; right:0; z-index:30;
+    width:auto; max-height:52vh; border-left:none;
+    border-top:1px solid var(--border); border-radius:16px 16px 0 0;
+    transform:translateY(calc(100% + 60px)); transition:transform 0.28s cubic-bezier(.2,.8,.4,1);
+    overflow-y:auto;
+  }
+  .dg-props.open { transform:translateY(0); }
+  .dg-props-close { display:flex; }
+
+  /* Show FAB buttons on mobile */
+  .dg-fab { display:flex; }
+
+  /* Touch targets: bigger buttons */
+  .dg-tool-btn, .dg-action-btn { min-width:36px; min-height:36px; font-size:17px; }
+  .dg-back-btn { min-width:36px; min-height:36px; }
+
+  /* Lib items: larger tap targets */
+  .dg-lib-item { padding:10px 14px; font-size:13px; }
+
+  /* Canvas fills the wrapper */
+  .dg-canvas-wrap { height:100%; }
+  .dg-main { overflow:hidden; }
+
+  /* Mobile touch hint */
   .dg-mobile-hint {
-    position:absolute; bottom:56px; left:50%; transform:translateX(-50%);
-    background:rgba(0,0,0,.72); color:#fff; font-size:11px; padding:4px 10px;
+    position:absolute; bottom:80px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,.75); color:#fff; font-size:12px; padding:6px 14px;
     border-radius:20px; pointer-events:none; white-space:nowrap;
     animation:fadeOutHint 3s ease 1.5s forwards;
   }
   @keyframes fadeOutHint { to { opacity:0; } }
-}
 
-@media (max-width: 768px) {
-  /* Hide non-essential toolbar items in diagram editor on mobile */
-  .dg-wire-color-picker { display:none; }
-  .dg-toolbar-sep       { display:none; }
-  .dg-mode-label        { display:none; }
-  /* Keep canvas viewport-filling */
-  .dg-main { position:relative; }
+  /* Handle bar at top of bottom sheets */
+  .dg-library::before, .dg-props::before {
+    content:''; display:block; width:40px; height:4px;
+    background:var(--border); border-radius:2px;
+    margin:8px auto 4px; flex-shrink:0;
+  }
 }
 
 /* Diagram editor: make content wrapper stretch to fill viewport */

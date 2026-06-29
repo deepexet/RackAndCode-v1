@@ -16,7 +16,7 @@ const TERM_R    = 5     // terminal circle radius
 const TERM_GAP  = 22    // spacing between terminals on same side
 const TERM_PAD  = 14    // padding from corner to first terminal
 const STUB      = 20    // wire stub length off terminal (must be multiple of GRID)
-const BUNDLE_SPACING = 12  // extra stub px per wire in a parallel bundle
+const BUNDLE_SPACING = 20  // extra stub px per wire in a parallel bundle (= GRID for natural corridor separation)
 const OBS_MARGIN = 20   // obstacle avoidance margin around components
 const HOP_R      = 9    // wire crossing bridge arc radius
 
@@ -494,8 +494,10 @@ function _collapseCollinear(pts){
 
 // Dijkstra on the rectilinear candidate grid formed by obstacle corners + terminals.
 // Returns [[x,y],...] waypoints from (sx,sy) to (ex,ey), shortest path with bend penalty.
-function _dijkstraRoute(sx,sy,ex,ey,obs){
-  const BEND=300  // bend penalty in px-equivalent: prefer 2-bend over 4-bend by ~100px
+// usedSegs = {byY:{y:[{x1,x2}]}, byX:{x:[{y1,y2}]}} — already-routed wire segments get a soft penalty
+function _dijkstraRoute(sx,sy,ex,ey,obs,usedSegs){
+  const BEND=300
+  const USED_PEN=4  // cost multiplier for a px that overlaps a previously routed wire
 
   const xS=new Set([sx,ex]),yS=new Set([sy,ey])
   for(const r of obs){xS.add(r.x1);xS.add(r.x2);yS.add(r.y1);yS.add(r.y2)}
@@ -505,6 +507,22 @@ function _dijkstraRoute(sx,sy,ex,ey,obs){
   const si=xs.indexOf(sx),sj=ys.indexOf(sy)
   const ei=xs.indexOf(ex),ej=ys.indexOf(ey)
   if(si<0||sj<0||ei<0||ej<0)return[[sx,sy],[ex,ey]]
+
+  // Returns penalty for a segment (flat per-segment, not per-px, for speed)
+  const usedPen=(x1,y1,x2,y2)=>{
+    if(!usedSegs)return 0
+    const len=Math.abs(x2-x1)+Math.abs(y2-y1)
+    if(Math.abs(y1-y2)<0.5){
+      const segs=usedSegs.byY[Math.round(y1)];if(!segs)return 0
+      const xm=Math.min(x1,x2),xM=Math.max(x1,x2)
+      for(const s of segs)if(s.x1<xM-1&&s.x2>xm+1)return len*USED_PEN
+    }else{
+      const segs=usedSegs.byX[Math.round(x1)];if(!segs)return 0
+      const ym=Math.min(y1,y2),yM=Math.max(y1,y2)
+      for(const s of segs)if(s.y1<yM-1&&s.y2>ym+1)return len*USED_PEN
+    }
+    return 0
+  }
 
   // State key: (xi * NY + yj) * 3 + dir  (dir: 0=none,1=h,2=v)
   const key=(xi,yj,d)=>(xi*NY+yj)*3+d
@@ -525,7 +543,7 @@ function _dijkstraRoute(sx,sy,ex,ey,obs){
     for(const nxi of[xi-1,xi+1]){
       if(nxi<0||nxi>=NX)continue
       if(!_segClear(xs[xi],ys[yj],xs[nxi],ys[yj],obs))continue
-      const nc=c+Math.abs(xs[nxi]-xs[xi])+(d===2?BEND:0)
+      const nc=c+Math.abs(xs[nxi]-xs[xi])+(d===2?BEND:0)+usedPen(xs[xi],ys[yj],xs[nxi],ys[yj])
       const nid=key(nxi,yj,1)
       if(nc<dist[nid]){dist[nid]=nc;prev[nid]=id;heap.push([nc,nxi,yj,1])}
     }
@@ -533,7 +551,7 @@ function _dijkstraRoute(sx,sy,ex,ey,obs){
     for(const nyj of[yj-1,yj+1]){
       if(nyj<0||nyj>=NY)continue
       if(!_segClear(xs[xi],ys[yj],xs[xi],ys[nyj],obs))continue
-      const nc=c+Math.abs(ys[nyj]-ys[yj])+(d===1?BEND:0)
+      const nc=c+Math.abs(ys[nyj]-ys[yj])+(d===1?BEND:0)+usedPen(xs[xi],ys[yj],xs[xi],ys[nyj])
       const nid=key(xi,nyj,2)
       if(nc<dist[nid]){dist[nid]=nc;prev[nid]=id;heap.push([nc,xi,nyj,2])}
     }
@@ -559,7 +577,7 @@ function _dijkstraRoute(sx,sy,ex,ey,obs){
   return pts
 }
 
-function routeWire(fp, fside, tp, tside, waypoints, comps, excludeIds, exitExtra=0, entryExtra=0) {
+function routeWire(fp, fside, tp, tside, waypoints, comps, excludeIds, exitExtra=0, entryExtra=0, usedSegs=null) {
   const s = STUB
   const sx = fp.x + (fside==='L'?-(s+exitExtra):fside==='R'?(s+exitExtra):0)
   const sy = fp.y + (fside==='T'?-(s+exitExtra):fside==='B'?(s+exitExtra):0)
@@ -591,7 +609,7 @@ function routeWire(fp, fside, tp, tside, waypoints, comps, excludeIds, exitExtra
     return { x1: c.x - m, y1: c.y - m, x2: c.x + def.w + m, y2: c.y + def.h + m }
   }).filter(Boolean)
 
-  const midPts = _collapseCollinear(_dijkstraRoute(sx, sy, ex, ey, obstacles))
+  const midPts = _collapseCollinear(_dijkstraRoute(sx, sy, ex, ey, obstacles, usedSegs))
   return dedupePts([[fp.x, fp.y], ...midPts, [tp.x, tp.y]])
 }
 
@@ -802,7 +820,7 @@ function manhattanize(pts) {
 }
 
 // Full point array for a wire — uses manual pts/waypoints or auto-routes
-function buildWirePts(wire, exitExtra=0, entryExtra=0) {
+function buildWirePts(wire, exitExtra=0, entryExtra=0, usedSegs=null) {
   if (!wire.from || !wire.to) return []
   const fromComp = _diagram.components.find(c => c.id === wire.from.compId)
   const toComp   = _diagram.components.find(c => c.id === wire.to.compId)
@@ -811,7 +829,22 @@ function buildWirePts(wire, exitExtra=0, entryExtra=0) {
   if (wire.pts && wire.pts.length >= 2) return wire.pts
   const fp = getTermPos(fromComp, wire.from.termId)
   const tp = getTermPos(toComp,   wire.to.termId)
-  return dedupePts(routeWire(fp, fp.side, tp, tp.side, wire.waypoints, _diagram.components, [fromComp.id, toComp.id], exitExtra, entryExtra))
+  return dedupePts(routeWire(fp, fp.side, tp, tp.side, wire.waypoints, _diagram.components, [fromComp.id, toComp.id], exitExtra, entryExtra, usedSegs))
+}
+
+// Collect non-terminal segments of a routed wire into usedSegs index
+function _addToUsedSegs(pts, used) {
+  // Skip first and last point (terminals) — stubs are always needed
+  for (let i = 2; i < pts.length - 2; i++) {
+    const [x1,y1] = pts[i-1], [x2,y2] = pts[i]
+    if (Math.abs(y1-y2) < 0.5 && Math.abs(x1-x2) > 1) {
+      const yk = Math.round(y1)
+      ;(used.byY[yk] = used.byY[yk] || []).push({ x1: Math.min(x1,x2), x2: Math.max(x1,x2) })
+    } else if (Math.abs(x1-x2) < 0.5 && Math.abs(y1-y2) > 1) {
+      const xk = Math.round(x1)
+      ;(used.byX[xk] = used.byX[xk] || []).push({ y1: Math.min(y1,y2), y2: Math.max(y1,y2) })
+    }
+  }
 }
 
 function computeAllWirePts() {
@@ -854,51 +887,83 @@ function computeAllWirePts() {
     items.forEach((item, i) => { entryExtra[item.wireId] = i * BUNDLE_SPACING })
   }
 
+  // Route wires sequentially; each wire adds a soft penalty for already-routed corridors
   const map = {}
+  const usedSegs = { byY: {}, byX: {} }
   for (const w of _diagram.wires) {
-    map[w.id] = buildWirePts(w, exitExtra[w.id] || 0, entryExtra[w.id] || 0)
+    const pts = buildWirePts(w, exitExtra[w.id] || 0, entryExtra[w.id] || 0, w.pts ? null : usedSegs)
+    map[w.id] = pts
+    if (!w.pts || w.pts.length < 2) _addToUsedSegs(pts, usedSegs)
   }
   applyParallelOffset(map)
   return map
 }
 
-// Offset wires that share the same rectilinear segment so they're visually distinct.
-// Works on the computed point arrays in-place (only interior points, not terminals).
+// Offset wires whose segments OVERLAP on the same axis so they're visually distinct.
+// Uses overlap detection (not exact match) so even partial overlaps are separated.
 function applyParallelOffset(map) {
-  const OFF = 3   // px offset per wire in a shared-segment group
-  // Collect all segments keyed by canonical form
-  // H segment: "H:y:xmin:xmax"  V segment: "V:x:ymin:ymax"
-  const segMap = {}  // key -> [{wireId, ptIdx (of end point), dir}]
+  const OFF = 10   // px lateral offset per wire in an overlapping group
+
+  // Collect segments; key on rounded coord so ±0.5px rounding noise merges correctly
+  const hByY = {}  // roundedY -> [{wid, i, xmin, xmax}]
+  const vByX = {}  // roundedX -> [{wid, i, ymin, ymax}]
   for (const [wid, pts] of Object.entries(map)) {
     for (let i = 1; i < pts.length; i++) {
       const [x1,y1] = pts[i-1], [x2,y2] = pts[i]
-      const isH = Math.abs(y1-y2) < 0.5
-      const isV = Math.abs(x1-x2) < 0.5
-      if (!isH && !isV) continue
-      const key = isH
-        ? `H:${Math.round(y1)}:${Math.round(Math.min(x1,x2))}:${Math.round(Math.max(x1,x2))}`
-        : `V:${Math.round(x1)}:${Math.round(Math.min(y1,y2))}:${Math.round(Math.max(y1,y2))}`
-      ;(segMap[key] = segMap[key] || []).push({ wid, i, isH })
+      if (Math.abs(y1-y2) < 0.5 && Math.abs(x1-x2) > 1) {
+        const yk = Math.round(y1)
+        ;(hByY[yk] = hByY[yk] || []).push({ wid, i, xmin: Math.min(x1,x2), xmax: Math.max(x1,x2) })
+      } else if (Math.abs(x1-x2) < 0.5 && Math.abs(y1-y2) > 1) {
+        const xk = Math.round(x1)
+        ;(vByX[xk] = vByX[xk] || []).push({ wid, i, ymin: Math.min(y1,y2), ymax: Math.max(y1,y2) })
+      }
     }
   }
-  // For each group with >1 wire, assign symmetric offsets
-  for (const group of Object.values(segMap)) {
-    if (group.length < 2) continue
-    const n = group.length
-    const start = -Math.floor(n / 2) * OFF + (n % 2 === 0 ? OFF / 2 : 0)
-    group.forEach(({ wid, i, isH }, idx) => {
-      const pts = map[wid]
-      const off = start + idx * OFF
-      // Offset both endpoints of the segment, but clamp to interior points only
-      const applyOff = (pi) => {
-        if (pi <= 0 || pi >= pts.length - 1) return  // skip terminal points
-        if (isH) pts[pi] = [pts[pi][0], pts[pi][1] + off]
-        else     pts[pi] = [pts[pi][0] + off, pts[pi][1]]
+
+  // Union-find grouping of segments that OVERLAP each other on the same axis.
+  // Returns array of groups (each group = array of segment objects).
+  function groupOverlapping(segs, minK, maxK) {
+    const n = segs.length
+    const par = segs.map((_, i) => i)
+    const find = i => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i] } return i }
+    const union = (a, b) => { par[find(a)] = find(b) }
+    for (let a = 0; a < n; a++) {
+      for (let b = a + 1; b < n; b++) {
+        if (segs[a].wid === segs[b].wid) continue  // same wire – don't self-group
+        if (segs[a][minK] < segs[b][maxK] - 1 && segs[a][maxK] > segs[b][minK] + 1) union(a, b)
       }
-      applyOff(i - 1)
-      applyOff(i)
-    })
+    }
+    const map2 = {}
+    segs.forEach((s, i) => { const r = find(i); (map2[r] = map2[r] || []).push(s) })
+    return Object.values(map2)
   }
+
+  // Apply offsets: one entry per unique wireId in the group (first seg wins)
+  function applyGroups(groups, isH) {
+    for (const group of groups) {
+      if (group.length < 2) continue
+      // Deduplicate: one offset per wireId
+      const byWire = {}
+      for (const seg of group) { if (!byWire[seg.wid]) byWire[seg.wid] = seg }
+      const entries = Object.values(byWire)
+      if (entries.length < 2) continue
+      const n = entries.length
+      const base = -Math.floor(n / 2) * OFF + (n % 2 === 0 ? OFF / 2 : 0)
+      entries.forEach(({ wid, i }, idx) => {
+        const pts = map[wid]
+        const off = base + idx * OFF
+        const apply = pi => {
+          if (pi <= 0 || pi >= pts.length - 1) return
+          pts[pi] = isH ? [pts[pi][0], pts[pi][1] + off] : [pts[pi][0] + off, pts[pi][1]]
+        }
+        apply(i - 1)
+        apply(i)
+      })
+    }
+  }
+
+  for (const segs of Object.values(hByY)) applyGroups(groupOverlapping(segs, 'xmin', 'xmax'), true)
+  for (const segs of Object.values(vByX)) applyGroups(groupOverlapping(segs, 'ymin', 'ymax'), false)
 }
 
 // Returns {x,y} if an H and a V segment strictly cross, else null
@@ -1885,54 +1950,97 @@ function bindSvgEvents() {
     updateToolbar()
   }, { passive: false })
 
-  // ── Touch: pan (1 finger) + pinch-to-zoom (2 fingers) ──────────────────
-  let _touch = null  // { type:'pan'|'pinch', x, y, dist }
-  function touchDist(t) {
-    const dx = t[0].clientX - t[1].clientX
-    const dy = t[0].clientY - t[1].clientY
-    return Math.hypot(dx, dy)
+  // ── Touch: full interaction layer (component drag, wire draw, pan, pinch-zoom) ─
+  let _touch = null  // active touch state
+  let _longPressTimer = null
+
+  function _touchDist(t) { return Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY) }
+  function _fireMouseAt(type, el, cx, cy, extra) {
+    el.dispatchEvent(new MouseEvent(type, { clientX:cx, clientY:cy, bubbles:true, cancelable:true, ...extra }))
   }
+
   _svgEl.addEventListener('touchstart', e => {
     e.preventDefault()
-    if (e.touches.length === 1) {
-      _touch = { type: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY }
-    } else if (e.touches.length === 2) {
-      _touch = { type: 'pinch', dist: touchDist(e.touches),
-        midX: (e.touches[0].clientX + e.touches[1].clientX) / 2,
-        midY: (e.touches[0].clientY + e.touches[1].clientY) / 2 }
+    clearTimeout(_longPressTimer)
+
+    if (e.touches.length === 2) {
+      // Escalate to pinch: cancel any pending drag first
+      if (_drag) { document.dispatchEvent(new MouseEvent('mouseup', { bubbles:true })) }
+      const mid = { x:(e.touches[0].clientX+e.touches[1].clientX)/2, y:(e.touches[0].clientY+e.touches[1].clientY)/2 }
+      _touch = { type:'pinch', dist:_touchDist(e.touches), midX:mid.x, midY:mid.y,
+                 panX:_pan.x, panY:_pan.y, baseZoom:_zoom }
+      return
     }
+
+    const t = e.touches[0]
+    const target = document.elementFromPoint(t.clientX, t.clientY) || _svgEl
+    _touch = { type:'interact', startX:t.clientX, startY:t.clientY, x:t.clientX, y:t.clientY, moved:false, target }
+    // Fire mousedown to start drag/select/wire on whatever is under the finger
+    _fireMouseAt('mousedown', target, t.clientX, t.clientY)
+    // Long press (500ms, no movement) → pan mode momentarily
+    _longPressTimer = setTimeout(() => {
+      if (_touch && !_touch.moved && !_drag) {
+        const prev = _mode; _mode = 'pan'; updateToolbar()
+        _fireMouseAt('mousedown', _svgEl, _touch.x, _touch.y)
+        _touch._wasLongPan = true; _touch._prevMode = prev
+      }
+    }, 480)
   }, { passive: false })
 
   _svgEl.addEventListener('touchmove', e => {
     e.preventDefault()
     if (!_touch) return
-    if (_touch.type === 'pan' && e.touches.length === 1) {
-      _pan.x += e.touches[0].clientX - _touch.x
-      _pan.y += e.touches[0].clientY - _touch.y
-      _touch.x = e.touches[0].clientX
-      _touch.y = e.touches[0].clientY
-      renderCanvas()
-    } else if (_touch.type === 'pinch' && e.touches.length === 2) {
-      const newDist = touchDist(e.touches)
-      const delta = newDist / _touch.dist
+
+    if (_touch.type === 'pinch' && e.touches.length === 2) {
+      const nd = _touchDist(e.touches)
       const rect = _svgEl.getBoundingClientRect()
-      const cx = _touch.midX - rect.left
-      const cy = _touch.midY - rect.top
-      const newZoom = Math.max(0.15, Math.min(4, _zoom * delta))
-      _pan.x = cx - (cx - _pan.x) * (newZoom / _zoom)
-      _pan.y = cy - (cy - _pan.y) * (newZoom / _zoom)
-      _zoom = newZoom
-      _touch.dist = newDist
-      renderCanvas()
+      const cx = _touch.midX - rect.left, cy = _touch.midY - rect.top
+      _zoom = Math.max(0.15, Math.min(4, _touch.baseZoom * (nd / _touch.dist)))
+      _pan.x = cx - (cx - _touch.panX) * (_zoom / _touch.baseZoom)
+      _pan.y = cy - (cy - _touch.panY) * (_zoom / _touch.baseZoom)
+      renderCanvas(); updateToolbar(); return
+    }
+
+    if (_touch.type === 'interact' && e.touches.length === 1) {
+      const t = e.touches[0]
+      if (Math.abs(t.clientX-_touch.startX) > 4 || Math.abs(t.clientY-_touch.startY) > 4) {
+        clearTimeout(_longPressTimer); _touch.moved = true
+      }
+      _touch.x = t.clientX; _touch.y = t.clientY
+      _fireMouseAt('mousemove', _svgEl, t.clientX, t.clientY)
     }
   }, { passive: false })
 
   _svgEl.addEventListener('touchend', e => {
-    if (e.touches.length === 0) _touch = null
-    else if (e.touches.length === 1 && _touch?.type === 'pinch') {
-      _touch = { type: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY }
+    e.preventDefault()
+    clearTimeout(_longPressTimer)
+
+    if (_touch?.type === 'pinch') {
+      if (e.touches.length === 1) {
+        const t = e.touches[0]
+        _touch = { type:'interact', startX:t.clientX, startY:t.clientY, x:t.clientX, y:t.clientY, moved:false, target:_svgEl }
+      } else { _touch = null }
+      return
     }
+
+    const ch = e.changedTouches[0]
+    document.dispatchEvent(new MouseEvent('mouseup', { clientX:ch.clientX, clientY:ch.clientY, bubbles:true }))
+
+    // Tap (no drag): fire click so wire terminals and selection work
+    if (_touch && !_touch.moved) {
+      const el = document.elementFromPoint(ch.clientX, ch.clientY)
+      if (el) _fireMouseAt('click', el, ch.clientX, ch.clientY)
+    }
+    // Restore mode if long-press-pan was used
+    if (_touch?._wasLongPan && _touch._prevMode) { _mode = _touch._prevMode; updateToolbar() }
+    _touch = null
   }, { passive: false })
+
+  _svgEl.addEventListener('touchcancel', () => {
+    clearTimeout(_longPressTimer)
+    if (_drag) document.dispatchEvent(new MouseEvent('mouseup', { bubbles:true }))
+    _touch = null
+  }, { passive: true })
 
   // Double-click canvas → add text label
   _svgEl.addEventListener('dblclick', e => {
@@ -1972,12 +2080,27 @@ function renderProps() {
   if (!panel) return
 
   if (!_selected) {
-    panel.innerHTML = `<div class="dg-props-empty">
-      <i class="ti ti-hand-finger"></i>
-      <p>Выберите элемент для настройки</p>
-      <p style="font-size:11px;color:var(--text-4);margin-top:4px">Двойной клик по компоненту — переименовать</p>
-    </div>`
+    panel.innerHTML = `
+      <div class="dg-props-header">
+        <div class="dg-props-title">Свойства</div>
+        <button class="dg-props-close" id="dg-props-close-inner" title="Закрыть"><i class="ti ti-x"></i></button>
+      </div>
+      <div class="dg-props-empty">
+        <i class="ti ti-hand-finger"></i>
+        <p>Выберите элемент для настройки</p>
+        <p style="font-size:11px;color:var(--text-4);margin-top:4px">Двойной клик по компоненту — переименовать</p>
+      </div>`
+    _el?.querySelector('#dg-props-close-inner')?.addEventListener('click', () => {
+      panel.classList.remove('open')
+      _el?.querySelector('#dg-sheet-backdrop')?.classList.remove('visible')
+    })
     return
+  }
+
+  // On mobile: auto-open props sheet when something is selected
+  if (window.innerWidth <= 900) {
+    panel.classList.add('open')
+    _el?.querySelector('#dg-sheet-backdrop')?.classList.add('visible')
   }
 
   if (_selected.type === 'comp') {
@@ -1985,7 +2108,10 @@ function renderProps() {
     if (!comp) return
     const def = getCompDef(comp.type)
     panel.innerHTML = `
-      <div class="dg-props-title"><i class="ti ti-cpu"></i> Компонент</div>
+      <div class="dg-props-header">
+        <div class="dg-props-title"><i class="ti ti-cpu"></i> Компонент</div>
+        <button class="dg-props-close" id="dg-props-close-inner" title="Закрыть"><i class="ti ti-x"></i></button>
+      </div>
       <div class="ui-form-row" style="margin-bottom:8px">
         <label style="font-size:11px;color:var(--text-4)">Тип</label>
         <div style="font-size:12px;color:var(--text-2)">${def?.label || comp.type}</div>
@@ -2024,13 +2150,19 @@ function renderProps() {
       _diagram.wires = _diagram.wires.filter(w => w.from?.compId !== _selected.id && w.to?.compId !== _selected.id)
       _diagram.modified = true; _selected = null; renderCanvas(); renderProps()
     })
+    panel.querySelector('#dg-props-close-inner')?.addEventListener('click', () => {
+      panel.classList.remove('open'); _el?.querySelector('#dg-sheet-backdrop')?.classList.remove('visible')
+    })
   }
 
   if (_selected.type === 'wire') {
     const wire = _diagram.wires.find(w => w.id === _selected.id)
     if (!wire) return
     panel.innerHTML = `
-      <div class="dg-props-title"><i class="ti ti-minus"></i> Провод</div>
+      <div class="dg-props-header">
+        <div class="dg-props-title"><i class="ti ti-minus"></i> Провод</div>
+        <button class="dg-props-close" id="dg-props-close-inner" title="Закрыть"><i class="ti ti-x"></i></button>
+      </div>
       <div class="ui-form-row" style="margin-bottom:8px">
         <label style="font-size:11px;color:var(--text-4)">Цвет</label>
         <div class="dg-wire-colors">
@@ -2070,6 +2202,9 @@ function renderProps() {
       saveUndo()
       _diagram.wires = _diagram.wires.filter(w => w.id !== _selected.id)
       _diagram.modified = true; _selected = null; renderCanvas(); renderProps()
+    })
+    panel.querySelector('#dg-props-close-inner')?.addEventListener('click', () => {
+      panel.classList.remove('open'); _el?.querySelector('#dg-sheet-backdrop')?.classList.remove('visible')
     })
   }
 }
@@ -2451,9 +2586,12 @@ function render() {
 
       <!-- Main area -->
       <div class="dg-main">
-        <!-- Library sidebar -->
-        <div class="dg-library">
-          <div class="dg-library-title">Компоненты</div>
+        <!-- Library sidebar (desktop: left panel; mobile: bottom sheet) -->
+        <div class="dg-library" id="dg-library">
+          <div class="dg-library-header">
+            <div class="dg-library-title">Компоненты</div>
+            <button class="dg-lib-close" id="dg-lib-close" title="Закрыть"><i class="ti ti-x"></i></button>
+          </div>
           <input class="dg-lib-search" id="dg-lib-search" type="text" placeholder="Поиск…"
             style="width:100%;box-sizing:border-box;padding:5px 8px;margin-bottom:6px;background:#1a2030;border:1px solid #ffffff18;border-radius:4px;color:#e0e0e0;font-size:12px;outline:none">
           <div class="dg-library-scroll">
@@ -2485,18 +2623,32 @@ function render() {
         </div>
 
         <!-- Canvas -->
-        <svg class="dg-canvas" id="dg-canvas" xmlns="http://www.w3.org/2000/svg"
-          style="cursor:${_mode==='pan'?'grab':'default'};touch-action:none">
-        </svg>
+        <div class="dg-canvas-wrap">
+          <svg class="dg-canvas" id="dg-canvas" xmlns="http://www.w3.org/2000/svg"
+            style="cursor:${_mode==='pan'?'grab':'default'};touch-action:none">
+          </svg>
+          <!-- Mobile FABs (floating action buttons) -->
+          <button class="dg-fab dg-fab-lib" id="dg-lib-toggle" title="Компоненты">
+            <i class="ti ti-layout-grid-add"></i>
+          </button>
+          <button class="dg-fab dg-fab-props" id="dg-props-toggle" title="Свойства">
+            <i class="ti ti-settings"></i>
+          </button>
+        </div>
 
-        <!-- Properties panel -->
-        <div class="dg-props">
-          <div class="dg-props-title">Свойства</div>
+        <!-- Properties panel (desktop: right panel; mobile: bottom sheet) -->
+        <div class="dg-props" id="dg-props">
+          <div class="dg-props-header">
+            <div class="dg-props-title">Свойства</div>
+            <button class="dg-props-close" id="dg-props-close" title="Закрыть"><i class="ti ti-x"></i></button>
+          </div>
           <div class="dg-props-empty">
             <i class="ti ti-hand-finger"></i>
             <p>Выберите элемент</p>
           </div>
         </div>
+        <!-- Mobile overlay backdrop -->
+        <div class="dg-sheet-backdrop" id="dg-sheet-backdrop"></div>
       </div>
     </div>`
 
@@ -2509,7 +2661,19 @@ function render() {
   })
 
   _el.querySelector('#dg-back')?.addEventListener('click', () => {
-    if (_diagram.modified && !confirm('Есть несохранённые изменения. Выйти?')) return
+    if (_diagram.modified) {
+      // Use toast-style inline warning instead of blocking confirm()
+      const btn = _el.querySelector('#dg-back')
+      if (!btn.dataset.confirmPending) {
+        btn.dataset.confirmPending = '1'
+        btn.title = 'Нажмите ещё раз для выхода без сохранения'
+        btn.style.color = '#f59e0b'
+        setTimeout(() => { delete btn.dataset.confirmPending; btn.style.color = ''; btn.title = '' }, 3000)
+        window.toast?.('Нажмите ← снова для выхода без сохранения', 'warning')
+        return
+      }
+      delete btn.dataset.confirmPending; btn.style.color = ''; btn.title = ''
+    }
     showHome()
   })
 
@@ -2611,10 +2775,38 @@ function render() {
     })
   })
 
-  // Library drag & drop
+  // Mobile bottom-sheet helpers
+  const _openSheet = (id) => {
+    _el.querySelector(id)?.classList.add('open')
+    _el.querySelector('#dg-sheet-backdrop')?.classList.add('visible')
+  }
+  const _closeSheets = () => {
+    _el.querySelector('#dg-library')?.classList.remove('open')
+    _el.querySelector('#dg-props')?.classList.remove('open')
+    _el.querySelector('#dg-sheet-backdrop')?.classList.remove('visible')
+  }
+  _el.querySelector('#dg-lib-toggle')?.addEventListener('click', () => _openSheet('#dg-library'))
+  _el.querySelector('#dg-lib-close')?.addEventListener('click', () => _closeSheets())
+  _el.querySelector('#dg-props-toggle')?.addEventListener('click', () => _openSheet('#dg-props'))
+  _el.querySelector('#dg-props-close')?.addEventListener('click', () => _closeSheets())
+  _el.querySelector('#dg-sheet-backdrop')?.addEventListener('click', () => _closeSheets())
+
+  // Library drag & drop (desktop) + touch-tap-to-place (mobile)
   _el.querySelectorAll('.dg-lib-item').forEach(item => {
     item.addEventListener('dragstart', e => {
       e.dataTransfer.setData('text/plain', item.dataset.type)
+    })
+    // Mobile: tap library item → place at canvas centre
+    item.addEventListener('click', () => {
+      if (window.innerWidth > 900) return  // desktop uses drag-drop
+      const type = item.dataset.type
+      if (!type || !getCompDef(type)) return
+      const rect = _svgEl?.getBoundingClientRect()
+      if (!rect) return
+      const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2
+      dropComponent(type, cx, cy)
+      _closeSheets()
+      window.toast?.(`Добавлен: ${getCompDef(type)?.label || type}`, 'success')
     })
   })
 
