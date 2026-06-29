@@ -405,12 +405,12 @@ function getCompDef(type) {
 function uid() { return Math.random().toString(36).slice(2,10) }
 function snap(v) { return Math.round(v / GRID) * GRID }
 
-function getTermPos(comp, termId) {
+// Raw terminal position (no rotation applied — used for visual rendering inside rotated group)
+function getTermPosRaw(comp, termId) {
   const def = getCompDef(comp.type)
   if (!def) return { x:comp.x, y:comp.y }
   const term = def.terminals.find(t => t.id === termId)
   if (!term) return { x:comp.x, y:comp.y }
-
   const w = def.w, h = def.h
   switch (term.side) {
     case 'L': return { x: comp.x,   y: comp.y + HEADER_H + TERM_PAD + term.pos * TERM_GAP, side:'L' }
@@ -418,6 +418,27 @@ function getTermPos(comp, termId) {
     case 'T': return { x: comp.x + TERM_PAD + term.pos * TERM_GAP, y: comp.y,   side:'T' }
     case 'B': return { x: comp.x + TERM_PAD + term.pos * TERM_GAP, y: comp.y+h, side:'B' }
     default:  return { x: comp.x, y: comp.y }
+  }
+}
+
+// Rotated terminal position (used by wire router and wire start/end resolution)
+function getTermPos(comp, termId) {
+  const raw = getTermPosRaw(comp, termId)
+  const deg = comp.rotation || 0
+  if (!deg) return raw
+  const def = getCompDef(comp.type)
+  const cx = comp.x + def.w / 2, cy = comp.y + def.h / 2
+  const rad = deg * Math.PI / 180
+  const cos = Math.cos(rad), sin = Math.sin(rad)
+  const dx = raw.x - cx, dy = raw.y - cy
+  const rx = cx + dx * cos - dy * sin
+  const ry = cy + dx * sin + dy * cos
+  const sides = ['T', 'R', 'B', 'L']
+  const steps = Math.round(deg / 90) % 4
+  const sideIdx = raw.side ? sides.indexOf(raw.side) : -1
+  return {
+    x: rx, y: ry,
+    side: sideIdx >= 0 ? sides[(sideIdx + steps) % 4] : raw.side
   }
 }
 
@@ -1239,6 +1260,16 @@ function renderCustomCompSvg(comp, def, sel) {
 function renderCompSvg(comp, isSelected, isMultiSel) {
   const def = getCompDef(comp.type)
   if (!def) return ''
+  let svg = _renderCompSvgInner(comp, def, isSelected, isMultiSel)
+  const deg = comp.rotation || 0
+  if (deg) {
+    const cx = comp.x + def.w / 2, cy = comp.y + def.h / 2
+    svg = svg.replace(/^<g class="dg-comp"/, `<g class="dg-comp" transform="rotate(${deg},${cx},${cy})"`)
+  }
+  return svg
+}
+
+function _renderCompSvgInner(comp, def, isSelected, isMultiSel) {
   if (comp.type.startsWith('custom_')) return renderCustomCompSvg(comp, def, isSelected, isMultiSel)
   const { x, y } = comp
   const w = def.w, h = def.h
@@ -1359,7 +1390,7 @@ function renderCompSvg(comp, isSelected, isMultiSel) {
 }
 
 function renderTermSvg(comp, term) {
-  const { x, y, side } = getTermPos(comp, term.id)
+  const { x, y, side } = getTermPosRaw(comp, term.id)
   const LPAD = 8
   const lx = side==='L' ? x-LPAD : side==='R' ? x+LPAD : x
   const ly = side==='T' ? y-LPAD : side==='B' ? y+LPAD : y
@@ -2349,6 +2380,7 @@ function render() {
         <button class="dg-action-btn" id="dg-undo" title="Отменить (Ctrl+Z)"><i class="ti ti-arrow-back-up"></i></button>
         <button class="dg-action-btn" id="dg-redo" title="Повторить (Ctrl+Y)"><i class="ti ti-arrow-forward-up"></i></button>
         <button class="dg-action-btn" id="dg-center" title="Вписать в экран"><i class="ti ti-focus-centered"></i></button>
+        <button class="dg-action-btn" id="dg-rotate-sel" title="Повернуть на 90° (R)"><i class="ti ti-rotate-clockwise"></i></button>
         <button class="dg-action-btn" id="dg-delete-sel" title="Удалить (Del)"><i class="ti ti-trash"></i></button>
 
         <div class="dg-toolbar-sep"></div>
@@ -2465,6 +2497,22 @@ function render() {
     renderCanvas()
     const btn = _el.querySelector('#dg-simulate')
     if (btn) { btn.classList.toggle('active', _simulating); btn.style.color = _simulating ? '#22c55e' : '' }
+  })
+
+  _el.querySelector('#dg-rotate-sel')?.addEventListener('click', () => {
+    const ids = _multiSel.size > 0 ? [..._multiSel] : (_selected?.type === 'comp' ? [_selected.id] : [])
+    if (!ids.length) return
+    saveUndo()
+    ids.forEach(id => {
+      const c = _diagram.components.find(cc => cc.id === id)
+      if (c) {
+        c.rotation = ((c.rotation || 0) + 90) % 360
+        _diagram.wires.forEach(w => {
+          if (w.pts && (w.from?.compId === id || w.to?.compId === id)) w.pts = null
+        })
+      }
+    })
+    _diagram.modified = true; renderCanvas(); renderProps()
   })
 
   _el.querySelector('#dg-delete-sel')?.addEventListener('click', () => {
@@ -2588,6 +2636,9 @@ function render() {
       return
     }
     if (e.key === 'v' || e.key === 'V') { _mode='select'; updateToolbar() }
+    if ((e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault(); _el.querySelector('#dg-rotate-sel')?.click()
+    }
     if (e.key === 'w' || e.key === 'W') { _mode='wire'; updateToolbar() }
     if (e.key === 's' || e.key === 'S') { _el?.querySelector('#dg-simulate')?.click() }
     if (e.key === ' ' && !e.repeat) {
