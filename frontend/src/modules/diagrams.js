@@ -1257,6 +1257,10 @@ function renderWireSvg(wire, isSelected, pts, crossings) {
 
   let handles = ''
   if (isSelected) {
+    // Scale handle size to stay ~10px on screen regardless of zoom
+    const hs = Math.max(6, Math.min(20, 10 / _zoom))
+    const hr = Math.max(4, Math.min(14, 6 / _zoom))
+    const sw = Math.max(1, 1.5 / _zoom)
     // Segment-drag handles (squares at midpoints) — skip terminal stubs
     for (let i = 2; i <= pts.length - 2; i++) {
       const [x1, y1] = pts[i - 1], [x2, y2] = pts[i]
@@ -1264,16 +1268,16 @@ function renderWireSvg(wire, isSelected, pts, crossings) {
       const mx = (x1+x2)/2, my = (y1+y2)/2
       const isH = Math.abs(y1-y2) < 0.5
       handles += `<rect class="dg-wire-handle" data-wire="${wire.id}" data-seg="${i}"
-        x="${mx-5}" y="${my-5}" width="10" height="10" rx="2"
-        fill="#00b4d8" stroke="#fff" stroke-width="1.5" opacity="0.85"
+        x="${mx-hs/2}" y="${my-hs/2}" width="${hs}" height="${hs}" rx="${hs*0.2}"
+        fill="#00b4d8" stroke="#fff" stroke-width="${sw}" opacity="0.9"
         style="cursor:${isH?'ns-resize':'ew-resize'}"/>`
     }
     // Vertex handles (circles at corner points) — for precise repositioning
     for (let i = 1; i < pts.length - 1; i++) {
       const [vx, vy] = pts[i]
       handles += `<circle class="dg-wire-vertex" data-wire="${wire.id}" data-pt="${i}"
-        cx="${vx}" cy="${vy}" r="5"
-        fill="#ff9800" stroke="#fff" stroke-width="1.5" opacity="0.92"
+        cx="${vx}" cy="${vy}" r="${hr}"
+        fill="#ff9800" stroke="#fff" stroke-width="${sw}" opacity="0.95"
         style="cursor:move"/>`
     }
   }
