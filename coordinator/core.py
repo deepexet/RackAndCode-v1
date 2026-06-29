@@ -167,7 +167,7 @@ def build_agent_command(job: dict[str, Any], executable: str) -> list[str]:
             "--max-turns",
             str(max_turns),
             "--permission-mode",
-            "dontAsk",
+            "acceptEdits",
         ]
     raise ValueError("unsupported assigned agent")
 

@@ -65,7 +65,8 @@ class CoordinatorStoreTests(unittest.TestCase):
         claude_job = self.store.create_job(self.payload())
         claude_cmd = build_agent_command(claude_job, "/usr/local/bin/claude")
         self.assertEqual(claude_cmd[0], "/usr/local/bin/claude")
-        self.assertIn("dontAsk", claude_cmd)
+        self.assertIn("acceptEdits", claude_cmd)
+        self.assertNotIn("bypassPermissions", claude_cmd)
         self.assertIn("--verbose", claude_cmd)
 
         codex_job = self.store.create_job(

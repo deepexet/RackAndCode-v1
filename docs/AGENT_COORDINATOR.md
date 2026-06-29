@@ -14,7 +14,7 @@ The coordinator does not let agents freely share one working directory. It assig
 - Jobs cannot target `main` or `master`.
 - Worktree paths must be registered by Git for the configured repository.
 - Agent commands use argv arrays and `shell=False`.
-- Codex runs with `workspace-write`; Claude runs with `dontAsk`, so missing permissions fail instead of silently expanding access.
+- Codex runs with `workspace-write`; Claude runs with `acceptEdits` inside its registered Git worktree. Neither agent receives unrestricted permission bypass.
 - Successful jobs requiring review stop in `review` status.
 - Rate-limit output becomes the explicit `rate_limited` state.
 
