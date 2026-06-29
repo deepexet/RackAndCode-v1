@@ -2146,6 +2146,8 @@ function render() {
         <!-- Library sidebar -->
         <div class="dg-library">
           <div class="dg-library-title">Компоненты</div>
+          <input class="dg-lib-search" id="dg-lib-search" type="text" placeholder="Поиск…"
+            style="width:100%;box-sizing:border-box;padding:5px 8px;margin-bottom:6px;background:#1a2030;border:1px solid #ffffff18;border-radius:4px;color:#e0e0e0;font-size:12px;outline:none">
           <div class="dg-library-scroll">
             <div class="dg-lib-cat">
               <div class="dg-lib-cat-label"><i class="ti ti-tools"></i> Кастом</div>
@@ -2283,6 +2285,20 @@ function render() {
   _el.querySelectorAll('.dg-lib-item').forEach(item => {
     item.addEventListener('dragstart', e => {
       e.dataTransfer.setData('text/plain', item.dataset.type)
+    })
+  })
+
+  // Library search filter
+  _el.querySelector('#dg-lib-search')?.addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase()
+    _el.querySelectorAll('.dg-lib-item').forEach(item => {
+      const label = item.querySelector('span')?.textContent.toLowerCase() || ''
+      const type = (item.dataset.type || '').toLowerCase()
+      item.style.display = (!q || label.includes(q) || type.includes(q)) ? '' : 'none'
+    })
+    _el.querySelectorAll('.dg-lib-cat').forEach(cat => {
+      const visible = [...cat.querySelectorAll('.dg-lib-item')].some(i => i.style.display !== 'none')
+      cat.style.display = visible ? '' : 'none'
     })
   })
 
