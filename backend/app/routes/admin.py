@@ -447,7 +447,7 @@ async def coordinator_job_details(job_id: str, ctx: Auth, after: int = 0):
 @router.post("/coordinator/jobs/{job_id}/{action}")
 async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
     _require_authenticated_admin(ctx)
-    if action not in {"start", "retry", "cancel", "approve", "reject"}:
+    if action not in {"start", "retry", "cancel", "approve", "reject", "remove-worktree"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown coordinator action")
     result = await _coordinator(f"/api/v1/jobs/{job_id}/{action}", method="POST", body={})
     ctx.store.audit(

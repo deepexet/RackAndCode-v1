@@ -248,6 +248,7 @@ function renderAgents(d) {
   const agents = d.agents || []
   const jobs = d.jobs || []
   const worktrees = d.worktrees || []
+  const scheduler = health.scheduler || {}
   const running = jobs.filter(j => j.status === 'running').length
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
   const controlsReady = Boolean(health.controlConfigured)
@@ -278,6 +279,10 @@ function renderAgents(d) {
         ${!controlsReady || !health.executionEnabled ? 'disabled title="Enable autonomous execution to retry jobs"' : ''}>
         <i class="ti ti-refresh"></i> ${continuation ? 'Continue' : 'Retry'}</button>`)
     }
+    if (job.managedWorktree && ['completed', 'failed', 'cancelled', 'rate_limited'].includes(job.status)) {
+      buttons.push(`<button class="ui-btn ui-btn--sm" data-coordinator-action="remove-worktree" data-job-id="${esc(job.id)}"
+        ${!controlsReady ? 'disabled' : ''}><i class="ti ti-archive"></i> Remove worktree</button>`)
+    }
     return buttons.length ? `<div class="adm-agent-actions">${buttons.join('')}</div>` : '<span class="ui-dim">—</span>'
   }
   return `
@@ -293,8 +298,8 @@ function renderAgents(d) {
       ${statCards([
         { icon: 'ti-heartbeat', label: 'Service', value: health.status === 'ok' ? 'Online' : 'Offline', color: health.status === 'ok' ? 'var(--green)' : 'var(--red)' },
         { icon: 'ti-player-play', label: 'Running', value: running, color: 'var(--blue)' },
+        { icon: 'ti-list', label: 'Queued', value: scheduler.queued ?? jobs.filter(j => j.status === 'queued').length, color: 'var(--accent)' },
         { icon: 'ti-eye-check', label: 'Needs review', value: review, color: 'var(--amber)' },
-        { icon: 'ti-git-branch', label: 'Worktrees', value: worktrees.length, color: 'var(--accent)' },
       ])}
       <div class="adm-section-header" style="margin-top:18px"><h3>Installed agents</h3></div>
       ${table({
@@ -321,6 +326,7 @@ function renderAgents(d) {
       })}
       <p class="ui-dim" style="margin-top:14px;font-size:12px">
         Autonomous execution: <strong>${health.executionEnabled ? 'enabled' : 'disabled'}</strong> ·
+        Scheduler: <strong>${scheduler.enabled ? `enabled (${scheduler.maxConcurrent || 0} parallel, ${scheduler.maxPerAgent || 0}/agent)` : 'disabled'}</strong> ·
         Control token: <strong>${health.controlConfigured ? 'configured' : 'not configured'}</strong>.
         Actions are available only to an authenticated Administrator and every action is audited.
       </p>
@@ -486,8 +492,8 @@ function openAgentJobCreate() {
     const branch = String(item.branch || '').replace('refs/heads/', '')
     return item.worktree && branch && !['main', 'master'].includes(branch)
   })
-  if (!agents.length || !worktrees.length) {
-    window.toast?.('An available agent and a non-integration worktree are required', 'error')
+  if (!agents.length) {
+    window.toast?.('An available agent is required', 'error')
     return
   }
   const { close } = openModal({
@@ -499,6 +505,9 @@ function openAgentJobCreate() {
       <div class="ui-form-row"><label>Instructions</label>
         <textarea class="ui-input" name="instructions" rows="8" maxlength="50000" required
           placeholder="Scope, expected output, verification, constraints, and where to stop for review"></textarea></div>
+      <div class="ui-form-row"><label>File/module scope</label>
+        <input class="ui-input" name="scopePaths" placeholder="backend/app/routes/projects.py, frontend/src/modules/projects.js">
+        <small class="ui-dim">Comma-separated repository paths. Overlapping scopes are never run concurrently.</small></div>
       <div class="ui-form-grid">
         <div class="ui-form-row"><label>Agent</label>
           <select class="ui-input" name="assignedAgent">
@@ -507,7 +516,11 @@ function openAgentJobCreate() {
         <div class="ui-form-row"><label>Turn budget</label>
           <input class="ui-input" name="maxTurns" type="number" min="1" max="20" value="10"></div>
       </div>
-      <div class="ui-form-row"><label>Isolated worktree</label>
+      <label class="ui-check-row"><input type="checkbox" name="autoWorktree" checked>
+        <span>Create a unique isolated worktree automatically</span></label>
+      <div class="ui-form-row"><label>Base revision for automatic worktree</label>
+        <input class="ui-input" name="baseRef" value="HEAD" placeholder="HEAD, branch, tag, or commit"></div>
+      <div class="ui-form-row"><label>Existing worktree (used only when automatic creation is disabled)</label>
         <select class="ui-input" name="worktreePath">
           ${worktrees.map(item => {
             const branch = String(item.branch).replace('refs/heads/', '')
@@ -516,8 +529,7 @@ function openAgentJobCreate() {
         </select></div>
       <label class="ui-check-row"><input type="checkbox" name="requiresReview" checked>
         <span>Stop for Codex/human review before completion</span></label>
-      <label class="ui-check-row"><input type="checkbox" name="startImmediately" checked>
-        <span>Start immediately after creation</span></label>
+      <p class="ui-dim">The persistent scheduler starts queued jobs automatically when the agent and worktree slots are available.</p>
     </form>`,
     footer: `<button class="ui-btn ui-btn--primary" id="adm-agent-job-save"><i class="ti ti-player-play"></i> Create job</button>
              <button class="ui-btn" id="adm-agent-job-cancel">Cancel</button>`,
@@ -527,9 +539,10 @@ function openAgentJobCreate() {
     const form = document.getElementById('adm-agent-job-form')
     if (!form?.reportValidity()) return
     const fields = new FormData(form)
+    const autoWorktree = fields.get('autoWorktree') === 'on'
     const worktreePath = String(fields.get('worktreePath') || '')
     const selectedWorktree = worktrees.find(item => item.worktree === worktreePath)
-    if (!selectedWorktree) return window.toast?.('Select a registered worktree', 'error')
+    if (!autoWorktree && !selectedWorktree) return window.toast?.('Select a registered worktree', 'error')
     const button = event.currentTarget
     button.disabled = true
     try {
@@ -540,17 +553,15 @@ function openAgentJobCreate() {
           title: String(fields.get('title') || '').trim(),
           instructions: String(fields.get('instructions') || '').trim(),
           assignedAgent: String(fields.get('assignedAgent') || ''),
-          worktreePath,
-          branchName: String(selectedWorktree.branch || '').replace('refs/heads/', ''),
+          autoWorktree,
+          baseRef: String(fields.get('baseRef') || 'HEAD').trim(),
+          worktreePath: autoWorktree ? null : worktreePath,
+          branchName: autoWorktree ? null : String(selectedWorktree.branch || '').replace('refs/heads/', ''),
           requiresReview: fields.get('requiresReview') === 'on',
           maxTurns: Number(fields.get('maxTurns') || 10),
+          scopePaths: String(fields.get('scopePaths') || '').split(',').map(value => value.trim()).filter(Boolean),
         }),
       })
-      if (fields.get('startImmediately') === 'on' && created.job?.id) {
-        await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(created.job.id)}/start`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-        })
-      }
       close()
       delete _data.agents
       window.toast?.('Agent job created', 'success')
@@ -661,6 +672,7 @@ function bindTabEvents() {
           cancel: 'Cancel this agent job?',
           approve: 'Approve this completed job?',
           reject: 'Reject this job and mark it failed?',
+          'remove-worktree': 'Remove this clean managed worktree? The Git branch will be preserved.',
         }
         if (!window.confirm(confirmations[action] || 'Continue?')) return
         button.disabled = true

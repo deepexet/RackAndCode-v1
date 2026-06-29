@@ -86,6 +86,7 @@ class FastApiPreviewTests(unittest.TestCase):
                         {"job": {"id": "job-1", "status": "running"}},
                         {"logs": [{"id": 8, "message": "working"}]},
                         {"events": [{"eventType": "job.status_changed"}]},
+                        {"review": {"dirty": True, "changeCount": 1}},
                     ]
                     with patch(
                         "app.routes.admin._coordinator",

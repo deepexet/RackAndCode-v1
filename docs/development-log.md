@@ -187,3 +187,15 @@ For each material release, append a dated section containing product version, us
 - Added server-side Git worktree inspection and a Live review summary with changed paths and staged/unstaged diff statistics; source contents remain excluded from the response.
 - Added a review-feedback loop: Request changes persists Codex feedback, resumes the same Claude context and returns corrected work for another review cycle.
 - Verification: 10 Coordinator tests, Python compile check and Vite production build passed.
+
+## 2026-06-29 — Agent Coordinator v1.0 parallel development readiness
+
+- Added automatic unique Git branches and managed worktrees for new agent jobs.
+- Added a persistent FIFO scheduler with two total slots, one slot per agent, worktree locks and declared path-scope conflict locks.
+- Added restart recovery for orphaned running jobs and process-group cancellation.
+- Added safe managed-worktree removal that refuses active, unreviewed or dirty worktrees and preserves branches.
+- Added a local supervisor for Coordinator, FastAPI and Vite with shared private token, health/status commands and component restart behavior.
+- Updated Admin → Agents with scheduler capacity, queued count, automatic worktree creation, base revision, task scope and cleanup actions.
+- Classified Codex ChatGPT usage-limit output as `rate_limited` rather than an implementation failure.
+- Live acceptance created and launched Codex and Claude jobs concurrently in separate managed worktrees; temporary worktrees were inspected and removed without cross-write conflicts.
+- Verification: 19 focused Coordinator/FastAPI tests, Python compile checks, Vite production build, supervisor restart/health check and live two-agent scheduler smoke test.

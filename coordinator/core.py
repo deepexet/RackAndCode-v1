@@ -7,6 +7,7 @@ safety behavior can be tested without starting FastAPI or either agent CLI.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -46,6 +47,9 @@ class JobCreate:
     created_by: str = "owner"
     requires_review: bool = True
     max_turns: int = 8
+    managed_worktree: bool = False
+    base_ref: str = ""
+    scope_paths: tuple[str, ...] = ()
 
     def validate(self) -> None:
         if not self.title.strip():
@@ -62,6 +66,10 @@ class JobCreate:
             raise ValueError("branch_name is required")
         if self.branch_name in {"main", "master"}:
             raise ValueError("agent jobs cannot run directly on the integration branch")
+        for path in self.scope_paths:
+            normalized = path.strip().strip("/")
+            if not normalized or normalized.startswith(".") or ".." in Path(normalized).parts:
+                raise ValueError("scope paths must be safe repository-relative paths")
 
 
 @dataclass(frozen=True)
@@ -123,6 +131,73 @@ def discover_worktrees(repo_root: Path) -> list[dict[str, Any]]:
         else:
             current[key] = value
     return worktrees
+
+
+def create_managed_worktree(
+    repo_root: Path,
+    worktree_root: Path,
+    *,
+    agent: str,
+    title: str,
+    base_ref: str = "HEAD",
+) -> dict[str, str]:
+    if agent not in AGENTS:
+        raise ValueError("agent must be codex or claude")
+    if not base_ref or base_ref.startswith("-") or not re.fullmatch(r"[A-Za-z0-9._/@{}^~:+-]+", base_ref):
+        raise ValueError("base ref contains unsupported characters")
+    safe_title = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:36] or "task"
+    suffix = uuid.uuid4().hex[:8]
+    branch = f"{agent}/rp-{safe_title}-{suffix}"
+    worktree_root = Path(worktree_root).expanduser().resolve()
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    path = worktree_root / f"{agent}-{safe_title}-{suffix}"
+    verify = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", f"{base_ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if verify.returncode != 0:
+        raise ValueError(f"unknown base ref: {base_ref}")
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "worktree", "add", "-b", branch, str(path), base_ref],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError((result.stderr or "could not create managed worktree").strip())
+    return {"worktreePath": str(path), "branchName": branch, "baseRef": base_ref}
+
+
+def remove_managed_worktree(repo_root: Path, worktree_path: str) -> None:
+    candidate = Path(worktree_path).expanduser().resolve()
+    repo_root = Path(repo_root).resolve()
+    registered = {Path(item.get("worktree", "")).resolve() for item in discover_worktrees(repo_root)}
+    if candidate == repo_root or candidate not in registered:
+        raise ValueError("path is not a removable managed worktree")
+    status = subprocess.run(
+        ["git", "-C", str(candidate), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if status.returncode != 0:
+        raise ValueError("managed worktree is unavailable")
+    if status.stdout.strip():
+        raise ValueError("managed worktree has uncommitted changes")
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "worktree", "remove", str(candidate)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError((result.stderr or "could not remove managed worktree").strip())
 
 
 def validate_worktree(repo_root: Path, worktree_path: str, branch_name: str) -> Path:
@@ -261,6 +336,9 @@ class CoordinatorStore:
                     attempt INTEGER NOT NULL DEFAULT 0,
                     agent_session_id TEXT NOT NULL DEFAULT '',
                     review_feedback TEXT NOT NULL DEFAULT '',
+                    managed_worktree INTEGER NOT NULL DEFAULT 0,
+                    base_ref TEXT NOT NULL DEFAULT '',
+                    scope_paths_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
@@ -302,6 +380,12 @@ class CoordinatorStore:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN agent_session_id TEXT NOT NULL DEFAULT ''")
             if "review_feedback" not in job_columns:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN review_feedback TEXT NOT NULL DEFAULT ''")
+            if "managed_worktree" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN managed_worktree INTEGER NOT NULL DEFAULT 0")
+            if "base_ref" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN base_ref TEXT NOT NULL DEFAULT ''")
+            if "scope_paths_json" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN scope_paths_json TEXT NOT NULL DEFAULT '[]'")
             log_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coordinator_job_logs)")}
             if "attempt" not in log_columns:
                 connection.execute("ALTER TABLE coordinator_job_logs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
@@ -322,6 +406,9 @@ class CoordinatorStore:
             "attempt": row["attempt"],
             "agentSessionId": row["agent_session_id"],
             "reviewFeedback": row["review_feedback"],
+            "managedWorktree": bool(row["managed_worktree"]),
+            "baseRef": row["base_ref"],
+            "scopePaths": json.loads(row["scope_paths_json"] or "[]"),
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
             "startedAt": row["started_at"],
@@ -378,8 +465,8 @@ class CoordinatorStore:
                 """
                 INSERT INTO coordinator_jobs(
                     id,title,instructions,assigned_agent,status,worktree_path,
-                    branch_name,created_by,requires_review,max_turns,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    branch_name,created_by,requires_review,max_turns,managed_worktree,base_ref,scope_paths_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     job_id,
@@ -392,6 +479,9 @@ class CoordinatorStore:
                     payload.created_by,
                     int(payload.requires_review),
                     payload.max_turns,
+                    int(payload.managed_worktree),
+                    payload.base_ref,
+                    json.dumps([path.strip().strip("/") for path in payload.scope_paths]),
                     now,
                     now,
                 ),
@@ -523,6 +613,19 @@ class CoordinatorStore:
                     "SELECT * FROM coordinator_jobs ORDER BY created_at DESC LIMIT ?", (limit,)
                 ).fetchall()
         return [self._job(row) for row in rows]
+
+    def recover_interrupted_jobs(self) -> list[dict[str, Any]]:
+        recovered = []
+        for job in self.list_jobs("running", limit=500):
+            recovered.append(
+                self.transition_job(
+                    job["id"],
+                    "failed",
+                    actor="coordinator-recovery",
+                    error="Coordinator restarted while the agent process was running; review the worktree and retry safely.",
+                )
+            )
+        return recovered
 
     def transition_job(
         self,

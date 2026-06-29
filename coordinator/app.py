@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import json
+import signal
 import subprocess
 import threading
 from collections import deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +20,15 @@ from .core import (
     CoordinatorStore,
     JobCreate,
     build_agent_command,
+    create_managed_worktree,
     discover_worktrees,
     probe_agent,
     probes_as_dict,
     inspect_worktree,
+    remove_managed_worktree,
     validate_worktree,
 )
+from .scheduler import CoordinatorScheduler
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,16 +36,34 @@ DB_PATH = Path(os.getenv("RACKPILOT_COORDINATOR_DB", ROOT / "data" / "coordinato
 REPO_ROOT = Path(os.getenv("RACKPILOT_REPO_ROOT", ROOT)).resolve()
 CONTROL_TOKEN = os.getenv("RACKPILOT_COORDINATOR_TOKEN", "")
 EXECUTION_ENABLED = os.getenv("RACKPILOT_COORDINATOR_EXECUTION", "false").lower() == "true"
+SCHEDULER_ENABLED = EXECUTION_ENABLED and os.getenv("RACKPILOT_COORDINATOR_SCHEDULER", "true").lower() == "true"
+MAX_CONCURRENT = int(os.getenv("RACKPILOT_COORDINATOR_MAX_CONCURRENT", "2"))
+MAX_PER_AGENT = int(os.getenv("RACKPILOT_COORDINATOR_MAX_PER_AGENT", "1"))
+WORKTREE_ROOT = Path(
+    os.getenv("RACKPILOT_WORKTREE_ROOT", REPO_ROOT.parent / f"{REPO_ROOT.name}-agent-worktrees")
+).resolve()
 
 store = CoordinatorStore(DB_PATH)
 processes: dict[str, subprocess.Popen[str]] = {}
 process_lock = threading.RLock()
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    store.recover_interrupted_jobs()
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.stop()
+
+
 app = FastAPI(
     title="RackPilot Agent Coordinator",
-    version="0.1.0",
+    version="1.0.0",
     docs_url="/docs",
     redoc_url=None,
+    lifespan=lifespan,
 )
 
 
@@ -48,8 +71,11 @@ class JobRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     instructions: str = Field(min_length=1, max_length=50000)
     assignedAgent: str
-    worktreePath: str
-    branchName: str
+    worktreePath: str | None = None
+    branchName: str | None = None
+    autoWorktree: bool = False
+    baseRef: str = "HEAD"
+    scopePaths: list[str] = Field(default_factory=list, max_length=100)
     createdBy: str = "owner"
     requiresReview: bool = True
     maxTurns: int = Field(default=8, ge=1, le=20)
@@ -66,7 +92,10 @@ def _is_rate_limited_output(lines: deque[str]) -> bool:
             entry = json.loads(line)
         except (TypeError, json.JSONDecodeError):
             lowered = line.lower()
-            if "rate limit" in lowered and any(word in lowered for word in ("exceeded", "blocked", "retry after")):
+            if (
+                "usage limit" in lowered
+                or ("rate limit" in lowered and any(word in lowered for word in ("exceeded", "blocked", "retry after")))
+            ):
                 return True
             continue
         if entry.get("type") == "rate_limit_event":
@@ -77,8 +106,10 @@ def _is_rate_limited_output(lines: deque[str]) -> bool:
         if entry.get("type") == "result" and entry.get("is_error"):
             result = str(entry.get("result", "")).lower()
             subtype = str(entry.get("subtype", "")).lower()
-            if "rate limit" in result or "rate_limit" in result or "rate_limit" in subtype:
+            if "rate limit" in result or "usage limit" in result or "rate_limit" in result or "rate_limit" in subtype:
                 return True
+        if entry.get("type") == "error" and "usage limit" in str(entry.get("message", "")).lower():
+            return True
     return False
 
 
@@ -115,6 +146,7 @@ async def health() -> dict[str, Any]:
         "version": app.version,
         "executionEnabled": EXECUTION_ENABLED,
         "controlConfigured": bool(CONTROL_TOKEN),
+        "scheduler": scheduler.snapshot(),
     }
 
 
@@ -172,22 +204,47 @@ async def job_review(job_id: str):
 @app.post("/api/v1/jobs", status_code=status.HTTP_201_CREATED)
 async def create_job(body: JobRequest, x_coordinator_token: str | None = Header(default=None)):
     require_control_token(x_coordinator_token)
+    managed: dict[str, str] | None = None
     try:
-        validate_worktree(REPO_ROOT, body.worktreePath, body.branchName)
+        if body.autoWorktree:
+            managed = create_managed_worktree(
+                REPO_ROOT,
+                WORKTREE_ROOT,
+                agent=body.assignedAgent,
+                title=body.title,
+                base_ref=body.baseRef,
+            )
+            worktree_path = managed["worktreePath"]
+            branch_name = managed["branchName"]
+        else:
+            if not body.worktreePath or not body.branchName:
+                raise ValueError("worktreePath and branchName are required when autoWorktree is false")
+            worktree_path = body.worktreePath
+            branch_name = body.branchName
+        validate_worktree(REPO_ROOT, worktree_path, branch_name)
         created = store.create_job(
             JobCreate(
                 title=body.title,
                 instructions=body.instructions,
                 assigned_agent=body.assignedAgent,
-                worktree_path=body.worktreePath,
-                branch_name=body.branchName,
+                worktree_path=worktree_path,
+                branch_name=branch_name,
                 created_by=body.createdBy,
                 requires_review=body.requiresReview,
                 max_turns=body.maxTurns,
+                managed_worktree=body.autoWorktree,
+                base_ref=body.baseRef if body.autoWorktree else "",
+                scope_paths=tuple(body.scopePaths),
             )
         )
     except ValueError as exc:
+        if managed:
+            try:
+                remove_managed_worktree(REPO_ROOT, managed["worktreePath"])
+            except ValueError:
+                pass
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    scheduler.wake()
     return {"job": created}
 
 
@@ -210,6 +267,7 @@ def _run_job(job_id: str) -> None:
             text=True,
             bufsize=1,
             shell=False,
+            start_new_session=True,
         )
         with process_lock:
             processes[job_id] = process
@@ -249,6 +307,25 @@ def _run_job(job_id: str) -> None:
         store.transition_job(job_id, "completed", exit_code=0, result_summary=combined)
     final = store.get_job(job_id)
     store.append_job_log(job_id, f"Job finished with status {final['status']}", "system")
+    scheduler.wake()
+
+
+def _launch_job(job_id: str) -> None:
+    threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"agent-{job_id[:8]}").start()
+
+
+scheduler = CoordinatorScheduler(
+    store,
+    _launch_job,
+    enabled=SCHEDULER_ENABLED,
+    max_concurrent=MAX_CONCURRENT,
+    max_per_agent=MAX_PER_AGENT,
+)
+
+
+@app.get("/api/v1/scheduler")
+async def scheduler_status() -> dict[str, Any]:
+    return {"scheduler": scheduler.snapshot()}
 
 
 @app.post("/api/v1/jobs/{job_id}/start", status_code=status.HTTP_202_ACCEPTED)
@@ -261,13 +338,12 @@ async def start_job(job_id: str, x_coordinator_token: str | None = Header(defaul
         validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
         if job["status"] != "queued":
             raise ValueError("Only queued jobs can start")
-        store.transition_job(job_id, "running")
+        claimed = scheduler.claim(job_id, actor="owner")
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"agent-{job_id[:8]}").start()
-    return {"job": store.get_job(job_id)}
+    return {"job": claimed}
 
 
 @app.post("/api/v1/jobs/{job_id}/retry", status_code=status.HTTP_202_ACCEPTED)
@@ -289,13 +365,13 @@ async def retry_job(job_id: str, x_coordinator_token: str | None = Header(defaul
             max_turns=next_max_turns,
         )
         store.transition_job(job_id, "queued", actor="owner")
-        store.transition_job(job_id, "running", actor="owner")
+        queued = store.get_job(job_id)
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"agent-{job_id[:8]}").start()
-    return {"job": store.get_job(job_id)}
+    scheduler.wake()
+    return {"job": queued}
 
 
 @app.post("/api/v1/jobs/{job_id}/cancel")
@@ -310,7 +386,10 @@ async def cancel_job(job_id: str, x_coordinator_token: str | None = Header(defau
     with process_lock:
         process = processes.get(job_id)
         if process and process.poll() is None:
-            process.terminate()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
     return {"job": store.transition_job(job_id, "cancelled", actor="owner")}
 
 
@@ -368,13 +447,31 @@ async def request_job_changes(
         if job["status"] == "review":
             store.transition_job(job_id, "waiting_approval", actor="owner")
         store.transition_job(job_id, "queued", actor="owner")
-        store.transition_job(job_id, "running", actor="owner")
+        queued = store.get_job(job_id)
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"agent-{job_id[:8]}").start()
-    return {"job": store.get_job(job_id)}
+    scheduler.wake()
+    return {"job": queued}
+
+
+@app.post("/api/v1/jobs/{job_id}/remove-worktree")
+async def remove_job_worktree(job_id: str, x_coordinator_token: str | None = Header(default=None)):
+    require_control_token(x_coordinator_token)
+    try:
+        job = store.get_job(job_id)
+        if not job["managedWorktree"]:
+            raise ValueError("Job does not own a managed worktree")
+        if job["status"] in {"queued", "running", "review", "waiting_approval"}:
+            raise ValueError("Active or unreviewed job worktrees cannot be removed")
+        remove_managed_worktree(REPO_ROOT, job["worktreePath"])
+        store.append_event("worktree.removed", job_id=job_id, actor="owner", payload={"path": job["worktreePath"]})
+        return {"ok": True}
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 @app.get("/api/v1/events")

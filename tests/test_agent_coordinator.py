@@ -7,7 +7,16 @@ from pathlib import Path
 import subprocess
 from unittest.mock import patch
 
-from coordinator.core import AgentProbe, CoordinatorStore, JobCreate, build_agent_command, inspect_worktree
+from coordinator.core import (
+    AgentProbe,
+    CoordinatorStore,
+    JobCreate,
+    build_agent_command,
+    create_managed_worktree,
+    inspect_worktree,
+    remove_managed_worktree,
+)
+from coordinator.scheduler import CoordinatorScheduler
 
 
 class CoordinatorStoreTests(unittest.TestCase):
@@ -39,6 +48,8 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(job["attempt"], 0)
         self.assertEqual(job["agentSessionId"], "")
         self.assertEqual(job["reviewFeedback"], "")
+        self.assertFalse(job["managedWorktree"])
+        self.assertEqual(job["scopePaths"], [])
         events = self.store.list_events(job["id"])
         self.assertEqual(events[0]["eventType"], "job.created")
 
@@ -193,9 +204,91 @@ class CoordinatorStoreTests(unittest.TestCase):
         blocked = deque([
             '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","utilization":1.0}}',
         ])
+        codex_blocked = deque([
+            '{"type":"error","message":"You have hit your usage limit. Try again later."}',
+        ])
 
         self.assertFalse(_is_rate_limited_output(allowed))
         self.assertTrue(_is_rate_limited_output(blocked))
+        self.assertTrue(_is_rate_limited_output(codex_blocked))
+
+    def test_managed_worktree_create_and_safe_remove(self):
+        repo = Path(self.temp_dir.name) / "source"
+        managed_root = Path(self.temp_dir.name) / "managed"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "tests@rackpilot.local"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "RackPilot Tests"], check=True)
+        (repo / "README.md").write_text("base", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+
+        created = create_managed_worktree(
+            repo, managed_root, agent="claude", title="Audit API parity", base_ref="HEAD"
+        )
+        self.assertTrue(Path(created["worktreePath"]).is_dir())
+        self.assertTrue(created["branchName"].startswith("claude/rp-audit-api-parity-"))
+
+        remove_managed_worktree(repo, created["worktreePath"])
+        self.assertFalse(Path(created["worktreePath"]).exists())
+
+    def test_scheduler_runs_one_job_per_agent_and_locks_worktrees(self):
+        launched: list[str] = []
+        scheduler = CoordinatorScheduler(
+            self.store, launched.append, enabled=True, max_concurrent=2, max_per_agent=1
+        )
+        codex = self.store.create_job(
+            self.payload(assigned_agent="codex", branch_name="codex/one", worktree_path="/tmp/codex-one")
+        )
+        claude = self.store.create_job(
+            self.payload(branch_name="claude/one", worktree_path="/tmp/claude-one")
+        )
+        waiting = self.store.create_job(
+            self.payload(assigned_agent="codex", branch_name="codex/two", worktree_path="/tmp/codex-two")
+        )
+
+        started = scheduler.tick()
+
+        self.assertEqual(set(started), {codex["id"], claude["id"]})
+        self.assertEqual(set(launched), set(started))
+        self.assertEqual(self.store.get_job(waiting["id"])["status"], "queued")
+        self.assertEqual(scheduler.snapshot()["runningByAgent"], {"codex": 1, "claude": 1})
+
+    def test_recovery_marks_orphaned_running_jobs_failed(self):
+        job = self.store.create_job(self.payload())
+        self.store.transition_job(job["id"], "running")
+
+        recovered = self.store.recover_interrupted_jobs()
+
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0]["status"], "failed")
+        self.assertIn("Coordinator restarted", recovered[0]["error"])
+
+    def test_scheduler_defers_overlapping_scopes_across_agents(self):
+        launched: list[str] = []
+        scheduler = CoordinatorScheduler(
+            self.store, launched.append, enabled=True, max_concurrent=2, max_per_agent=1
+        )
+        first = self.store.create_job(
+            self.payload(
+                assigned_agent="codex",
+                branch_name="codex/projects",
+                worktree_path="/tmp/codex-projects",
+                scope_paths=("frontend/src/modules/projects.js",),
+            )
+        )
+        second = self.store.create_job(
+            self.payload(
+                branch_name="claude/projects",
+                worktree_path="/tmp/claude-projects",
+                scope_paths=("frontend/src/modules",),
+            )
+        )
+
+        scheduler.tick()
+
+        self.assertEqual(self.store.get_job(first["id"])["status"], "running")
+        self.assertEqual(self.store.get_job(second["id"])["status"], "queued")
 
 
 if __name__ == "__main__":
