@@ -203,6 +203,24 @@ const COMP_DEFS = {
     ]
   },
 
+  resistor: {
+    label:'Resistor', category:'lv', w:80, h:36, hue:'#5a3a00',
+    desc:'Generic resistor — series in-circuit (IEC rectangular symbol)',
+    terminals:[
+      {id:'a',label:'',side:'L',pos:0},
+      {id:'b',label:'',side:'R',pos:0},
+    ]
+  },
+
+  jumper: {
+    label:'Jumper', category:'lv', w:60, h:36, hue:'#1a3a2a',
+    desc:'Solder / screw jumper bridge — short circuit or field-replaceable resistor',
+    terminals:[
+      {id:'a',label:'',side:'L',pos:0},
+      {id:'b',label:'',side:'R',pos:0},
+    ]
+  },
+
   terminal_block: {
     label:'Terminal Block ×6', category:'lv', w:110, h:210, hue:'#004040',
     desc:'6-way screw terminal block / junction',
@@ -356,6 +374,123 @@ function getTermPos(comp, termId) {
   }
 }
 
+// ── Rectilinear Dijkstra router ────────────────────────────────────────────
+
+function _mkHeap() {
+  const h = []
+  const up = i => {
+    while (i > 0) {
+      const p = (i-1)>>1; if (h[p][0]<=h[i][0]) break
+      ;[h[p],h[i]]=[h[i],h[p]]; i=p
+    }
+  }
+  const dn = i => {
+    for(;;){
+      let m=i,l=2*i+1,r=2*i+2
+      if(l<h.length&&h[l][0]<h[m][0])m=l
+      if(r<h.length&&h[r][0]<h[m][0])m=r
+      if(m===i)break;[h[i],h[m]]=[h[m],h[i]];i=m
+    }
+  }
+  return {
+    push(v){h.push(v);up(h.length-1)},
+    pop(){const t=h[0];const l=h.pop();if(h.length){h[0]=l;dn(0)}return t},
+    empty(){return!h.length}
+  }
+}
+
+function _segClear(x1,y1,x2,y2,obs){
+  for(const r of obs){
+    if(x1===x2){
+      const yA=Math.min(y1,y2)+1,yB=Math.max(y1,y2)-1
+      if(yA<yB&&x1>r.x1&&x1<r.x2&&yA<r.y2&&yB>r.y1)return false
+    }else{
+      const xA=Math.min(x1,x2)+1,xB=Math.max(x1,x2)-1
+      if(xA<xB&&y1>r.y1&&y1<r.y2&&xA<r.x2&&xB>r.x1)return false
+    }
+  }
+  return true
+}
+
+function _collapseCollinear(pts){
+  if(pts.length<3)return pts
+  const out=[pts[0]]
+  for(let i=1;i<pts.length-1;i++){
+    const[ax,ay]=out[out.length-1],[bx,by]=pts[i],[cx,cy]=pts[i+1]
+    if((ax===bx&&bx===cx)||(ay===by&&by===cy))continue
+    out.push([bx,by])
+  }
+  out.push(pts[pts.length-1])
+  return out
+}
+
+// Dijkstra on the rectilinear candidate grid formed by obstacle corners + terminals.
+// Returns [[x,y],...] waypoints from (sx,sy) to (ex,ey), shortest path with bend penalty.
+function _dijkstraRoute(sx,sy,ex,ey,obs){
+  const BEND=300  // bend penalty in px-equivalent: prefer 2-bend over 4-bend by ~100px
+
+  const xS=new Set([sx,ex]),yS=new Set([sy,ey])
+  for(const r of obs){xS.add(r.x1);xS.add(r.x2);yS.add(r.y1);yS.add(r.y2)}
+  const xs=[...xS].sort((a,b)=>a-b), ys=[...yS].sort((a,b)=>a-b)
+  const NX=xs.length, NY=ys.length
+
+  const si=xs.indexOf(sx),sj=ys.indexOf(sy)
+  const ei=xs.indexOf(ex),ej=ys.indexOf(ey)
+  if(si<0||sj<0||ei<0||ej<0)return[[sx,sy],[ex,ey]]
+
+  // State key: (xi * NY + yj) * 3 + dir  (dir: 0=none,1=h,2=v)
+  const key=(xi,yj,d)=>(xi*NY+yj)*3+d
+  const INF=1e9
+  const dist=new Float32Array(NX*NY*3).fill(INF)
+  const prev=new Int32Array(NX*NY*3).fill(-1)
+
+  const heap=_mkHeap()
+  const s0=key(si,sj,0); dist[s0]=0; heap.push([0,si,sj,0])
+
+  while(!heap.empty()){
+    const[c,xi,yj,d]=heap.pop()
+    const id=key(xi,yj,d)
+    if(dist[id]<c)continue
+    if(xi===ei&&yj===ej)break
+
+    // Horizontal moves
+    for(const nxi of[xi-1,xi+1]){
+      if(nxi<0||nxi>=NX)continue
+      if(!_segClear(xs[xi],ys[yj],xs[nxi],ys[yj],obs))continue
+      const nc=c+Math.abs(xs[nxi]-xs[xi])+(d===2?BEND:0)
+      const nid=key(nxi,yj,1)
+      if(nc<dist[nid]){dist[nid]=nc;prev[nid]=id;heap.push([nc,nxi,yj,1])}
+    }
+    // Vertical moves
+    for(const nyj of[yj-1,yj+1]){
+      if(nyj<0||nyj>=NY)continue
+      if(!_segClear(xs[xi],ys[yj],xs[xi],ys[nyj],obs))continue
+      const nc=c+Math.abs(ys[nyj]-ys[yj])+(d===1?BEND:0)
+      const nid=key(xi,nyj,2)
+      if(nc<dist[nid]){dist[nid]=nc;prev[nid]=id;heap.push([nc,xi,nyj,2])}
+    }
+  }
+
+  // Pick best arrival direction at destination
+  let bestId=-1,bestCost=INF
+  for(const d of[0,1,2]){
+    const id=key(ei,ej,d)
+    if(dist[id]<bestCost){bestCost=dist[id];bestId=id}
+  }
+  if(bestId<0||bestCost>=INF)return[[sx,sy],[ex,ey]]
+
+  // Reconstruct path
+  const pts=[]
+  let cur=bestId
+  while(cur>=0){
+    const d=cur%3,nd=(cur/3)|0,yj=nd%NY,xi=(nd/NY)|0
+    pts.push([xs[xi],ys[yj]])
+    cur=prev[cur]
+  }
+  pts.reverse()
+  return pts
+}
+
 function routeWire(fp, fside, tp, tside, waypoints, comps, excludeIds, exitExtra=0, entryExtra=0) {
   const s = STUB
   const sx = fp.x + (fside==='L'?-(s+exitExtra):fside==='R'?(s+exitExtra):0)
@@ -376,41 +511,20 @@ function routeWire(fp, fside, tp, tside, waypoints, comps, excludeIds, exitExtra
     return dedupePts(pts)
   }
 
-  // Auto Manhattan routing — avoid degenerate duplicate points
-  const pts = [[fp.x, fp.y], [sx, sy]]
-  const hFrom = fside==='L'||fside==='R'
-  const hTo   = tside==='L'||tside==='R'
+  // Build obstacle rectangles. Source/dest get STUB-2 margin so their stubs
+  // (length = STUB) exit cleanly without being inside the inflated rect.
   const allComps = comps || []
+  const exIds = excludeIds || []
+  const TERM_M = STUB - 2  // 18px — stubs at 20px clear this boundary
+  const obstacles = allComps.map(c => {
+    const def = getCompDef(c.type)
+    if (!def) return null
+    const m = exIds.includes(c.id) ? TERM_M : OBS_MARGIN + 2
+    return { x1: c.x - m, y1: c.y - m, x2: c.x + def.w + m, y2: c.y + def.h + m }
+  }).filter(Boolean)
 
-  if (hFrom && hTo) {
-    if (Math.abs(sy - ey) < 0.5) {
-      // Same height — direct horizontal, avoidComps will deflect if needed
-    } else if (ex < sx) {
-      // R→L: go horizontal to target column first, then vertical.
-      // Avoids routing a vertical segment through the source component body.
-      pts.push([ex, sy])
-    } else {
-      // L→R: go vertical at source column, then horizontal to target.
-      pts.push([sx, ey])
-    }
-  } else if (!hFrom && !hTo) {
-    if (Math.abs(sx - ex) < 0.5) {
-      // Same column — direct vertical
-    } else if (ey < sy) {
-      // B→T: go vertical to target row first, then horizontal.
-      pts.push([sx, ey])
-    } else {
-      // T→B: go horizontal to target column first, then vertical.
-      pts.push([ex, sy])
-    }
-  } else if (hFrom && !hTo) {
-    pts.push([ex, sy])
-  } else {
-    pts.push([sx, ey])
-  }
-  pts.push([ex, ey], [tp.x, tp.y])
-
-  return avoidComps(dedupePts(pts), allComps, excludeIds || [])
+  const midPts = _collapseCollinear(_dijkstraRoute(sx, sy, ex, ey, obstacles))
+  return dedupePts([[fp.x, fp.y], ...midPts, [tp.x, tp.y]])
 }
 
 // Find a vertical column (midX) for H→V→H routing that avoids component bodies
@@ -532,13 +646,24 @@ function avoidComps(pts, comps, excludeIds) {
 
   if (!bodyRects.length) return pts
 
+  // Max pixels a segment may be deflected from its original position before
+  // we give up and allow the wire to pass through the obstacle.
+  const MAX_DEFLECT = 120
+
   function deflectSeg(x1, y1, x2, y2, rects, next) {
     for (const r of rects) {
-      const rcx = (r.x1 + r.x2) / 2, rcy = (r.y1 + r.y2) / 2
       if (Math.abs(y1 - y2) < 0.5) {
+        // Horizontal segment
         const lx = Math.min(x1, x2), rx = Math.max(x1, x2)
         if (y1 > r.y1 && y1 < r.y2 && lx < r.x2 - 2 && rx > r.x1 + 2) {
-          const newY = snap(y1 < rcy ? r.y1 : r.y2)
+          // Try both edges; pick whichever is closer to the original y (shorter detour)
+          const yAbove = snap(r.y1)
+          const yBelow = snap(r.y2)
+          const dAbove = Math.abs(y1 - yAbove)
+          const dBelow = Math.abs(y1 - yBelow)
+          const newY = dAbove <= dBelow ? yAbove : yBelow
+          // Cap: if deflection would exceed MAX_DEFLECT, skip this obstacle
+          if (Math.min(dAbove, dBelow) > MAX_DEFLECT) continue
           const dir = x2 >= x1 ? 1 : -1
           const entryX = snap(dir > 0 ? Math.max(x1, r.x1) : Math.min(x1, r.x2))
           const exitX  = snap(dir > 0 ? Math.min(x2, r.x2) : Math.max(x2, r.x1))
@@ -549,9 +674,15 @@ function avoidComps(pts, comps, excludeIds) {
           return true
         }
       } else if (Math.abs(x1 - x2) < 0.5) {
+        // Vertical segment
         const ty = Math.min(y1, y2), by = Math.max(y1, y2)
         if (x1 > r.x1 && x1 < r.x2 && ty < r.y2 - 2 && by > r.y1 + 2) {
-          const newX = snap(x1 < rcx ? r.x1 : r.x2)
+          const xLeft  = snap(r.x1)
+          const xRight = snap(r.x2)
+          const dLeft  = Math.abs(x1 - xLeft)
+          const dRight = Math.abs(x1 - xRight)
+          const newX = dLeft <= dRight ? xLeft : xRight
+          if (Math.min(dLeft, dRight) > MAX_DEFLECT) continue
           const dir = y2 >= y1 ? 1 : -1
           const entryY = snap(dir > 0 ? Math.max(y1, r.y1) : Math.min(y1, r.y2))
           const exitY  = snap(dir > 0 ? Math.min(y2, r.y2) : Math.max(y2, r.y1))
@@ -1041,6 +1172,43 @@ function renderCompSvg(comp, isSelected) {
     return renderPsu(comp, def, sel)
   }
 
+  // ── Resistor (IEC rectangular schematic symbol) ───────────────────────────
+  if (comp.type === 'resistor') {
+    const cx = x + w/2, cy = y + h/2
+    const bw = w * 0.45, bh = h * 0.52
+    const lbl = comp.label || ''
+    return `<g class="dg-comp" data-id="${comp.id}" style="cursor:move">
+      <line x1="${x}" y1="${cy}" x2="${cx-bw/2}" y2="${cy}" stroke="${sel?'#6ab4f0':'#aaa'}" stroke-width="1.5"/>
+      <line x1="${cx+bw/2}" y1="${cy}" x2="${x+w}" y2="${cy}" stroke="${sel?'#6ab4f0':'#aaa'}" stroke-width="1.5"/>
+      <rect x="${cx-bw/2+2}" y="${cy-bh/2+2}" width="${bw}" height="${bh}" rx="2" fill="#00000050"/>
+      <rect x="${cx-bw/2}" y="${cy-bh/2}" width="${bw}" height="${bh}" rx="2"
+        fill="#5a3a00dd" stroke="${sel?'#4a90e2':'#c8a000'}" stroke-width="${sel?2:1.5}"/>
+      <text x="${cx}" y="${cy+1}" font-family="Inter,sans-serif" font-size="9" font-weight="600"
+        fill="#ffe080" text-anchor="middle" dominant-baseline="middle">${esc(lbl||'R')}</text>
+      ${def.terminals.map(t => renderTermSvg(comp, t)).join('')}
+      ${sel?`<rect x="${cx-bw/2}" y="${cy-bh/2}" width="${bw}" height="${bh}" rx="2" fill="none" stroke="#4a90e2" stroke-width="2" opacity="0.5"/>`:''}
+    </g>`
+  }
+
+  // ── Jumper (solder bridge symbol) ─────────────────────────────────────────
+  if (comp.type === 'jumper') {
+    const cx = x + w/2, cy = y + h/2
+    const bw = w * 0.5, bh = h * 0.45
+    const lbl = comp.label || ''
+    return `<g class="dg-comp" data-id="${comp.id}" style="cursor:move">
+      <line x1="${x}" y1="${cy}" x2="${cx-bw/2}" y2="${cy}" stroke="${sel?'#6ab4f0':'#aaa'}" stroke-width="1.5"/>
+      <line x1="${cx+bw/2}" y1="${cy}" x2="${x+w}" y2="${cy}" stroke="${sel?'#6ab4f0':'#aaa'}" stroke-width="1.5"/>
+      <rect x="${cx-bw/2}" y="${cy-bh/2}" width="${bw}" height="${bh}" rx="2"
+        fill="#1a3a2add" stroke="${sel?'#4a90e2':'#40c070'}" stroke-width="${sel?2:1.5}"/>
+      <path d="M ${cx-bw/2+5} ${cy} Q ${cx} ${cy-bh*0.85} ${cx+bw/2-5} ${cy}"
+        fill="none" stroke="#40c070" stroke-width="1.5"/>
+      <text x="${cx}" y="${cy+bh/2+9}" font-family="Inter,sans-serif" font-size="9"
+        fill="#40c070aa" text-anchor="middle">${esc(lbl||'JMP')}</text>
+      ${def.terminals.map(t => renderTermSvg(comp, t)).join('')}
+      ${sel?`<rect x="${cx-bw/2}" y="${cy-bh/2}" width="${bw}" height="${bh}" rx="2" fill="none" stroke="#4a90e2" stroke-width="2" opacity="0.5"/>`:''}
+    </g>`
+  }
+
   // ── Generic component ─────────────────────────────────────────────────────
   return `<g class="dg-comp" data-id="${comp.id}" style="cursor:move" data-type="${comp.type}">
     <rect x="${x+3}" y="${y+3}" width="${w}" height="${h}" rx="6" fill="#00000040"/>
@@ -1300,8 +1468,16 @@ function bindSvgEvents() {
       _drag = { type:'canvas', startX: e.clientX - _pan.x, startY: e.clientY - _pan.y }
       return
     }
+    if (_mode === 'wire' && _wireStart) {
+      // Cancel pending wire — click on empty canvas exits wire mode
+      _wireStart = null; _wirePreview = null; _mode = 'select'
+      updateToolbar(); renderCanvas(); return
+    }
     if (_mode === 'select') {
-      _selected = null; renderCanvas(); renderProps()
+      _selected = null
+      renderCanvas(); renderProps()
+      // Left-click drag on empty canvas pans
+      _drag = { type:'canvas', startX: e.clientX - _pan.x, startY: e.clientY - _pan.y }
     }
   })
 
@@ -1964,7 +2140,23 @@ function render() {
   _el.querySelector('#dg-undo')?.addEventListener('click', undo)
 
   _el.querySelector('#dg-center')?.addEventListener('click', () => {
-    _pan = { x: 80, y: 80 }; _zoom = 1; renderCanvas()
+    const comps = _diagram.components
+    if (!comps.length) { _pan = { x: 80, y: 80 }; _zoom = 1; renderCanvas(); return }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const c of comps) {
+      const def = getCompDef(c.type)
+      const w = def?.w || 160, h = def?.h || 120
+      minX = Math.min(minX, c.x); minY = Math.min(minY, c.y)
+      maxX = Math.max(maxX, c.x + w); maxY = Math.max(maxY, c.y + h)
+    }
+    const PAD = 60
+    const cw = (_svgEl?.clientWidth  || 900) - PAD * 2
+    const ch = (_svgEl?.clientHeight || 640) - PAD * 2
+    const dw = maxX - minX, dh = maxY - minY
+    _zoom = Math.min(1, Math.min(cw / (dw || 1), ch / (dh || 1)))
+    _pan.x = PAD - minX * _zoom
+    _pan.y = PAD - minY * _zoom
+    renderCanvas()
   })
 
   _el.querySelector('#dg-simulate')?.addEventListener('click', () => {
