@@ -18,6 +18,6 @@ _ROOT = Path(__file__).resolve().parents[4]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from server.app import WorkspaceStore  # noqa: E402  (legacy import during migration)
+from server.app import ROLE_POLICIES, WorkspaceStore, role_can  # noqa: E402  (legacy import during migration)
 
-__all__ = ["WorkspaceStore"]
+__all__ = ["ROLE_POLICIES", "WorkspaceStore", "role_can"]

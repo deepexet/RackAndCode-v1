@@ -167,3 +167,10 @@ For each material release, append a dated section containing product version, us
 - Added a responsive Live activity modal with elapsed time, status timeline, interpreted commands, file changes, agent messages, errors and retained console output.
 - Preserved final-result fallback for jobs completed before live capture was introduced.
 - Verification: 11 focused Coordinator/FastAPI tests, including a real streamed subprocess test, Python compile check and production frontend build passed.
+
+## 2026-06-29 — FastAPI Logs and Overview read slice
+
+- Migrated unified logs, audit integrity, administrator audit log, Overview KPI and critical-task read endpoints to FastAPI while preserving legacy handlers.
+- Reused the shared role policy but added fail-closed FastAPI guards for unauthenticated requests and unknown role names.
+- Added tenant-isolation, filter, limit, audit-chain, dashboard and permission integration tests.
+- Verification: 16 focused FastAPI/Coordinator tests, 4 legacy compatibility tests and production frontend build passed.

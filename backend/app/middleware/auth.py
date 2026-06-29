@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import Cookie, Depends, Header, HTTPException, status
 
 from app.core.config import settings
-from app.store import WorkspaceStore
+from app.store import ROLE_POLICIES, WorkspaceStore, role_can
 
 
 # ── Shared store singleton ────────────────────────────────────────────────
@@ -31,6 +31,7 @@ class SessionContext:
     role: str
     token: str | None
     store: WorkspaceStore
+    role_preview: bool = False
 
 
 async def get_session(
@@ -50,7 +51,8 @@ async def get_session(
 
     org = settings.default_org
     user_id: str | None = None
-    role = "Administrator"  # fallback dev-mode default
+    role = "Technician"
+    role_preview = False
 
     if token:
         session = store.validate_session(token)
@@ -62,9 +64,31 @@ async def get_session(
     elif settings.lan_mode and x_rackpilot_role:
         # Dev-mode role preview header (LAN only)
         role = x_rackpilot_role
+        role_preview = True
 
-    return SessionContext(org=org, user_id=user_id, role=role, token=token, store=store)
+    return SessionContext(
+        org=org,
+        user_id=user_id,
+        role=role,
+        token=token,
+        store=store,
+        role_preview=role_preview,
+    )
 
 
 Auth = Annotated[SessionContext, Depends(get_session)]
 StoreOnly = Annotated[WorkspaceStore, Depends(get_store)]
+
+
+def require_permission(ctx: SessionContext, permission: str) -> None:
+    """Enforce the shared legacy/FastAPI role policy during migration."""
+    if not ctx.user_id and not (settings.lan_mode and ctx.role_preview):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "authentication_required"},
+        )
+    if ctx.role not in ROLE_POLICIES or not role_can(ctx.role, permission):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "forbidden", "permission": permission},
+        )
