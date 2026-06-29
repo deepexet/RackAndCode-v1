@@ -414,8 +414,8 @@ class CoordinatorStore:
         *,
         actor: str = "coordinator",
         exit_code: int | None = None,
-        result_summary: str = "",
-        error: str = "",
+        result_summary: str | None = None,
+        error: str | None = None,
     ) -> dict[str, Any]:
         if status not in JOB_STATUSES:
             raise ValueError("unknown status")
@@ -436,6 +436,10 @@ class CoordinatorStore:
             now if status == "running" and not current["startedAt"] else current["startedAt"]
         )
         completed_at = now if status in TERMINAL_STATUSES else None
+        reset_run = status in {"queued", "running"}
+        next_exit_code = None if reset_run else (current["exitCode"] if exit_code is None else exit_code)
+        next_result = "" if reset_run else (current["resultSummary"] if result_summary is None else result_summary)
+        next_error = "" if reset_run else (current["error"] if error is None else error)
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
@@ -443,13 +447,13 @@ class CoordinatorStore:
                 SET status=?,updated_at=?,started_at=?,completed_at=?,exit_code=?,result_summary=?,error=?
                 WHERE id=?
                 """,
-                (status, now, started_at, completed_at, exit_code, result_summary[:65536], error[:8192], job_id),
+                (status, now, started_at, completed_at, next_exit_code, next_result[:65536], next_error[:8192], job_id),
             )
             self.append_event(
                 "job.status_changed",
                 job_id=job_id,
                 actor=actor,
-                payload={"from": current["status"], "to": status, "exitCode": exit_code},
+                payload={"from": current["status"], "to": status, "exitCode": next_exit_code},
                 connection=connection,
             )
         return self.get_job(job_id)
