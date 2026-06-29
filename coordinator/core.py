@@ -225,6 +225,16 @@ class CoordinatorStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_coordinator_events_job
                     ON coordinator_events(job_id, created_at);
+                CREATE TABLE IF NOT EXISTS coordinator_job_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    stream TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(job_id) REFERENCES coordinator_jobs(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_coordinator_job_logs_job
+                    ON coordinator_job_logs(job_id, id);
                 """
             )
 
@@ -330,6 +340,56 @@ class CoordinatorStore:
         if not row:
             raise KeyError(job_id)
         return self._job(row)
+
+    def append_job_log(self, job_id: str, message: str, stream: str = "stdout") -> dict[str, Any]:
+        if stream not in {"stdout", "stderr", "system"}:
+            raise ValueError("unknown log stream")
+        entry = {
+            "jobId": job_id,
+            "stream": stream,
+            "message": message[:8192],
+            "createdAt": utc_now(),
+        }
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO coordinator_job_logs(job_id,stream,message,created_at) VALUES(?,?,?,?)",
+                (entry["jobId"], entry["stream"], entry["message"], entry["createdAt"]),
+            )
+            entry["id"] = cursor.lastrowid
+            connection.execute(
+                """
+                DELETE FROM coordinator_job_logs
+                WHERE job_id=? AND id NOT IN (
+                    SELECT id FROM coordinator_job_logs WHERE job_id=? ORDER BY id DESC LIMIT 2000
+                )
+                """,
+                (job_id, job_id),
+            )
+        return entry
+
+    def list_job_logs(self, job_id: str, after_id: int = 0, limit: int = 250) -> list[dict[str, Any]]:
+        self.get_job(job_id)
+        limit = max(1, min(limit, 1000))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id,job_id,stream,message,created_at
+                FROM coordinator_job_logs
+                WHERE job_id=? AND id>?
+                ORDER BY id ASC LIMIT ?
+                """,
+                (job_id, max(0, after_id), limit),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "jobId": row["job_id"],
+                "stream": row["stream"],
+                "message": row["message"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def list_jobs(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 500))

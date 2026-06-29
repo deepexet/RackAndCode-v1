@@ -3,8 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from coordinator.core import CoordinatorStore, JobCreate, build_agent_command
+from coordinator.core import AgentProbe, CoordinatorStore, JobCreate, build_agent_command
 
 
 class CoordinatorStoreTests(unittest.TestCase):
@@ -81,6 +82,47 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertIsNone(queued["startedAt"])
         self.assertIsNone(queued["completedAt"])
         self.assertEqual(queued["error"], "")
+
+    def test_job_logs_are_ordered_and_incremental(self):
+        job = self.store.create_job(self.payload())
+        first = self.store.append_job_log(job["id"], "Agent session started", "system")
+        second = self.store.append_job_log(job["id"], '{"type":"turn.started"}')
+
+        self.assertEqual(
+            [entry["message"] for entry in self.store.list_job_logs(job["id"])],
+            ["Agent session started", '{"type":"turn.started"}'],
+        )
+        incremental = self.store.list_job_logs(job["id"], after_id=first["id"])
+        self.assertEqual([entry["id"] for entry in incremental], [second["id"]])
+
+    def test_runner_streams_output_before_review(self):
+        from coordinator import app as coordinator_app
+
+        job = self.store.create_job(self.payload(worktree_path=self.temp_dir.name))
+        self.store.transition_job(job["id"], "running")
+        previous_store = coordinator_app.store
+        coordinator_app.store = self.store
+        try:
+            with (
+                patch.object(
+                    coordinator_app,
+                    "probe_agent",
+                    return_value=AgentProbe("claude", True, "/bin/sh", "test"),
+                ),
+                patch.object(
+                    coordinator_app,
+                    "build_agent_command",
+                    return_value=["/bin/sh", "-c", "printf 'first\\nsecond\\n'"],
+                ),
+            ):
+                coordinator_app._run_job(job["id"])
+        finally:
+            coordinator_app.store = previous_store
+
+        messages = [entry["message"] for entry in self.store.list_job_logs(job["id"])]
+        self.assertIn("first", messages)
+        self.assertIn("second", messages)
+        self.assertEqual(self.store.get_job(job["id"])["status"], "review")
 
 
 if __name__ == "__main__":

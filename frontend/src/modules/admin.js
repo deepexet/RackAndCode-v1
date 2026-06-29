@@ -252,7 +252,10 @@ function renderAgents(d) {
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
   const controlsReady = Boolean(health.controlConfigured)
   const jobActions = job => {
-    const buttons = []
+    const buttons = [
+      `<button class="ui-btn ui-btn--sm" data-coordinator-view="${esc(job.id)}">
+        <i class="ti ti-activity"></i> Live</button>`,
+    ]
     if (job.status === 'queued') {
       buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--primary" data-coordinator-action="start" data-job-id="${esc(job.id)}"
         ${!controlsReady || !health.executionEnabled ? 'disabled title="Enable autonomous execution to start jobs"' : ''}>
@@ -316,6 +319,110 @@ function renderAgents(d) {
         Actions are available only to an authenticated Administrator and every action is audited.
       </p>
     </div>`
+}
+
+function describeAgentLog(message) {
+  try {
+    const entry = JSON.parse(message)
+    const item = entry.item || {}
+    if (entry.type === 'thread.started') return 'Agent session started'
+    if (entry.type === 'turn.started') return 'Agent began working'
+    if (entry.type === 'turn.completed') return 'Agent turn completed'
+    if (entry.type === 'item.started' && item.type === 'command_execution') return `Running command: ${item.command || 'command'}`
+    if (entry.type === 'item.completed' && item.type === 'command_execution') return `Command finished (${item.exit_code ?? '—'}): ${item.command || 'command'}`
+    if (entry.type === 'item.completed' && item.type === 'agent_message') return item.text || 'Agent update'
+    if (entry.type === 'item.completed' && item.type === 'file_change') {
+      const files = (item.changes || []).map(change => change.path).filter(Boolean)
+      return files.length ? `Changed files: ${files.join(', ')}` : 'Files changed'
+    }
+    if (entry.type === 'item.completed' && item.type === 'todo_list') {
+      const completed = (item.items || []).filter(value => value.completed).length
+      return `Plan progress: ${completed}/${(item.items || []).length}`
+    }
+    if (entry.type === 'assistant' && entry.message?.content) {
+      const text = entry.message.content.find(value => value.type === 'text')?.text
+      if (text) return text
+    }
+    if (entry.type === 'result') return entry.result || entry.subtype || 'Agent result received'
+  } catch {}
+  return message
+}
+
+function formatElapsed(startedAt, completedAt) {
+  if (!startedAt) return 'Not started'
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now()
+  const seconds = Math.max(0, Math.floor((end - new Date(startedAt).getTime()) / 1000))
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return minutes ? `${minutes}m ${rest}s` : `${rest}s`
+}
+
+function openAgentJobDetails(jobId) {
+  let closed = false
+  let timer = null
+  let logs = []
+  let lastLogId = 0
+  const { el } = openModal({
+    title: 'Agent job activity',
+    width: 920,
+    body: `<div id="adm-agent-live" class="adm-agent-live">${loadingSpinner('Loading agent activity…')}</div>`,
+    onClose: () => {
+      closed = true
+      if (timer) clearTimeout(timer)
+    },
+  })
+  const target = el.querySelector('#adm-agent-live')
+
+  const refresh = async () => {
+    if (closed || !target?.isConnected) return
+    try {
+      const data = await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(jobId)}?after=${lastLogId}`)
+      if (data.logs?.length) {
+        logs = logs.concat(data.logs).slice(-500)
+        lastLogId = data.logs[data.logs.length - 1].id
+      }
+      const job = data.job || {}
+      const events = (data.events || []).slice().reverse()
+      const fallback = !logs.length && job.resultSummary
+        ? [{ id: 'result', stream: job.error ? 'stderr' : 'stdout', message: job.resultSummary, createdAt: job.completedAt }]
+        : []
+      const visibleLogs = logs.length ? logs : fallback
+      target.innerHTML = `
+        <div class="adm-agent-live-head">
+          <div><strong>${esc(job.title || 'Agent job')}</strong><span>${esc(job.assignedAgent || '—')} · ${esc(job.branchName || '—')}</span></div>
+          ${badge(job.status || 'unknown')}
+        </div>
+        <div class="adm-agent-live-stats">
+          <span><b>Elapsed</b>${esc(formatElapsed(job.startedAt, job.completedAt))}</span>
+          <span><b>Started</b>${esc(fmtDate(job.startedAt))}</span>
+          <span><b>Exit code</b>${esc(job.exitCode ?? '—')}</span>
+        </div>
+        <div class="adm-agent-live-grid">
+          <section>
+            <h4>Status timeline</h4>
+            <div class="adm-agent-timeline">
+              ${events.map(event => `<div><i></i><span>${esc(event.payload?.from || 'created')} → <strong>${esc(event.payload?.to || event.eventType)}</strong></span><time>${esc(fmtDate(event.createdAt, { year: undefined }))}</time></div>`).join('') || '<p class="ui-dim">No status events yet.</p>'}
+            </div>
+          </section>
+          <section>
+            <h4>${job.status === 'running' ? '<i class="ti ti-loader-2 ui-spin"></i> Live activity' : 'Activity log'}</h4>
+            <div class="adm-agent-console" aria-live="polite">
+              ${visibleLogs.map(log => `<article class="${log.stream === 'stderr' ? 'is-error' : ''}">
+                <time>${esc(fmtDate(log.createdAt, { year: undefined }))}</time>
+                <span>${esc(describeAgentLog(log.message))}</span>
+              </article>`).join('') || '<p class="ui-dim">No streamed output. Older runs only contain their final result.</p>'}
+            </div>
+          </section>
+        </div>
+        ${job.error ? `<div class="adm-agent-error"><strong>Error</strong>${esc(job.error)}</div>` : ''}`
+      if (job.status === 'running' || job.status === 'queued') {
+        timer = setTimeout(refresh, 1500)
+      }
+    } catch (err) {
+      target.innerHTML = `<div class="ui-empty"><i class="ti ti-alert-circle"></i><span>${esc(err.message)}</span></div>`
+    }
+  }
+  refresh()
 }
 
 // ── Render & navigation ───────────────────────────────────────────────────
@@ -398,6 +505,9 @@ function bindTabEvents() {
           window.toast?.(`Coordinator: ${err.message}`, 'error')
         }
       })
+    })
+    document.querySelectorAll('[data-coordinator-view]').forEach(button => {
+      button.addEventListener('click', () => openAgentJobDetails(button.dataset.coordinatorView))
     })
     return
   }
