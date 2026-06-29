@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,14 @@ async def job(job_id: str):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
 
 
+@app.get("/api/v1/jobs/{job_id}/logs")
+async def job_logs(job_id: str, after: int = 0, limit: int = 250):
+    try:
+        return {"logs": store.list_job_logs(job_id, after_id=after, limit=limit)}
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+
+
 @app.post("/api/v1/jobs", status_code=status.HTTP_201_CREATED)
 async def create_job(body: JobRequest, x_coordinator_token: str | None = Header(default=None)):
     require_control_token(x_coordinator_token)
@@ -125,19 +134,31 @@ def _run_job(job_id: str) -> None:
         store.transition_job(job_id, "failed", error=probe.error or "Agent unavailable")
         return
     command = build_agent_command(job, probe.executable)
+    store.append_job_log(job_id, f"Starting {job['assignedAgent']} in {job['branchName']}", "system")
+    output_lines: deque[str] = deque(maxlen=1000)
     try:
         process = subprocess.Popen(
             command,
             cwd=job["worktreePath"],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
+            bufsize=1,
             shell=False,
         )
         with process_lock:
             processes[job_id] = process
-        stdout, stderr = process.communicate()
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                line = raw_line.rstrip("\r\n")
+                if not line:
+                    continue
+                output_lines.append(line)
+                store.append_job_log(job_id, line)
+            process.stdout.close()
+        process.wait()
     except OSError as exc:
+        store.append_job_log(job_id, str(exc), "stderr")
         store.transition_job(job_id, "failed", error=str(exc))
         return
     finally:
@@ -145,10 +166,11 @@ def _run_job(job_id: str) -> None:
             processes.pop(job_id, None)
     latest = store.get_job(job_id)
     if latest["status"] == "cancelled":
+        store.append_job_log(job_id, "Job cancelled", "system")
         return
-    combined = (stdout or "")[-65536:]
-    error_text = (stderr or "")[-8192:]
-    lowered = f"{combined}\n{error_text}".lower()
+    combined = "\n".join(output_lines)[-65536:]
+    error_text = combined[-8192:] if process.returncode else ""
+    lowered = combined.lower()
     if "rate limit" in lowered or "rate_limit" in lowered:
         store.transition_job(job_id, "rate_limited", exit_code=process.returncode, result_summary=combined, error=error_text)
     elif process.returncode != 0:
@@ -157,6 +179,8 @@ def _run_job(job_id: str) -> None:
         store.transition_job(job_id, "review", exit_code=0, result_summary=combined)
     else:
         store.transition_job(job_id, "completed", exit_code=0, result_summary=combined)
+    final = store.get_job(job_id)
+    store.append_job_log(job_id, f"Job finished with status {final['status']}", "system")
 
 
 @app.post("/api/v1/jobs/{job_id}/start", status_code=status.HTTP_202_ACCEPTED)

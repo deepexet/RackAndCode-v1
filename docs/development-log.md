@@ -159,3 +159,11 @@ For each material release, append a dated section containing product version, us
 - Updated the shell-free Claude command contract and added an exact regression assertion.
 - Added an audited Retry action for failed, cancelled and rate-limited jobs; Retry resets the prior run state and immediately starts a new isolated run.
 - Verification: 8 focused Coordinator/FastAPI tests, Python compile check and production frontend build passed.
+
+## 2026-06-29 — Live agent activity
+
+- Replaced end-only process buffering with incremental, bounded agent output capture.
+- Added an Administrator-only job detail endpoint for incremental logs and status events.
+- Added a responsive Live activity modal with elapsed time, status timeline, interpreted commands, file changes, agent messages, errors and retained console output.
+- Preserved final-result fallback for jobs completed before live capture was introduced.
+- Verification: 11 focused Coordinator/FastAPI tests, including a real streamed subprocess test, Python compile check and production frontend build passed.

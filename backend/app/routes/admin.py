@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from fastapi import APIRouter, HTTPException, status
@@ -423,6 +424,22 @@ async def coordinator_create_job(body: dict[str, Any], ctx: Auth):
     payload = dict(body)
     payload["createdBy"] = ctx.user_id
     return await _coordinator("/api/v1/jobs", method="POST", body=payload)
+
+
+@router.get("/coordinator/jobs/{job_id}")
+async def coordinator_job_details(job_id: str, ctx: Auth, after: int = 0):
+    _require_authenticated_admin(ctx)
+    encoded_job_id = urllib.parse.quote(job_id, safe="")
+    job, logs, events = await asyncio.gather(
+        _coordinator(f"/api/v1/jobs/{encoded_job_id}"),
+        _coordinator(f"/api/v1/jobs/{encoded_job_id}/logs?after={max(0, after)}&limit=500"),
+        _coordinator(f"/api/v1/events?jobId={encoded_job_id}&limit=100"),
+    )
+    return {
+        "job": job.get("job"),
+        "logs": logs.get("logs", []),
+        "events": events.get("events", []),
+    }
 
 
 @router.post("/coordinator/jobs/{job_id}/{action}")

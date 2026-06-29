@@ -72,6 +72,37 @@ class FastApiPreviewTests(unittest.TestCase):
                 settings.db_path = original_db_path
                 settings.lan_mode = original_lan_mode
 
+    def test_admin_can_read_incremental_agent_activity(self) -> None:
+        original_db_path = settings.db_path
+        original_lan_mode = settings.lan_mode
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings.db_path = Path(temporary_directory) / "rackpilot.db"
+            settings.lan_mode = True
+            auth._store = None
+            try:
+                with TestClient(app) as client:
+                    self.assertEqual(client.post("/api/v1/auth/dev-login").status_code, 200)
+                    responses = [
+                        {"job": {"id": "job-1", "status": "running"}},
+                        {"logs": [{"id": 8, "message": "working"}]},
+                        {"events": [{"eventType": "job.status_changed"}]},
+                    ]
+                    with patch(
+                        "app.routes.admin._coordinator",
+                        new=AsyncMock(side_effect=responses),
+                    ) as coordinator:
+                        response = client.get("/api/v1/admin/coordinator/jobs/job-1?after=7")
+
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["logs"][0]["id"], 8)
+                    requested_paths = {call.args[0] for call in coordinator.await_args_list}
+                    self.assertIn("/api/v1/jobs/job-1/logs?after=7&limit=500", requested_paths)
+                    self.assertIn("/api/v1/events?jobId=job-1&limit=100", requested_paths)
+            finally:
+                auth._store = None
+                settings.db_path = original_db_path
+                settings.lan_mode = original_lan_mode
+
 
 if __name__ == "__main__":
     unittest.main()
