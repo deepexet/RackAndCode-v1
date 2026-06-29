@@ -1,11 +1,53 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import asyncio
+import json
+import urllib.error
+import urllib.request
+
+from fastapi import APIRouter, HTTPException, status
 from typing import Any
 
+from app.core.config import settings
 from app.middleware.auth import Auth
 
 router = APIRouter()
+
+
+def _require_authenticated_admin(ctx: Auth) -> None:
+    if not ctx.user_id:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authenticated session required")
+    if ctx.role != "Administrator":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Administrator role required")
+
+
+def _coordinator_request(path: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
+    url = f"{settings.coordinator_url.rstrip('/')}/{path.lstrip('/')}"
+    headers = {"Accept": "application/json"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if method != "GET":
+        if not settings.coordinator_token:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Coordinator control is not configured")
+        headers["X-Coordinator-Token"] = settings.coordinator_token
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=settings.coordinator_timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("detail", "Coordinator request failed")
+        except (ValueError, AttributeError):
+            detail = "Coordinator request failed"
+        raise HTTPException(exc.code, detail) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Coordinator is unavailable") from exc
+
+
+async def _coordinator(path: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
+    return await asyncio.to_thread(_coordinator_request, path, method=method, body=body)
 
 
 # ── Platform settings ─────────────────────────────────────────────────────
@@ -352,3 +394,40 @@ async def system_stats(ctx: Auth):
         "platform": platform.system(),
         "hostname": platform.node(),
     }
+
+
+# ── Local Agent Coordinator ───────────────────────────────────────────────
+
+@router.get("/coordinator")
+async def coordinator_overview(ctx: Auth):
+    _require_authenticated_admin(ctx)
+    health, agents, worktrees, jobs, events = await asyncio.gather(
+        _coordinator("/health"),
+        _coordinator("/api/v1/agents"),
+        _coordinator("/api/v1/worktrees"),
+        _coordinator("/api/v1/jobs?limit=50"),
+        _coordinator("/api/v1/events?limit=100"),
+    )
+    return {
+        "health": health,
+        "agents": agents.get("agents", []),
+        "worktrees": worktrees.get("worktrees", []),
+        "jobs": jobs.get("jobs", []),
+        "events": events.get("events", []),
+    }
+
+
+@router.post("/coordinator/jobs")
+async def coordinator_create_job(body: dict[str, Any], ctx: Auth):
+    _require_authenticated_admin(ctx)
+    payload = dict(body)
+    payload["createdBy"] = ctx.user_id
+    return await _coordinator("/api/v1/jobs", method="POST", body=payload)
+
+
+@router.post("/coordinator/jobs/{job_id}/{action}")
+async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
+    _require_authenticated_admin(ctx)
+    if action not in {"start", "cancel", "approve", "reject"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown coordinator action")
+    return await _coordinator(f"/api/v1/jobs/{job_id}/{action}", method="POST", body={})

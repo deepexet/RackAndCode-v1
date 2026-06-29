@@ -51,4 +51,4 @@ queued -> running -> review -> waiting_approval -> completed
                   -> failed | cancelled | rate_limited
 ```
 
-The first UI increment will expose agents, worktrees, queue, events, execution state and Stop controls in an Administrator-only RackPilot tab.
+The first UI increment exposes read-only agents, worktrees, queue and execution state through an authenticated Administrator-only FastAPI proxy. The coordinator token remains server-side. Start, Stop and approval controls stay hidden until the production RBAC gate is complete.

@@ -10,8 +10,9 @@ Append-only summary of material product development. Git commits are the detaile
 - Added safe CLI discovery and shell-free command builders for both installed agents.
 - Added explicit review, approval, cancellation, failure and rate-limit lifecycle states.
 - Kept mutations token-protected and autonomous execution disabled by default.
+- Added an authenticated Administrator-only FastAPI proxy and a read-only Agents tab for status, CLI versions, worktrees and recent jobs; control tokens never reach browser code.
 - Documented AI ownership, handoff rules and ADR-004.
-- Verification: five coordinator unit tests passed; live service detected Codex 0.142.3 and Claude Code 2.1.140 with execution disabled.
+- Verification: five coordinator unit tests and proxy authorization checks passed; the Vite production build passed; live service detected Codex 0.142.3 and Claude Code 2.1.140 with execution disabled.
 
 ## 2026-06-23 — v0.33.0
 

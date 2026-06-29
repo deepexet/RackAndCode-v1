@@ -19,6 +19,7 @@ const TABS = [
   { id: 'audit',     label: 'Аудит',      icon: 'ti-shield-check' },
   { id: 'metrics',   label: 'Метрики',    icon: 'ti-chart-bar' },
   { id: 'system',    label: 'Система',    icon: 'ti-cpu' },
+  { id: 'agents',    label: 'Agents',      icon: 'ti-robot' },
 ]
 
 // ── Data ─────────────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ async function load(tab) {
     case 'audit':     d = await apiJSON('/api/v1/admin/audit-log'); break
     case 'metrics':   d = await apiJSON('/api/v1/admin/api-metrics'); break
     case 'system':    d = await apiJSON('/api/v1/admin/system-stats'); break
+    case 'agents':    d = await apiJSON('/api/v1/admin/coordinator'); break
   }
   _data[tab] = d
   return d
@@ -241,6 +243,56 @@ function renderSystem(d) {
     </div>`
 }
 
+function renderAgents(d) {
+  const health = d.health || {}
+  const agents = d.agents || []
+  const jobs = d.jobs || []
+  const worktrees = d.worktrees || []
+  const running = jobs.filter(j => j.status === 'running').length
+  const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
+  return `
+    <div class="adm-section">
+      <div class="adm-section-header">
+        <h3><i class="ti ti-robot"></i> Agent Coordinator</h3>
+        <span class="ui-dim" style="font-size:12px">Local control plane · ${esc(health.version || '—')}</span>
+        <button class="ui-btn ui-btn--sm" id="adm-agents-refresh"><i class="ti ti-refresh"></i> Refresh</button>
+      </div>
+      ${statCards([
+        { icon: 'ti-heartbeat', label: 'Service', value: health.status === 'ok' ? 'Online' : 'Offline', color: health.status === 'ok' ? 'var(--green)' : 'var(--red)' },
+        { icon: 'ti-player-play', label: 'Running', value: running, color: 'var(--blue)' },
+        { icon: 'ti-eye-check', label: 'Needs review', value: review, color: 'var(--amber)' },
+        { icon: 'ti-git-branch', label: 'Worktrees', value: worktrees.length, color: 'var(--accent)' },
+      ])}
+      <div class="adm-section-header" style="margin-top:18px"><h3>Installed agents</h3></div>
+      ${table({
+        columns: [
+          { label: 'Agent', render: r => `<strong>${esc(r.agent)}</strong>` },
+          { label: 'Status', render: r => badge(r.available ? 'available' : 'unavailable') },
+          { label: 'Version', render: r => `<span class="ui-mono">${esc(r.version || '—')}</span>` },
+          { label: 'Executable', render: r => `<span class="ui-mono ui-dim">${esc(r.executable || '—')}</span>` },
+        ],
+        rows: agents,
+        emptyText: 'No agent CLIs detected', emptyIcon: 'ti-robot-off',
+      })}
+      <div class="adm-section-header" style="margin-top:18px"><h3>Recent jobs <span class="ui-count">${jobs.length}</span></h3></div>
+      ${table({
+        columns: [
+          { label: 'Task', render: r => `<strong>${esc(r.title)}</strong><br><span class="ui-mono ui-dim">${esc(r.branchName)}</span>` },
+          { label: 'Agent', render: r => esc(r.assignedAgent) },
+          { label: 'Status', render: r => badge(r.status) },
+          { label: 'Created', render: r => timeAgo(r.createdAt) },
+        ],
+        rows: jobs,
+        emptyText: 'No coordinator jobs yet', emptyIcon: 'ti-list-check',
+      })}
+      <p class="ui-dim" style="margin-top:14px;font-size:12px">
+        Autonomous execution: <strong>${health.executionEnabled ? 'enabled' : 'disabled'}</strong> ·
+        Control token: <strong>${health.controlConfigured ? 'configured' : 'not configured'}</strong>.
+        Write controls remain hidden until authenticated RBAC and approval gates are verified.
+      </p>
+    </div>`
+}
+
 // ── Render & navigation ───────────────────────────────────────────────────
 
 function render() {
@@ -271,6 +323,7 @@ async function switchTab() {
       case 'audit':     html = renderAudit(d);      break
       case 'metrics':   html = renderMetrics(d);    break
       case 'system':    html = renderSystem(d);     break
+      case 'agents':    html = renderAgents(d);     break
     }
     body.innerHTML = html
     bindTabEvents()
@@ -288,6 +341,13 @@ function bindSystemRefresh() {
 
 function bindTabEvents() {
   if (_tab === 'system') { bindSystemRefresh(); return }
+  if (_tab === 'agents') {
+    document.getElementById('adm-agents-refresh')?.addEventListener('click', () => {
+      delete _data.agents
+      switchTab()
+    })
+    return
+  }
   document.getElementById('adm-edit-settings')?.addEventListener('click', () => {
     const s = _data.settings?.settings || {}
     const { close } = openModal({

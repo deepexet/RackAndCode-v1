@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     ai_default_model: str = "gpt-4o-mini"
 
+    # Local development agent coordinator
+    coordinator_url: str = "http://127.0.0.1:4180"
+    coordinator_token: str = ""
+    coordinator_timeout_seconds: float = 5.0
+
     # Email
     smtp_host: str = ""
     smtp_port: int = 587
