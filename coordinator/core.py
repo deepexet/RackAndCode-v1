@@ -140,6 +140,48 @@ def validate_worktree(repo_root: Path, worktree_path: str, branch_name: str) -> 
     return candidate
 
 
+def inspect_worktree(worktree_path: str) -> dict[str, Any]:
+    """Return bounded Git metadata for review without exposing file contents."""
+    root = Path(worktree_path).expanduser().resolve()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError((result.stderr or "Git inspection failed").strip())
+        return result.stdout.strip()
+
+    status_output = git("status", "--short", "--untracked-files=all")
+    changes = []
+    for line in status_output.splitlines()[:500]:
+        if len(line) < 3:
+            continue
+        changes.append({"status": line[:2], "path": line[3:]})
+    unstaged = git("diff", "--stat", "--compact-summary")
+    staged = git("diff", "--cached", "--stat", "--compact-summary")
+    commits = []
+    try:
+        history = git("log", "-5", "--pretty=format:%h%x09%s")
+    except ValueError:
+        history = ""  # A newly created worktree may not have a first commit yet.
+    for line in history.splitlines():
+        commit, _, subject = line.partition("\t")
+        commits.append({"commit": commit, "subject": subject})
+    return {
+        "dirty": bool(changes),
+        "changeCount": len(changes),
+        "changes": changes,
+        "unstagedStat": unstaged,
+        "stagedStat": staged,
+        "recentCommits": commits,
+    }
+
+
 def build_agent_command(job: dict[str, Any], executable: str) -> list[str]:
     """Build an argv list. Commands are never passed through a shell."""
     instructions = str(job["instructions"])

@@ -63,3 +63,5 @@ Coordinator stores bounded, line-oriented agent output while a process is runnin
 Every start or retry increments the job attempt number. Live activity defaults to the current attempt so output from an earlier failed run cannot be confused with the active run; retained records remain queryable by attempt. Claude `allowed_warning` usage events are informational and do not become `rate_limited`. Only an actual rejected limit or an error result with a rate-limit reason changes the job to that state.
 
 Claude session identifiers are retained per job. If a job reaches its turn budget, Continue resumes that same Claude session with the existing context and increases the budget by four turns, capped at 20. This avoids paying the time and context cost of repeating a completed audit. A resumed job remains in the same registered worktree and still stops for Codex review.
+
+The Live review view independently inspects the registered Git worktree and shows bounded file status plus staged and unstaged diff statistics. It never returns file contents. Agent narration is therefore not the only evidence available before Approve.

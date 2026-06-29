@@ -421,6 +421,7 @@ function openAgentJobDetails(jobId) {
         lastLogId = data.logs[data.logs.length - 1].id
       }
       const job = data.job || {}
+      const review = data.review || {}
       const events = (data.events || []).slice().reverse()
       const fallback = !logs.length && job.resultSummary
         ? [{ id: 'result', stream: job.error ? 'stderr' : 'stdout', message: job.resultSummary, createdAt: job.completedAt }]
@@ -437,6 +438,17 @@ function openAgentJobDetails(jobId) {
           <span><b>Exit code</b>${esc(job.exitCode ?? '—')}</span>
           <span><b>Attempt / budget</b>${esc(job.attempt ?? 0)} · ${esc(job.maxTurns ?? '—')} turns</span>
         </div>
+        <section class="adm-agent-review">
+          <div class="adm-agent-review-head">
+            <h4>Worktree changes</h4>
+            ${badge(review.dirty ? `${review.changeCount || 0} changed` : 'clean')}
+          </div>
+          ${review.changes?.length ? `<div class="adm-agent-change-list">
+            ${review.changes.slice(0, 100).map(change => `<span><code>${esc(change.status)}</code>${esc(change.path)}</span>`).join('')}
+          </div>` : '<p class="ui-dim">No uncommitted file changes in this worktree.</p>'}
+          ${review.stagedStat ? `<pre><strong>Staged</strong>\n${esc(review.stagedStat)}</pre>` : ''}
+          ${review.unstagedStat ? `<pre><strong>Unstaged</strong>\n${esc(review.unstagedStat)}</pre>` : ''}
+        </section>
         <div class="adm-agent-live-grid">
           <section>
             <h4>Status timeline</h4>

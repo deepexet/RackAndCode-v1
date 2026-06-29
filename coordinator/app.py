@@ -21,6 +21,7 @@ from .core import (
     discover_worktrees,
     probe_agent,
     probes_as_dict,
+    inspect_worktree,
     validate_worktree,
 )
 
@@ -150,6 +151,18 @@ async def job_logs(job_id: str, after: int = 0, limit: int = 250, attempt: int |
         }
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+
+
+@app.get("/api/v1/jobs/{job_id}/review")
+async def job_review(job_id: str):
+    try:
+        job = store.get_job(job_id)
+        validated = validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
+        return {"review": inspect_worktree(str(validated))}
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 @app.post("/api/v1/jobs", status_code=status.HTTP_201_CREATED)

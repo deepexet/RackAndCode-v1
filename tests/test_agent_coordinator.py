@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from collections import deque
 from pathlib import Path
+import subprocess
 from unittest.mock import patch
 
-from coordinator.core import AgentProbe, CoordinatorStore, JobCreate, build_agent_command
+from coordinator.core import AgentProbe, CoordinatorStore, JobCreate, build_agent_command, inspect_worktree
 
 
 class CoordinatorStoreTests(unittest.TestCase):
@@ -129,6 +130,19 @@ class CoordinatorStoreTests(unittest.TestCase):
         )
         self.assertEqual(updated["agentSessionId"], "claude-session")
         self.assertEqual(updated["maxTurns"], 12)
+
+    def test_worktree_review_lists_changes_without_file_contents(self):
+        root = Path(self.temp_dir.name) / "review-repo"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        (root / "changed.txt").write_text("private content", encoding="utf-8")
+
+        review = inspect_worktree(str(root))
+
+        self.assertTrue(review["dirty"])
+        self.assertEqual(review["changeCount"], 1)
+        self.assertEqual(review["changes"][0]["path"], "changed.txt")
+        self.assertNotIn("private content", str(review))
 
     def test_runner_streams_output_before_review(self):
         from coordinator import app as coordinator_app
