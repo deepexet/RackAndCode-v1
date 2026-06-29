@@ -54,6 +54,8 @@ queued -> running -> review -> waiting_approval -> completed
 
 The Administrator-only FastAPI proxy exposes agents, worktrees, queue and execution state. Status-aware Start, Retry, Cancel, Approve and Reject controls are available when execution and the server-side token are configured. Retry is limited to failed, cancelled and rate-limited jobs and starts a fresh run in the same validated worktree. The coordinator token never reaches browser code, and every successful action is written to the workspace audit log.
 
+Administrators can create a bounded job from Admin → Agents by selecting an installed agent and a registered non-integration worktree, defining instructions and a 1–20 turn budget, and choosing whether review is required and execution should start immediately.
+
 ## Live activity
 
 Coordinator stores bounded, line-oriented agent output while a process is running. Admin → Agents → Live polls incrementally and presents elapsed time, status transitions, commands, file changes, agent messages, errors and the retained console stream. Each job keeps its latest 2,000 log records; older runs created before this capability retain only their final result summary.

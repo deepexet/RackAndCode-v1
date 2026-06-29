@@ -283,7 +283,10 @@ function renderAgents(d) {
       <div class="adm-section-header">
         <h3><i class="ti ti-robot"></i> Agent Coordinator</h3>
         <span class="ui-dim" style="font-size:12px">Local control plane · ${esc(health.version || '—')}</span>
-        <button class="ui-btn ui-btn--sm" id="adm-agents-refresh"><i class="ti ti-refresh"></i> Refresh</button>
+        <div class="adm-agent-toolbar">
+          <button class="ui-btn ui-btn--sm ui-btn--primary" id="adm-agent-new"><i class="ti ti-plus"></i> New job</button>
+          <button class="ui-btn ui-btn--sm" id="adm-agents-refresh"><i class="ti ti-refresh"></i> Refresh</button>
+        </div>
       </div>
       ${statCards([
         { icon: 'ti-heartbeat', label: 'Service', value: health.status === 'ok' ? 'Online' : 'Offline', color: health.status === 'ok' ? 'var(--green)' : 'var(--red)' },
@@ -462,6 +465,89 @@ function openAgentJobDetails(jobId) {
   refresh()
 }
 
+function openAgentJobCreate() {
+  const coordinator = _data.agents || {}
+  const agents = (coordinator.agents || []).filter(agent => agent.available)
+  const worktrees = (coordinator.worktrees || []).filter(item => {
+    const branch = String(item.branch || '').replace('refs/heads/', '')
+    return item.worktree && branch && !['main', 'master'].includes(branch)
+  })
+  if (!agents.length || !worktrees.length) {
+    window.toast?.('An available agent and a non-integration worktree are required', 'error')
+    return
+  }
+  const { close } = openModal({
+    title: 'Create agent job',
+    width: 720,
+    body: `<form class="ui-form" id="adm-agent-job-form">
+      <div class="ui-form-row"><label>Title</label>
+        <input class="ui-input" name="title" maxlength="200" required placeholder="Focused outcome for this job"></div>
+      <div class="ui-form-row"><label>Instructions</label>
+        <textarea class="ui-input" name="instructions" rows="8" maxlength="50000" required
+          placeholder="Scope, expected output, verification, constraints, and where to stop for review"></textarea></div>
+      <div class="ui-form-grid">
+        <div class="ui-form-row"><label>Agent</label>
+          <select class="ui-input" name="assignedAgent">
+            ${agents.map(agent => `<option value="${esc(agent.agent)}">${esc(agent.agent)} · ${esc(agent.version || 'available')}</option>`).join('')}
+          </select></div>
+        <div class="ui-form-row"><label>Turn budget</label>
+          <input class="ui-input" name="maxTurns" type="number" min="1" max="20" value="10"></div>
+      </div>
+      <div class="ui-form-row"><label>Isolated worktree</label>
+        <select class="ui-input" name="worktreePath">
+          ${worktrees.map(item => {
+            const branch = String(item.branch).replace('refs/heads/', '')
+            return `<option value="${esc(item.worktree)}">${esc(branch)} · ${esc(item.worktree)}</option>`
+          }).join('')}
+        </select></div>
+      <label class="ui-check-row"><input type="checkbox" name="requiresReview" checked>
+        <span>Stop for Codex/human review before completion</span></label>
+      <label class="ui-check-row"><input type="checkbox" name="startImmediately" checked>
+        <span>Start immediately after creation</span></label>
+    </form>`,
+    footer: `<button class="ui-btn ui-btn--primary" id="adm-agent-job-save"><i class="ti ti-player-play"></i> Create job</button>
+             <button class="ui-btn" id="adm-agent-job-cancel">Cancel</button>`,
+  })
+  document.getElementById('adm-agent-job-cancel')?.addEventListener('click', close)
+  document.getElementById('adm-agent-job-save')?.addEventListener('click', async event => {
+    const form = document.getElementById('adm-agent-job-form')
+    if (!form?.reportValidity()) return
+    const fields = new FormData(form)
+    const worktreePath = String(fields.get('worktreePath') || '')
+    const selectedWorktree = worktrees.find(item => item.worktree === worktreePath)
+    if (!selectedWorktree) return window.toast?.('Select a registered worktree', 'error')
+    const button = event.currentTarget
+    button.disabled = true
+    try {
+      const created = await apiJSON('/api/v1/admin/coordinator/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: String(fields.get('title') || '').trim(),
+          instructions: String(fields.get('instructions') || '').trim(),
+          assignedAgent: String(fields.get('assignedAgent') || ''),
+          worktreePath,
+          branchName: String(selectedWorktree.branch || '').replace('refs/heads/', ''),
+          requiresReview: fields.get('requiresReview') === 'on',
+          maxTurns: Number(fields.get('maxTurns') || 10),
+        }),
+      })
+      if (fields.get('startImmediately') === 'on' && created.job?.id) {
+        await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(created.job.id)}/start`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        })
+      }
+      close()
+      delete _data.agents
+      window.toast?.('Agent job created', 'success')
+      switchTab()
+    } catch (err) {
+      button.disabled = false
+      window.toast?.(`Coordinator: ${err.message}`, 'error')
+    }
+  })
+}
+
 // ── Render & navigation ───────────────────────────────────────────────────
 
 function render() {
@@ -511,6 +597,7 @@ function bindSystemRefresh() {
 function bindTabEvents() {
   if (_tab === 'system') { bindSystemRefresh(); return }
   if (_tab === 'agents') {
+    document.getElementById('adm-agent-new')?.addEventListener('click', openAgentJobCreate)
     document.getElementById('adm-agents-refresh')?.addEventListener('click', () => {
       delete _data.agents
       switchTab()
