@@ -143,3 +143,12 @@ For each material release, append a dated section containing product version, us
 - Removed the remaining FieldOS database name from the environment template.
 - Verified the authenticated Admin → Agents path against the local Coordinator while autonomous execution and write controls remained disabled.
 - Verification: 6 focused FastAPI/Coordinator tests, Python compile check, production frontend build and browser smoke test passed.
+
+## 2026-06-29 — Administrator controls for agent jobs
+
+- Added status-aware Start, Cancel, Approve and Reject controls to Admin → Agents.
+- Kept the Coordinator control token exclusively between the FastAPI backend and local Coordinator; browser clients never receive it.
+- Restricted every action to an authenticated Administrator and added workspace audit events for successful job actions.
+- Improved FastAPI error details displayed by the frontend.
+- Enabled local execution for the isolated preview stack without automatically starting queued jobs.
+- Verification: 7 focused FastAPI/Coordinator tests, Python compile check, production frontend build and authenticated live API smoke test passed.

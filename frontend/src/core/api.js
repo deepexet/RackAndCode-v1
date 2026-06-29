@@ -96,7 +96,10 @@ export async function apiJSON(path, opts = {}) {
   const resp = await apiFetch(path, opts)
   if (!resp.ok) {
     let message = `HTTP ${resp.status}`
-    try { message = (await resp.json()).error?.message || message } catch {}
+    try {
+      const payload = await resp.json()
+      message = payload.error?.message || payload.detail || message
+    } catch {}
     throw new Error(message)
   }
   return resp.json()

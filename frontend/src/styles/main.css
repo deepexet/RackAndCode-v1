@@ -1520,6 +1520,8 @@ body {
 .adm-wt-actions { display:flex; flex-direction:column; gap:4px; }
 .adm-wt-action { font-size:12px; color:var(--text-3); display:flex; align-items:center; gap:4px; }
 .adm-wt-action .ti { color:var(--text-4); font-size:11px; }
+.adm-agent-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:150px; }
+.adm-agent-actions .ui-btn { white-space:nowrap; }
 
 .adm-audit-ico { font-size:16px; }
 .adm-method { font-family:var(--font-mono); font-size:10px; font-weight:700; border-radius:3px; padding:2px 5px; }

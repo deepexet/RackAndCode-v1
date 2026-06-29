@@ -41,7 +41,8 @@ curl http://127.0.0.1:4180/api/v1/agents
 curl http://127.0.0.1:4180/api/v1/worktrees
 ```
 
-Execution remains disabled in this configuration. Enabling it is a separate operator decision after the Admin control surface and approval policy are connected.
+Execution remains disabled in this basic configuration. The isolated preview stack may enable it with
+`RACKPILOT_COORDINATOR_EXECUTION=true` after both services receive the same server-side control token.
 
 ## Job lifecycle
 
@@ -51,4 +52,4 @@ queued -> running -> review -> waiting_approval -> completed
                   -> failed | cancelled | rate_limited
 ```
 
-The first UI increment exposes read-only agents, worktrees, queue and execution state through an authenticated Administrator-only FastAPI proxy. The coordinator token remains server-side. Start, Stop and approval controls stay hidden until the production RBAC gate is complete.
+The Administrator-only FastAPI proxy exposes agents, worktrees, queue and execution state. Status-aware Start, Cancel, Approve and Reject controls are available when execution and the server-side token are configured. The coordinator token never reaches browser code, and every successful action is written to the workspace audit log.

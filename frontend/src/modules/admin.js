@@ -250,6 +250,26 @@ function renderAgents(d) {
   const worktrees = d.worktrees || []
   const running = jobs.filter(j => j.status === 'running').length
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
+  const controlsReady = Boolean(health.controlConfigured)
+  const jobActions = job => {
+    const buttons = []
+    if (job.status === 'queued') {
+      buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--primary" data-coordinator-action="start" data-job-id="${esc(job.id)}"
+        ${!controlsReady || !health.executionEnabled ? 'disabled title="Enable autonomous execution to start jobs"' : ''}>
+        <i class="ti ti-player-play"></i> Start</button>`)
+      buttons.push(`<button class="ui-btn ui-btn--sm" data-coordinator-action="cancel" data-job-id="${esc(job.id)}"
+        ${!controlsReady ? 'disabled' : ''}><i class="ti ti-x"></i> Cancel</button>`)
+    } else if (job.status === 'running') {
+      buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--danger" data-coordinator-action="cancel" data-job-id="${esc(job.id)}"
+        ${!controlsReady ? 'disabled' : ''}><i class="ti ti-player-stop"></i> Cancel</button>`)
+    } else if (['review', 'waiting_approval'].includes(job.status)) {
+      buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--primary" data-coordinator-action="approve" data-job-id="${esc(job.id)}"
+        ${!controlsReady ? 'disabled' : ''}><i class="ti ti-check"></i> Approve</button>`)
+      buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--danger" data-coordinator-action="reject" data-job-id="${esc(job.id)}"
+        ${!controlsReady ? 'disabled' : ''}><i class="ti ti-x"></i> Reject</button>`)
+    }
+    return buttons.length ? `<div class="adm-agent-actions">${buttons.join('')}</div>` : '<span class="ui-dim">—</span>'
+  }
   return `
     <div class="adm-section">
       <div class="adm-section-header">
@@ -281,6 +301,7 @@ function renderAgents(d) {
           { label: 'Agent', render: r => esc(r.assignedAgent) },
           { label: 'Status', render: r => badge(r.status) },
           { label: 'Created', render: r => timeAgo(r.createdAt) },
+          { label: 'Actions', render: jobActions },
         ],
         rows: jobs,
         emptyText: 'No coordinator jobs yet', emptyIcon: 'ti-list-check',
@@ -288,7 +309,7 @@ function renderAgents(d) {
       <p class="ui-dim" style="margin-top:14px;font-size:12px">
         Autonomous execution: <strong>${health.executionEnabled ? 'enabled' : 'disabled'}</strong> ·
         Control token: <strong>${health.controlConfigured ? 'configured' : 'not configured'}</strong>.
-        Write controls remain hidden until authenticated RBAC and approval gates are verified.
+        Actions are available only to an authenticated Administrator and every action is audited.
       </p>
     </div>`
 }
@@ -345,6 +366,33 @@ function bindTabEvents() {
     document.getElementById('adm-agents-refresh')?.addEventListener('click', () => {
       delete _data.agents
       switchTab()
+    })
+    document.querySelectorAll('[data-coordinator-action]').forEach(button => {
+      button.addEventListener('click', async () => {
+        const action = button.dataset.coordinatorAction
+        const jobId = button.dataset.jobId
+        const confirmations = {
+          start: 'Start this agent job now?',
+          cancel: 'Cancel this agent job?',
+          approve: 'Approve this completed job?',
+          reject: 'Reject this job and mark it failed?',
+        }
+        if (!window.confirm(confirmations[action] || 'Continue?')) return
+        button.disabled = true
+        try {
+          await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(jobId)}/${action}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+          })
+          delete _data.agents
+          window.toast?.(`Agent job: ${action}`, 'success')
+          switchTab()
+        } catch (err) {
+          button.disabled = false
+          window.toast?.(`Coordinator: ${err.message}`, 'error')
+        }
+      })
     })
     return
   }

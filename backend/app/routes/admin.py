@@ -430,4 +430,13 @@ async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
     _require_authenticated_admin(ctx)
     if action not in {"start", "cancel", "approve", "reject"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown coordinator action")
-    return await _coordinator(f"/api/v1/jobs/{job_id}/{action}", method="POST", body={})
+    result = await _coordinator(f"/api/v1/jobs/{job_id}/{action}", method="POST", body={})
+    ctx.store.audit(
+        ctx.org,
+        ctx.user_id,
+        ctx.role,
+        f"coordinator.job.{action}",
+        "agent_job",
+        job_id,
+    )
+    return result
