@@ -6054,18 +6054,102 @@ Rules:
             now = utc_now()
             new_status = str(payload.get("status", row["status"]))
             completed_at = now if new_status == "done" and row["status"] != "done" else row["completed_at"]
+            asset_id = payload.get("asset_id", payload.get("assetId", row["asset_id"]))
             conn.execute(
-                "UPDATE work_orders SET title=?,description=?,status=?,priority=?,assigned_to=?,due_date=?,notes=?,completed_at=?,updated_at=? "
+                "UPDATE work_orders SET title=?,description=?,status=?,priority=?,asset_id=?,assigned_to=?,due_date=?,notes=?,completed_at=?,updated_at=? "
                 "WHERE id=? AND organization_id=?",
                 (str(payload.get("title", row["title"])).strip() or row["title"],
                  str(payload.get("description", row["description"]))[:2000],
                  new_status, str(payload.get("priority", row["priority"])),
+                 asset_id or None,
                  str(payload.get("assigned_to", payload.get("assignedTo", row["assigned_to"]))),
                  payload.get("due_date", payload.get("dueDate", row["due_date"])),
                  str(payload.get("notes", row["notes"])),
                  completed_at, now, wo_id, org)
             )
             row = conn.execute("SELECT * FROM work_orders WHERE id=?", (wo_id,)).fetchone()
+        return dict(row)
+
+    def get_work_order(self, org: str, wo_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM work_orders WHERE id=? AND organization_id=?", (wo_id, org)
+            ).fetchone()
+            if not row:
+                return None
+            wo = dict(row)
+            wo["tasks"] = [dict(r) for r in conn.execute(
+                "SELECT * FROM work_order_tasks WHERE work_order_id=? ORDER BY sort_order, created_at",
+                (wo_id,)
+            ).fetchall()]
+            wo["comments"] = [dict(r) for r in conn.execute(
+                "SELECT * FROM work_order_comments WHERE work_order_id=? ORDER BY created_at",
+                (wo_id,)
+            ).fetchall()]
+            if wo.get("asset_id"):
+                asset_row = conn.execute(
+                    "SELECT id, name, asset_tag, category, status FROM tracked_assets WHERE id=? AND organization_id=?",
+                    (wo["asset_id"], org)
+                ).fetchone()
+                wo["asset"] = dict(asset_row) if asset_row else None
+            else:
+                wo["asset"] = None
+            return wo
+
+    def create_wo_task(self, org: str, wo_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import uuid, datetime
+        tid = str(uuid.uuid4())
+        now = datetime.datetime.utcnow().isoformat() + "+00:00"
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO work_order_tasks (id,organization_id,work_order_id,title,completed,sort_order,created_at,updated_at) "
+                "VALUES (?,?,?,?,0,?,?,?)",
+                (tid, org, wo_id, payload.get("title",""), payload.get("sort_order", 0), now, now)
+            )
+            row = conn.execute("SELECT * FROM work_order_tasks WHERE id=?", (tid,)).fetchone()
+        self.audit(org, None, None, "wo_task.create", "work_order", wo_id)
+        return dict(row)
+
+    def update_wo_task(self, org: str, wo_id: str, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import datetime
+        now = datetime.datetime.utcnow().isoformat() + "+00:00"
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM work_order_tasks WHERE id=? AND work_order_id=? AND organization_id=?",
+                (task_id, wo_id, org)
+            ).fetchone()
+            if not row:
+                raise ValueError("Task not found")
+            completed = int(payload.get("completed", row["completed"]))
+            title = payload.get("title", row["title"])
+            conn.execute(
+                "UPDATE work_order_tasks SET title=?,completed=?,updated_at=? WHERE id=?",
+                (title, completed, now, task_id)
+            )
+            row = conn.execute("SELECT * FROM work_order_tasks WHERE id=?", (task_id,)).fetchone()
+        self.audit(org, None, None, "wo_task.update", "work_order", wo_id)
+        return dict(row)
+
+    def delete_wo_task(self, org: str, wo_id: str, task_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_order_tasks WHERE id=? AND work_order_id=? AND organization_id=?",
+                (task_id, wo_id, org)
+            )
+        self.audit(org, None, None, "wo_task.delete", "work_order", wo_id)
+
+    def add_wo_comment(self, org: str, wo_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import uuid, datetime
+        cid = str(uuid.uuid4())
+        now = datetime.datetime.utcnow().isoformat() + "+00:00"
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO work_order_comments (id,organization_id,work_order_id,author,body,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (cid, org, wo_id, payload.get("author",""), payload.get("body",""), now)
+            )
+            row = conn.execute("SELECT * FROM work_order_comments WHERE id=?", (cid,)).fetchone()
+        self.audit(org, None, None, "wo_comment.add", "work_order", wo_id)
         return dict(row)
 
     # ── Cycle counts ─────────────────────────────────────────────────────
@@ -10396,8 +10480,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/v1/work-orders/") and len(path.strip("/").split("/")) == 4:
             wo_id = path.strip("/").split("/")[3]
             if not self._require_permission("projectRead"): return
-            orders = self.store.list_work_orders(self.organization_id)
-            wo = next((o for o in orders if o["id"] == wo_id), None)
+            wo = self.store.get_work_order(self.organization_id, wo_id)
             if not wo: self._error(HTTPStatus.NOT_FOUND, "not_found", "Work order not found"); return
             self._json(HTTPStatus.OK, {"workOrder": wo}); return
         # Cycle counts: GET /api/v1/inventory/cycle-counts  and /:id
@@ -12207,6 +12290,34 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
             except (ValueError, LookupError, json.JSONDecodeError) as e:
                 status = HTTPStatus.NOT_FOUND if isinstance(e, LookupError) else HTTPStatus.BAD_REQUEST
                 self._error(status, "invalid_request", str(e)); return
+        # Work order tasks: POST /api/v1/work-orders/:id/tasks
+        if len(wo_parts) == 5 and wo_parts[2] == "work-orders" and wo_parts[4] == "tasks":
+            if not self._require_permission("projectManage"): return
+            try:
+                task = self.store.create_wo_task(self.organization_id, wo_parts[3], self._read_json())
+                self._json(HTTPStatus.CREATED, {"task": task}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+        # Work order task update/delete: POST /api/v1/work-orders/:id/tasks/:tid[/delete]
+        if len(wo_parts) >= 6 and wo_parts[2] == "work-orders" and wo_parts[4] == "tasks":
+            wo_id, task_id = wo_parts[3], wo_parts[5]
+            if not self._require_permission("projectManage"): return
+            if len(wo_parts) == 7 and wo_parts[6] == "delete":
+                self.store.delete_wo_task(self.organization_id, wo_id, task_id)
+                self._json(HTTPStatus.OK, {"ok": True}); return
+            try:
+                task = self.store.update_wo_task(self.organization_id, wo_id, task_id, self._read_json())
+                self._json(HTTPStatus.OK, {"task": task}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
+        # Work order comments: POST /api/v1/work-orders/:id/comments
+        if len(wo_parts) == 5 and wo_parts[2] == "work-orders" and wo_parts[4] == "comments":
+            if not self._require_permission("projectManage"): return
+            try:
+                comment = self.store.add_wo_comment(self.organization_id, wo_parts[3], self._read_json())
+                self._json(HTTPStatus.CREATED, {"comment": comment}); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
         # Webhooks POST endpoints
         if path == "/api/v1/webhooks":
             if not self._require_permission("adminPanel"): return

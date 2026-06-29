@@ -1,23 +1,25 @@
 import { apiJSON } from '../core/api.js'
 import { createStore } from '../core/store.js'
 
-const state = createStore({ kpi: null, projects: [], activity: [], criticalTasks: [], loading: true })
+const state = createStore({ kpi: null, projects: [], workOrders: [], activity: [], criticalTasks: [], loading: true })
 
 export async function mount() {
   const el = document.querySelector('[data-view="overview"]')
   if (!el) return unmount
   renderSkeleton(el)
   try {
-    const [kpiData, projectsData, notifData, criticalData] = await Promise.all([
+    const [kpiData, projectsData, notifData, criticalData, woData] = await Promise.all([
       apiJSON('/api/v1/overview/kpi').catch(() => null),
       apiJSON('/api/v1/projects').catch(() => ({ projects: [] })),
       apiJSON('/api/v1/notifications').catch(() => ({ notifications: [] })),
       apiJSON('/api/v1/critical-tasks').catch(() => ({ tasks: [] })),
+      apiJSON('/api/v1/work-orders').catch(() => ({ workOrders: [] })),
     ])
     state.set({
       loading: false,
       kpi: kpiData || { activeProjects: 0, openWorkOrders: 0, stockAlerts: 0, techsOnline: 0 },
       projects: (projectsData.projects || []).filter(p => p.status !== 'completed').slice(0, 4),
+      workOrders: (woData.workOrders || []).filter(w => w.status === 'open' || w.status === 'in_progress').slice(0, 5),
       activity: (notifData.notifications || []).slice(0, 5),
       criticalTasks: criticalData.tasks || [],
     })
@@ -91,7 +93,10 @@ function renderFull(el, s) {
     </div>
 
     ${s.criticalTasks.length > 0 ? criticalBlock(s.criticalTasks) : ''}
-    ${s.projects.length > 0 ? projectsBlock(s.projects) : emptyProjects()}
+    <div class="ov-two-col">
+      <div>${s.projects.length > 0 ? projectsBlock(s.projects) : emptyProjects()}</div>
+      <div>${workOrdersBlock(s.workOrders)}</div>
+    </div>
     ${s.activity.length > 0 ? activityBlock(s.activity) : ''}
   `
   el.querySelector('#ov-new')?.addEventListener('click', () => { location.hash = '#projects' })
@@ -121,6 +126,37 @@ function projectsBlock(projects) {
             <span style="font-size:11px;color:var(--text-4)">${Math.round(p.progress ?? 0)}%</span>
             ${p.dueDate ? `<span style="font-size:11px;color:${overdue(p.dueDate) ? 'var(--red)' : 'var(--text-4)'}">${fmtDate(p.dueDate)}</span>` : ''}
           </div>
+        </div>`).join('')}
+    </div>`
+}
+
+function workOrdersBlock(orders) {
+  const STATUS_LABEL = { open: 'Открыт', in_progress: 'В работе', done: 'Готово', cancelled: 'Отменён' }
+  const STATUS_COLOR = { open: 'var(--text-4)', in_progress: 'var(--accent)', done: 'var(--green)' }
+  const PRIO_COLOR = { critical: 'var(--red)', high: 'var(--amber)', medium: 'var(--blue)', low: 'var(--text-4)' }
+  const PRIO_BAR = { critical: '#e53935', high: '#fb8c00', medium: 'var(--accent)', low: 'var(--text-4)' }
+  if (!orders.length) return `
+    <div class="card" style="height:100%;box-sizing:border-box">
+      <div class="card-header"><span class="card-title">Open work orders</span><a class="card-link" href="#work-orders">View all</a></div>
+      <div style="padding:24px;text-align:center;color:var(--text-4);font-size:13px">No open work orders</div>
+    </div>`
+  return `
+    <div class="card" style="height:100%;box-sizing:border-box">
+      <div class="card-header">
+        <span class="card-title">Open work orders</span>
+        <a class="card-link" href="#work-orders">View all</a>
+      </div>
+      ${orders.map(w => `
+        <div class="card-row" style="gap:10px;cursor:pointer" onclick="location.hash='#work-orders'">
+          <div style="width:3px;height:36px;border-radius:2px;background:${PRIO_BAR[w.priority]||'var(--border)'};flex-shrink:0"></div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(w.title)}</div>
+            <div style="font-size:11px;color:var(--text-4);margin-top:2px">
+              ${w.assigned_to ? esc(w.assigned_to) + ' · ' : ''}
+              <span style="color:${STATUS_COLOR[w.status]||'var(--text-4)'}">${STATUS_LABEL[w.status]||w.status}</span>
+            </div>
+          </div>
+          ${w.due_date ? `<span style="font-size:11px;color:${overdue(w.due_date)?'var(--red)':'var(--text-4)'};flex-shrink:0">${fmtDate(w.due_date)}</span>` : ''}
         </div>`).join('')}
     </div>`
 }
