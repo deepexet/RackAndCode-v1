@@ -46,5 +46,5 @@ def run_migrations() -> None:
     """Apply all pending SQL migrations in order."""
     from server.migrations import MigrationRunner  # reuse existing runner
 
-    runner = MigrationRunner(str(settings.db_path), str(settings.migrations_dir))
-    runner.run()
+    runner = MigrationRunner(settings.db_path, settings.migrations_dir)
+    runner.apply()

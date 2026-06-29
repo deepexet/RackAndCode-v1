@@ -1,5 +1,7 @@
 import { defineConfig } from 'vite'
 
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:4173'
+
 export default defineConfig({
   root: '.',
   publicDir: 'public',
@@ -30,7 +32,7 @@ export default defineConfig({
     // Proxy API calls to FastAPI backend in development
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:4173',
+        target: apiProxyTarget,
         changeOrigin: true,
       },
     },

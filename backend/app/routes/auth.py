@@ -1,11 +1,55 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from app.middleware.auth import Auth, StoreOnly
 
 router = APIRouter()
+
+
+@router.post("/dev-login")
+async def dev_login(request: Request, response: Response, store: StoreOnly):
+    """Create a local administrator session only while explicit LAN mode is active."""
+    from app.core.config import settings
+
+    if not settings.lan_mode:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+    with store._connect() as connection:
+        user = connection.execute(
+            """
+            SELECT u.id, u.display_name, u.email, m.organization_id, m.role
+            FROM users u JOIN memberships m ON m.user_id = u.id
+            WHERE u.id='local-admin' AND m.status='active' LIMIT 1
+            """
+        ).fetchone()
+    if not user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No local administrator found")
+    result = store._create_session(
+        user,
+        user["email"] or "admin@local.rackpilot",
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    store.audit(
+        user["organization_id"],
+        user["id"],
+        user["role"],
+        "dev_login",
+        "session",
+        None,
+        "ok",
+        request.client.host if request.client else None,
+    )
+    response.set_cookie("rp_session", result["token"], httponly=True, samesite="lax", max_age=72 * 3600)
+    return {
+        "token": result["token"],
+        "role": result["role"],
+        "userId": user["id"],
+        "orgId": result["organizationId"],
+        "name": user["display_name"],
+        "email": user["email"],
+    }
 
 
 class LoginRequest(BaseModel):

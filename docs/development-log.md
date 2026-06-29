@@ -132,3 +132,14 @@ Append-only summary of material product development. Git commits are the detaile
 ## Logging rule
 
 For each material release, append a dated section containing product version, user-visible changes, migrations, security/reliability implications, linked tasks and executed verification. Existing entries are corrected only by a new explicit correction entry.
+
+## 2026-06-28 — Agent Coordinator preview and FastAPI startup repair
+
+- Added a configurable Vite API proxy target so isolated feature worktrees can be previewed without replacing the live development server.
+- Added a LAN-only FastAPI development login for preview parity with the legacy server.
+- Repaired FastAPI startup by using the current migration runner API and passing `Path` objects to the shared workspace store.
+- Repaired FastAPI session resolution to consume explicit authorization/cookie dependencies and the existing camel-case session contract.
+- Declared the missing `psutil` runtime dependency used by FastAPI system telemetry.
+- Removed the remaining FieldOS database name from the environment template.
+- Verified the authenticated Admin → Agents path against the local Coordinator while autonomous execution and write controls remained disabled.
+- Verification: 6 focused FastAPI/Coordinator tests, Python compile check, production frontend build and browser smoke test passed.
