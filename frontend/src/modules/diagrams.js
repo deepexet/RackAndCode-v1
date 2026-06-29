@@ -1697,6 +1697,7 @@ function bindSvgEvents() {
       _pan.y -= e.deltaY
     }
     renderCanvas()
+    updateToolbar()
   }, { passive: false })
 
   // ── Touch: pan (1 finger) + pinch-to-zoom (2 fingers) ──────────────────
@@ -1899,6 +1900,12 @@ function updateToolbar() {
   if (modeEl) modeEl.textContent = ({
     select:'Выбор', wire:'Провод', pan:'Перемещение'
   })[_mode] || _mode
+  const zoomEl = _el?.querySelector('#dg-zoom-label')
+  if (zoomEl) zoomEl.textContent = Math.round(_zoom * 100) + '%'
+  const undoBtn = _el?.querySelector('#dg-undo')
+  if (undoBtn) undoBtn.style.opacity = _undoStack.length ? '1' : '0.35'
+  const redoBtn = _el?.querySelector('#dg-redo')
+  if (redoBtn) redoBtn.style.opacity = _redoStack.length ? '1' : '0.35'
 }
 
 // ── Save / Load ────────────────────────────────────────────────────────────
@@ -2116,8 +2123,9 @@ function render() {
         <div class="dg-toolbar-sep"></div>
 
         <!-- Actions -->
-        <button class="dg-action-btn" id="dg-undo" title="Undo (Ctrl+Z)"><i class="ti ti-arrow-back-up"></i></button>
-        <button class="dg-action-btn" id="dg-center" title="По центру"><i class="ti ti-focus-centered"></i></button>
+        <button class="dg-action-btn" id="dg-undo" title="Отменить (Ctrl+Z)"><i class="ti ti-arrow-back-up"></i></button>
+        <button class="dg-action-btn" id="dg-redo" title="Повторить (Ctrl+Y)"><i class="ti ti-arrow-forward-up"></i></button>
+        <button class="dg-action-btn" id="dg-center" title="Вписать в экран"><i class="ti ti-focus-centered"></i></button>
         <button class="dg-action-btn" id="dg-delete-sel" title="Удалить (Del)"><i class="ti ti-trash"></i></button>
 
         <div class="dg-toolbar-sep"></div>
@@ -2126,6 +2134,7 @@ function render() {
           <i class="ti ti-bolt"></i>
         </button>
 
+        <span class="dg-zoom-label" id="dg-zoom-label" style="font-size:11px;color:#888;min-width:38px;text-align:center">${Math.round(_zoom*100)}%</span>
         <span class="dg-mode-label">Выбор</span>
         <button class="ui-btn ui-btn--primary" id="dg-save-btn">
           <i class="ti ti-device-floppy"></i> Сохранить
@@ -2195,7 +2204,8 @@ function render() {
   })
 
   _el.querySelector('#dg-save-btn')?.addEventListener('click', saveDiagram)
-  _el.querySelector('#dg-undo')?.addEventListener('click', undo)
+  _el.querySelector('#dg-undo')?.addEventListener('click', () => { undo(); updateToolbar() })
+  _el.querySelector('#dg-redo')?.addEventListener('click', () => { redo(); updateToolbar() })
 
   _el.querySelector('#dg-center')?.addEventListener('click', () => {
     const comps = _diagram.components
