@@ -20,6 +20,7 @@ frontend/node_modules/
 # Python virtual envs
 backend/.venv/
 .venv/
+.venv-*/
 
 # Test artifacts
 .pytest_cache/

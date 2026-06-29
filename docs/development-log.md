@@ -2,6 +2,17 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-28 — Agent Coordinator v0.1 foundation
+
+- Added an isolated local FastAPI control plane for Codex and Claude Code collaboration.
+- Added a separate SQLite job queue and append-only coordinator event history.
+- Added registered-worktree and non-integration-branch validation.
+- Added safe CLI discovery and shell-free command builders for both installed agents.
+- Added explicit review, approval, cancellation, failure and rate-limit lifecycle states.
+- Kept mutations token-protected and autonomous execution disabled by default.
+- Documented AI ownership, handoff rules and ADR-004.
+- Verification: five coordinator unit tests passed; live service detected Codex 0.142.3 and Claude Code 2.1.140 with execution disabled.
+
 ## 2026-06-23 — v0.33.0
 
 - Added project-specific WorkType scope selection when creating customer projects.

@@ -28,3 +28,4 @@
 - [ADR-001 — Local foundation persistence](adr/001-local-foundation-persistence.md)
 - [ADR-002 — Versioned API and migrations](adr/002-versioned-api-and-migrations.md)
 - [ADR-003 — Tenant context](adr/003-tenant-context.md)
+- [ADR-004 — Local AI agent coordinator](adr/004-local-agent-coordinator.md)

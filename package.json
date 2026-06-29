@@ -6,6 +6,7 @@
   "scripts": {
     "start": "./scripts/serve.sh",
     "backup": "python3 scripts/backup.py create",
+    "coordinator:test": "python3 -m unittest tests.test_agent_coordinator -v",
     "check": "node --check web/app.js && node --check web/data.js && python3 -m unittest discover -s tests -v && python3 scripts/quality_gate.py"
   }
 }

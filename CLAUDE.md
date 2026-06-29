@@ -3,6 +3,9 @@
 This file is read by Claude Code and Codex at the start of every session.
 Keep it current as the codebase evolves.
 
+Before making changes, read `docs/AI_COLLABORATION.md` and follow its ownership,
+worktree, shared-boundary and handoff rules.
+
 ## Project
 
 **RackPilot by Valeronix** — Field Operations Platform.
@@ -124,4 +127,5 @@ cd backend && pytest                        # new FastAPI tests (coming in Phase
 ## Contact
 
 Platform owner: Valeri Sergeev
-AI agents: Claude Code (primary), Codex (secondary)
+Lead developer and integration reviewer: Codex
+Parallel implementation agent: Claude Code
