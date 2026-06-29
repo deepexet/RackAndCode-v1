@@ -347,9 +347,52 @@ let _multiSel  = new Set()   // IDs of multi-selected components
 let _rubberBand = null       // {x0,y0,x1,y1} in SVG coords while rubber-banding
 let _svgEventsBound = false  // guard: SVG-level events bound only once
 let _simulating = false       // current-flow animation active
+let _alignGuides = null      // { hLines:[y,...], vLines:[x,...] } shown while dragging
 
 function newDiagram() {
   return { name:'Новая схема', components:[], wires:[], labels:[], customDefs:[], modified: false }
+}
+
+// Compute alignment guides for a dragged component against all others.
+// Returns { hLines, vLines, snappedX, snappedY } — lines in SVG coords, snapped position.
+const ALIGN_THRESH = 6  // px in SVG space to snap
+function computeAlignGuides(draggedId, x, y) {
+  const draggedDef = getCompDef(_diagram.components.find(c => c.id === draggedId)?.type)
+  const dw = draggedDef?.w || 160, dh = draggedDef?.h || 120
+  // Candidate axes from dragged component: left, center-x, right; top, center-y, bottom
+  const dAxesX = [x, x + dw / 2, x + dw]
+  const dAxesY = [y, y + dh / 2, y + dh]
+  const hLines = [], vLines = []
+  let snappedX = x, snappedY = y
+
+  for (const c of _diagram.components) {
+    if (c.id === draggedId) continue
+    const def = getCompDef(c.type)
+    const w = def?.w || 160, h = def?.h || 120
+    const sAxesX = [c.x, c.x + w / 2, c.x + w]
+    const sAxesY = [c.y, c.y + h / 2, c.y + h]
+    // Check X alignment
+    for (let di = 0; di < dAxesX.length; di++) {
+      for (let si = 0; si < sAxesX.length; si++) {
+        if (Math.abs(dAxesX[di] - sAxesX[si]) < ALIGN_THRESH / _zoom) {
+          const gx = sAxesX[si]
+          if (!vLines.includes(gx)) vLines.push(gx)
+          snappedX = gx - di * dw / 2  // adjust so dragged axis aligns
+        }
+      }
+    }
+    // Check Y alignment
+    for (let di = 0; di < dAxesY.length; di++) {
+      for (let si = 0; si < sAxesY.length; si++) {
+        if (Math.abs(dAxesY[di] - sAxesY[si]) < ALIGN_THRESH / _zoom) {
+          const gy = sAxesY[si]
+          if (!hLines.includes(gy)) hLines.push(gy)
+          snappedY = gy - di * dh / 2
+        }
+      }
+    }
+  }
+  return { hLines, vLines, snappedX, snappedY }
 }
 
 // Returns the definition for a component — built-in first, then custom defs in current diagram
@@ -1147,6 +1190,20 @@ function renderCanvas() {
         }).join('')}
       </g>
 
+      <!-- Alignment guide lines (shown during comp drag) -->
+      ${_alignGuides ? (() => {
+        const wx0 = -_pan.x / _zoom, wy0 = -_pan.y / _zoom
+        const wx1 = (W - _pan.x) / _zoom, wy1 = (H - _pan.y) / _zoom
+        return `<g id="align-guides-layer" pointer-events="none">
+          ${(_alignGuides.hLines||[]).map(gy =>
+            `<line x1="${wx0}" y1="${gy}" x2="${wx1}" y2="${gy}" stroke="#f0c060" stroke-width="${1/_zoom}" opacity="0.8"/>`
+          ).join('')}
+          ${(_alignGuides.vLines||[]).map(gx =>
+            `<line x1="${gx}" y1="${wy0}" x2="${gx}" y2="${wy1}" stroke="#f0c060" stroke-width="${1/_zoom}" opacity="0.8"/>`
+          ).join('')}
+        </g>`
+      })() : ''}
+
       <!-- Rubber-band selection rect -->
       ${_rubberBand ? `<rect
         x="${Math.min(_rubberBand.x0,_rubberBand.x1)}" y="${Math.min(_rubberBand.y0,_rubberBand.y1)}"
@@ -1595,8 +1652,12 @@ function bindSvgEvents() {
       const comp = _diagram.components.find(c => c.id === _drag.id)
       if (comp) {
         const pos = svgXY(e)
-        comp.x = snap(pos.x + _drag.ox)
-        comp.y = snap(pos.y + _drag.oy)
+        const rawX = snap(pos.x + _drag.ox)
+        const rawY = snap(pos.y + _drag.oy)
+        const guides = computeAlignGuides(_drag.id, rawX, rawY)
+        comp.x = guides.snappedX
+        comp.y = guides.snappedY
+        _alignGuides = (guides.hLines.length || guides.vLines.length) ? guides : null
         renderCanvas()
       }
       return
@@ -1751,6 +1812,7 @@ function bindSvgEvents() {
       _drag = null; renderCanvas(); return
     }
     if (_drag?.type === 'comp') {
+      _alignGuides = null
       _diagram.modified = true
       saveUndo()
       // Clear manually-set wire paths for wires connected to this component
