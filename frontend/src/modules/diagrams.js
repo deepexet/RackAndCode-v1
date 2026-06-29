@@ -1951,7 +1951,13 @@ function bindSvgEvents() {
   }, { passive: false })
 
   // ── Touch: full interaction layer (component drag, wire draw, pan, pinch-zoom) ─
-  let _touch = null  // active touch state
+  //
+  // Design:
+  //  • Empty canvas swipe → direct pan (no mouse synthesis, no rubber-band)
+  //  • Component / wire / terminal touch → synthesise mouse events into existing handlers
+  //  • Two fingers → pinch zoom; releasing one finger reverts to pan
+  //  • mouseup always dispatched on _svgEl (not document) so SVG's mouseup clears _drag
+  let _touch = null
   let _longPressTimer = null
 
   function _touchDist(t) { return Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY) }
@@ -1961,37 +1967,40 @@ function bindSvgEvents() {
 
   _svgEl.addEventListener('touchstart', e => {
     e.preventDefault()
-    clearTimeout(_longPressTimer)
+    clearTimeout(_longPressTimer); _longPressTimer = null
 
     if (e.touches.length === 2) {
-      // Escalate to pinch: cancel any pending drag first
-      if (_drag) { document.dispatchEvent(new MouseEvent('mouseup', { bubbles:true })) }
-      const mid = { x:(e.touches[0].clientX+e.touches[1].clientX)/2, y:(e.touches[0].clientY+e.touches[1].clientY)/2 }
-      _touch = { type:'pinch', dist:_touchDist(e.touches), midX:mid.x, midY:mid.y,
+      // Two fingers → pinch zoom; cancel any pending single-finger drag
+      if (_drag) { _svgEl.dispatchEvent(new MouseEvent('mouseup', { bubbles:true })); _drag = null }
+      const t0 = e.touches[0], t1 = e.touches[1]
+      _touch = { type:'pinch', dist:_touchDist(e.touches),
+                 midX:(t0.clientX+t1.clientX)/2, midY:(t0.clientY+t1.clientY)/2,
                  panX:_pan.x, panY:_pan.y, baseZoom:_zoom }
       return
     }
 
     const t = e.touches[0]
     const target = document.elementFromPoint(t.clientX, t.clientY) || _svgEl
-    _touch = { type:'interact', startX:t.clientX, startY:t.clientY, x:t.clientX, y:t.clientY, moved:false, target }
-    // Fire mousedown to start drag/select/wire on whatever is under the finger
-    _fireMouseAt('mousedown', target, t.clientX, t.clientY)
-    // Long press (500ms, no movement) → pan mode momentarily
-    _longPressTimer = setTimeout(() => {
-      if (_touch && !_touch.moved && !_drag) {
-        const prev = _mode; _mode = 'pan'; updateToolbar()
-        _fireMouseAt('mousedown', _svgEl, _touch.x, _touch.y)
-        _touch._wasLongPan = true; _touch._prevMode = prev
-      }
-    }, 480)
+    // Detect whether finger is on an interactive element
+    const interactive = !!(target.closest?.('.dg-comp,.dg-wire,.dg-label,.dg-term,.dg-wire-handle,.dg-wire-vertex'))
+
+    _touch = { type:'interact', startX:t.clientX, startY:t.clientY,
+               x:t.clientX, y:t.clientY, moved:false, target, interactive }
+
+    if (interactive || _mode === 'wire') {
+      // Synthesise mousedown so existing select/drag/wire handlers fire
+      _fireMouseAt('mousedown', target, t.clientX, t.clientY)
+    } else {
+      // Empty canvas → start pan immediately (never rubber-band on touch)
+      _drag = { type:'canvas', startX: t.clientX - _pan.x, startY: t.clientY - _pan.y }
+    }
   }, { passive: false })
 
   _svgEl.addEventListener('touchmove', e => {
     e.preventDefault()
     if (!_touch) return
 
-    if (_touch.type === 'pinch' && e.touches.length === 2) {
+    if (_touch.type === 'pinch' && e.touches.length >= 2) {
       const nd = _touchDist(e.touches)
       const rect = _svgEl.getBoundingClientRect()
       const cx = _touch.midX - rect.left, cy = _touch.midY - rect.top
@@ -2001,45 +2010,62 @@ function bindSvgEvents() {
       renderCanvas(); updateToolbar(); return
     }
 
-    if (_touch.type === 'interact' && e.touches.length === 1) {
-      const t = e.touches[0]
-      if (Math.abs(t.clientX-_touch.startX) > 4 || Math.abs(t.clientY-_touch.startY) > 4) {
-        clearTimeout(_longPressTimer); _touch.moved = true
-      }
-      _touch.x = t.clientX; _touch.y = t.clientY
+    if (_touch.type !== 'interact' || e.touches.length !== 1) return
+    const t = e.touches[0]
+    if (!_touch.moved && (Math.abs(t.clientX-_touch.startX) > 4 || Math.abs(t.clientY-_touch.startY) > 4)) {
+      clearTimeout(_longPressTimer); _longPressTimer = null
+      _touch.moved = true
+    }
+    _touch.x = t.clientX; _touch.y = t.clientY
+
+    if (!_touch.interactive && _drag?.type === 'canvas') {
+      // Direct pan — update without mouse synthesis for smooth scrolling
+      _pan.x = t.clientX - _drag.startX
+      _pan.y = t.clientY - _drag.startY
+      renderCanvas()
+    } else {
+      // Synthesise mousemove for component/wire drag via existing handlers
       _fireMouseAt('mousemove', _svgEl, t.clientX, t.clientY)
     }
   }, { passive: false })
 
   _svgEl.addEventListener('touchend', e => {
     e.preventDefault()
-    clearTimeout(_longPressTimer)
+    clearTimeout(_longPressTimer); _longPressTimer = null
 
     if (_touch?.type === 'pinch') {
+      // Remaining finger (if any) continues as pan
       if (e.touches.length === 1) {
         const t = e.touches[0]
-        _touch = { type:'interact', startX:t.clientX, startY:t.clientY, x:t.clientX, y:t.clientY, moved:false, target:_svgEl }
-      } else { _touch = null }
+        _touch = { type:'interact', startX:t.clientX, startY:t.clientY,
+                   x:t.clientX, y:t.clientY, moved:false, target:_svgEl, interactive:false }
+        _drag = { type:'canvas', startX: t.clientX - _pan.x, startY: t.clientY - _pan.y }
+      } else { _drag = null; _touch = null }
       return
     }
 
     const ch = e.changedTouches[0]
-    document.dispatchEvent(new MouseEvent('mouseup', { clientX:ch.clientX, clientY:ch.clientY, bubbles:true }))
 
-    // Tap (no drag): fire click so wire terminals and selection work
-    if (_touch && !_touch.moved) {
-      const el = document.elementFromPoint(ch.clientX, ch.clientY)
-      if (el) _fireMouseAt('click', el, ch.clientX, ch.clientY)
+    if (!_touch?.interactive && _drag?.type === 'canvas') {
+      // End direct pan
+      _drag = null; _touch = null; return
     }
-    // Restore mode if long-press-pan was used
-    if (_touch?._wasLongPan && _touch._prevMode) { _mode = _touch._prevMode; updateToolbar() }
+
+    // End synthesised interaction: fire mouseup on SVG so its handler clears _drag
+    _svgEl.dispatchEvent(new MouseEvent('mouseup', { clientX:ch.clientX, clientY:ch.clientY, bubbles:true, cancelable:true }))
+
+    // Tap (finger didn't move): fire click so terminal/wire/comp selection completes
+    if (_touch && !_touch.moved) {
+      const hitEl = document.elementFromPoint(ch.clientX, ch.clientY)
+      if (hitEl) _fireMouseAt('click', hitEl, ch.clientX, ch.clientY)
+    }
     _touch = null
   }, { passive: false })
 
   _svgEl.addEventListener('touchcancel', () => {
-    clearTimeout(_longPressTimer)
-    if (_drag) document.dispatchEvent(new MouseEvent('mouseup', { bubbles:true }))
-    _touch = null
+    clearTimeout(_longPressTimer); _longPressTimer = null
+    if (_drag) _svgEl.dispatchEvent(new MouseEvent('mouseup', { bubbles:true }))
+    _drag = null; _touch = null
   }, { passive: true })
 
   // Double-click canvas → add text label
