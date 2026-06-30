@@ -7527,6 +7527,15 @@ Rules:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def count_unread_notifications(self, org: str, user_id: str | None = None) -> int:
+        with self._connect() as conn:
+            where = "organization_id=? AND read=0"
+            params: list[Any] = [org]
+            if user_id:
+                where += " AND (user_id=? OR user_id IS NULL)"
+                params.append(user_id)
+            return conn.execute(f"SELECT COUNT(*) FROM notifications WHERE {where}", params).fetchone()[0]
+
     def mark_notifications_read(self, org: str, notif_ids: list[str] | None = None,
                                   user_id: str | None = None) -> int:
         with self._connect() as conn:
@@ -10670,11 +10679,14 @@ class FieldOSHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/notifications":
             if not self._require_permission("projectRead"): return
             qs = self._params()
-            user_id = self.session_context.get("userId") or self.session_context.get("user_id")
-            unread_only = qs.get("unread") == "true"
-            notifs = self.store.list_notifications(self.organization_id, user_id, unread_only)
-            unread_count = sum(1 for n in notifs if not n["read"])
-            self._json(HTTPStatus.OK, {"notifications": notifs, "unreadCount": unread_count})
+            ctx = self.session_context or {}
+            user_id = ctx.get("userId") or ctx.get("user_id")
+            unread_only = qs.get("unread") == "1" or qs.get("unread") == "true"
+            limit = min(int(qs.get("limit", "30") or "30"), 100)
+            notifs = self.store.list_notifications(self.organization_id, user_id, unread_only, limit)
+            # Count ALL unread, not just the page returned
+            total_unread = self.store.count_unread_notifications(self.organization_id, user_id)
+            self._json(HTTPStatus.OK, {"notifications": notifs, "unreadCount": total_unread})
             return
         # Connectors: GET /api/v1/admin/connectors
         if path == "/api/v1/admin/connectors":
@@ -12725,6 +12737,16 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
                     self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
                 return
         # Notifications mark-read: POST /api/v1/notifications/read
+        if path == "/api/v1/notifications/mark-all-read":
+            if not self._require_permission("projectRead"): return
+            try:
+                ctx = self.session_context or {}
+                user_id = ctx.get("userId") or ctx.get("user_id")
+                count = self.store.mark_notifications_read(self.organization_id, None, user_id)
+                self._json(HTTPStatus.OK, {"marked": count})
+            except Exception as e:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "error", str(e))
+            return
         if path == "/api/v1/notifications/generate-alerts":
             if not self._require_permission("projectRead"): return
             result = self.store.generate_system_alerts(self.organization_id)
@@ -13559,6 +13581,10 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
             self._error(HTTPStatus.UNAUTHORIZED, "session_required", f"Permission '{permission}' requires a Bearer session — dev-mode header not accepted")
             return False
         return True
+
+    def _params(self) -> dict[str, str]:
+        """Return flat query params dict (first value per key)."""
+        return {k: v[0] for k, v in self.query_params.items() if v}
 
     def _read_json(self) -> Any:
         try:

@@ -132,6 +132,7 @@ function startApp() {
     .on('docs',         () => import('./modules/docs.js').then(m => m.mount()))
     .on('api',          () => import('./modules/api_metrics.js').then(m => m.mount()))
     .on('admin',        () => import('./modules/admin.js').then(m => m.mount()))
+    .on('transport',   () => import('./modules/transport.js').then(m => m.mount()))
 
   // Update breadcrumb on route change
   window.addEventListener('rp:route', e => {
@@ -139,6 +140,7 @@ function startApp() {
       overview: 'Overview', projects: 'Projects', inventory: 'Inventory',
       'work-orders': 'Work orders', tech: 'Field', logs: 'Logs',
       wiki: 'Wiki', diagrams: 'Схемы', docs: 'Platform Docs', admin: 'Admin',
+      transport: 'Транспорт',
     }
     const bc = document.getElementById('topbarBreadcrumb')
     if (bc) bc.innerHTML = `<span>${labels[e.detail.route] || e.detail.route}</span>`
@@ -146,6 +148,9 @@ function startApp() {
 
   // Command palette (⌘K)
   initCommandPalette()
+
+  // Notification bell panel
+  initNotifPanel()
 
   // Mobile "More" drawer
   initMobileDrawer()
@@ -183,6 +188,7 @@ function initCommandPalette() {
     { icon: 'ti-packages', label: 'Inventory', hash: '#inventory' },
     { icon: 'ti-clipboard-list', label: 'Work orders', hash: '#work-orders' },
     { icon: 'ti-map-pin', label: 'Field', hash: '#tech' },
+    { icon: 'ti-truck', label: 'Транспорт', hash: '#transport' },
     { icon: 'ti-settings', label: 'Admin', hash: '#admin' },
   ]
 
@@ -324,6 +330,125 @@ function startSysWidget() {
   _sysWidgetTimer = setInterval(refreshSysWidget, 5000)
 }
 
+
+// ── Notification panel ────────────────────────────────────────────────────
+
+function initNotifPanel() {
+  const btn = document.getElementById('notifBtn')
+  if (!btn) return
+
+  // Create panel
+  const panel = document.createElement('div')
+  panel.id = 'notifPanel'
+  panel.style.cssText = `
+    position:fixed;top:56px;right:12px;width:340px;max-height:480px;
+    background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:1200;display:none;
+    flex-direction:column;overflow:hidden;
+  `
+  panel.innerHTML = `
+    <div style="padding:14px 16px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:13px;font-weight:600;color:var(--text)">Уведомления</span>
+      <button id="notifMarkAll" style="font-size:11px;color:var(--accent);background:none;border:none;cursor:pointer;padding:0">Отметить все</button>
+    </div>
+    <div id="notifList" style="overflow-y:auto;flex:1;padding:8px 0"></div>
+  `
+  document.body.appendChild(panel)
+
+  const badge = document.createElement('span')
+  badge.id = 'notifBadge'
+  badge.style.cssText = `
+    position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;
+    background:var(--red,#f25757);color:#fff;font-size:10px;font-weight:700;
+    border-radius:8px;display:none;align-items:center;justify-content:center;
+    padding:0 4px;line-height:1;
+  `
+  btn.style.position = 'relative'
+  btn.appendChild(badge)
+
+  let open = false
+  let unread = 0
+
+  function renderNotifs(items) {
+    const list = document.getElementById('notifList')
+    if (!list) return
+    if (!items.length) {
+      list.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text-4);font-size:13px">Нет уведомлений</div>`
+      return
+    }
+    const col = { info:'var(--blue)', warning:'var(--amber)', success:'var(--green)', error:'var(--red,#f25757)' }
+    list.innerHTML = items.slice(0, 20).map(n => `
+      <div style="padding:10px 16px;display:flex;gap:10px;align-items:flex-start;${n.read ? '' : 'background:rgba(255,255,255,.03)'}">
+        <div style="width:7px;height:7px;border-radius:50%;background:${col[n.type]||'var(--text-4)'};margin-top:5px;flex-shrink:0"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:${n.read ? 400 : 500};color:var(--text);line-height:1.4">${esc(n.title || n.message || '')}</div>
+          ${n.body ? `<div style="font-size:11px;color:var(--text-3);margin-top:1px;line-height:1.4">${esc(n.body)}</div>` : ''}
+          <div style="font-size:11px;color:var(--text-4);margin-top:3px">${relTime(n.created_at || n.createdAt)}</div>
+        </div>
+      </div>
+    `).join('')
+  }
+
+  async function loadAndShow() {
+    const list = document.getElementById('notifList')
+    if (list) list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-4);font-size:12px">Загрузка…</div>`
+    try {
+      const { apiJSON } = await import('./core/api.js')
+      const data = await apiJSON('/api/v1/notifications?limit=20').catch(() => ({ notifications: [] }))
+      const items = data.notifications || []
+      unread = items.filter(n => !n.read_at && !n.readAt).length
+      renderNotifs(items)
+    } catch {}
+  }
+
+  function togglePanel() {
+    open = !open
+    panel.style.display = open ? 'flex' : 'none'
+    if (open) loadAndShow()
+  }
+
+  btn.addEventListener('click', e => { e.stopPropagation(); togglePanel() })
+  document.addEventListener('click', e => {
+    if (open && !panel.contains(e.target) && e.target !== btn) {
+      open = false; panel.style.display = 'none'
+    }
+  })
+
+  document.getElementById('notifMarkAll')?.addEventListener?.('click', async () => {
+    try {
+      const { apiPost } = await import('./core/api.js')
+      await apiPost('/api/v1/notifications/mark-all-read', {}).catch(() => {})
+      badge.style.display = 'none'
+      loadAndShow()
+    } catch {}
+  })
+
+  // Poll for unread count every 60s
+  async function pollUnread() {
+    try {
+      const { apiJSON } = await import('./core/api.js')
+      // Use unreadCount from server — it reflects total unread, not the page size
+      const data = await apiJSON('/api/v1/notifications?limit=1&unread=1').catch(() => null)
+      if (!data) return
+      const count = typeof data.unreadCount === 'number' ? data.unreadCount : 0
+      badge.style.display = count > 0 ? 'flex' : 'none'
+      badge.textContent = count > 9 ? '9+' : String(count)
+    } catch {}
+  }
+  pollUnread()
+  setInterval(pollUnread, 60000)
+}
+
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+function relTime(iso) {
+  if (!iso) return ''
+  const m = Math.floor((Date.now() - new Date(iso)) / 60000)
+  if (m < 1) return 'только что'
+  if (m < 60) return `${m} мин. назад`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} ч. назад`
+  return `${Math.floor(h/24)} д. назад`
+}
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 
