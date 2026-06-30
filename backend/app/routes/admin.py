@@ -51,6 +51,144 @@ async def _coordinator(path: str, *, method: str = "GET", body: dict[str, Any] |
     return await asyncio.to_thread(_coordinator_request, path, method=method, body=body)
 
 
+def _find_work_item(ctx: Auth, project_id: str, work_item_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    project = ctx.store.get_project(ctx.org, project_id)
+    if not project:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+    work_item = next((item for item in project.get("workItems", []) if item["id"] == work_item_id), None)
+    if not work_item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Work item not found")
+    return project, work_item
+
+
+def _recommend_work_item_agent(work_item: dict[str, Any]) -> dict[str, Any]:
+    text = " ".join([
+        str(work_item.get("title", "")),
+        str(work_item.get("description", "")),
+        " ".join(str(value) for value in work_item.get("labels", [])),
+    ]).lower()
+    architecture_terms = {
+        "architecture", "architect", "adr", "schema", "data model", "threat model",
+        "design secure", "diagram model", "архитект", "схем", "модель данных",
+    }
+    local_terms = {
+        "classify", "summarize", "summary", "extract", "label", "triage",
+        "классифиц", "суммар", "извлеч", "размет",
+    }
+    implementation_terms = {
+        "implement", "fix", "route", "fastapi", "frontend", "backend", "migration",
+        "test", "ui", "api", "bug", "реализ", "исправ", "перенест", "тест",
+    }
+    if any(term in text for term in architecture_terms):
+        return {"agent": "claude", "reason": "Architecture or system-contract work is assigned to Claude Architecture Lead."}
+    if any(term in text for term in local_terms) and not any(term in text for term in implementation_terms):
+        return {"agent": "local", "reason": "This is a bounded text-analysis task suitable for the local model."}
+    return {"agent": "codex", "reason": "Implementation, integration and verification are assigned to Codex."}
+
+
+def _work_item_scope(work_item: dict[str, Any]) -> list[str]:
+    text = " ".join([
+        str(work_item.get("title", "")), str(work_item.get("description", "")),
+        " ".join(str(value) for value in work_item.get("labels", [])),
+    ]).lower()
+    scopes: list[str] = []
+    mappings = (
+        (("coordinator", "agent"), ("coordinator", "backend/app/routes/admin.py", "frontend/src/modules/admin.js")),
+        (("wiki", "knowledge", "vault"), ("backend/app/routes/wiki.py", "frontend/src/modules/wiki.js", "server/migrations")),
+        (("diagram", "схем"), ("frontend/src/modules/diagrams.js", "backend/app/routes", "server/migrations")),
+        (("inventory", "склад"), ("backend/app/routes/inventory.py", "frontend/src/modules/inventory.js", "server/app.py")),
+        (("work order", "наряд"), ("backend/app/routes/work_orders.py", "frontend/src/modules/work_orders.js", "server/app.py")),
+        (("project", "kanban", "work item"), ("backend/app/routes/projects.py", "frontend/src/modules/projects.js", "server/app.py")),
+        (("frontend", "mobile", "ui", "style"), ("frontend",)),
+        (("fastapi", "backend", "api", "route"), ("backend", "server/app.py")),
+        (("test", "quality"), ("tests",)),
+        (("doc", "adr", "architecture"), ("docs",)),
+    )
+    for terms, paths in mappings:
+        if any(term in text for term in terms):
+            scopes.extend(paths)
+    return list(dict.fromkeys(scopes or ["docs", "tests"]))[:12]
+
+
+def _agent_instructions(project: dict[str, Any], work_item: dict[str, Any], agent: str) -> str:
+    role = {
+        "claude": "Act as RackPilot Architecture Lead. Produce concrete contracts/ADR first and implement only within the declared scope when required.",
+        "codex": "Act as RackPilot Engineering & Integration Lead. Implement, test, and leave the worktree ready for review.",
+        "local": "Perform text-only analysis. Do not claim code or filesystem changes; return a concise structured result for Codex review.",
+    }[agent]
+    return f"""{role}
+
+SOURCE OF TRUTH
+Project: {project.get('name')} ({project.get('id')})
+Kanban work item: {work_item.get('code') or work_item.get('id')} — {work_item.get('title')}
+Priority: {work_item.get('priority')}
+
+DESCRIPTION
+{work_item.get('description') or 'No description provided.'}
+
+DELIVERY CONTRACT
+- Work only on this task and its declared repository scope.
+- Preserve tenant isolation, RBAC, auditability, offline-first compatibility, and existing user changes.
+- Use numbered immutable migrations for schema changes.
+- Run focused tests and report exact results and remaining risks.
+- Do not merge to the integration branch. Stop for Codex/owner review.
+"""
+
+
+def _advance_work_item(ctx: Auth, project_id: str, work_item: dict[str, Any], target: str) -> dict[str, Any]:
+    paths = {
+        "progress": {"ideas": ["ready", "progress"], "backlog": ["ready", "progress"], "ready": ["progress"], "blocked": ["progress"]},
+        "review": {"ideas": ["ready", "progress", "review"], "backlog": ["ready", "progress", "review"], "ready": ["progress", "review"], "progress": ["review"], "blocked": ["progress", "review"]},
+        "testing": {"ideas": ["ready", "progress", "review", "testing"], "backlog": ["ready", "progress", "review", "testing"], "ready": ["progress", "review", "testing"], "progress": ["review", "testing"], "review": ["testing"]},
+        "blocked": {"progress": ["blocked"]},
+    }
+    current = work_item
+    for next_status in paths.get(target, {}).get(current.get("status"), []):
+        current = ctx.store.update_work_item(ctx.org, project_id, current["id"], {
+            "expectedVersion": current["version"],
+            "status": next_status,
+        })
+    return current
+
+
+async def _create_work_item_job(
+    ctx: Auth,
+    project: dict[str, Any],
+    work_item: dict[str, Any],
+    *,
+    assigned_agent: str,
+    max_turns: int = 10,
+    scope_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "title": f"{work_item.get('code') or 'KANBAN'}: {work_item['title']}",
+        "instructions": _agent_instructions(project, work_item, assigned_agent),
+        "assignedAgent": assigned_agent,
+        "autoWorktree": assigned_agent != "local",
+        "baseRef": settings.coordinator_base_ref,
+        "scopePaths": scope_paths or _work_item_scope(work_item),
+        "requiresReview": True,
+        "maxTurns": max(1, min(max_turns, 20)),
+        "createdBy": ctx.user_id,
+        "sourceOrganizationId": ctx.org,
+        "sourceProjectId": project["id"],
+        "sourceWorkItemId": work_item["id"],
+    }
+    created = await _coordinator("/api/v1/jobs", method="POST", body=payload)
+    job = created.get("job", {})
+    try:
+        updated = _advance_work_item(ctx, project["id"], work_item, "progress")
+    except Exception:
+        if job.get("id"):
+            try:
+                await _coordinator(f"/api/v1/jobs/{job['id']}/cancel", method="POST", body={})
+            except HTTPException:
+                pass
+        raise
+    ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.work_item.delegate", "work_item", work_item["id"])
+    return {"job": job, "workItem": updated}
+
+
 # ── Platform settings ─────────────────────────────────────────────────────
 
 @router.get("/platform-settings")
@@ -426,6 +564,103 @@ async def coordinator_create_job(body: dict[str, Any], ctx: Auth):
     return await _coordinator("/api/v1/jobs", method="POST", body=payload)
 
 
+@router.get("/coordinator/work-items/{project_id}/{work_item_id}")
+async def coordinator_work_item(project_id: str, work_item_id: str, ctx: Auth):
+    _require_authenticated_admin(ctx)
+    _, work_item = _find_work_item(ctx, project_id, work_item_id)
+    recommendation = _recommend_work_item_agent(work_item)
+    encoded = urllib.parse.quote(work_item_id, safe="")
+    jobs, agents = await asyncio.gather(
+        _coordinator(f"/api/v1/jobs?workItemId={encoded}&limit=20"),
+        _coordinator("/api/v1/agents"),
+    )
+    return {
+        "recommendation": recommendation,
+        "scopePaths": _work_item_scope(work_item),
+        "jobs": jobs.get("jobs", []),
+        "agents": agents.get("agents", []),
+    }
+
+
+@router.post("/coordinator/work-items/{project_id}/{work_item_id}/delegate")
+async def coordinator_delegate_work_item(project_id: str, work_item_id: str, body: dict[str, Any], ctx: Auth):
+    _require_authenticated_admin(ctx)
+    project, work_item = _find_work_item(ctx, project_id, work_item_id)
+    if work_item.get("effectiveStatus") == "blocked" or work_item.get("blockedBy"):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Complete blocking dependencies before delegation")
+    if work_item.get("status") == "done":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Completed work items cannot be delegated")
+
+    encoded = urllib.parse.quote(work_item_id, safe="")
+    existing = await _coordinator(f"/api/v1/jobs?workItemId={encoded}&limit=20")
+    active = next((job for job in existing.get("jobs", []) if job.get("status") in {
+        "queued", "running", "review", "waiting_approval"
+    }), None)
+    if active:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This work item already has an active agent job")
+
+    recommendation = _recommend_work_item_agent(work_item)
+    assigned_agent = str(body.get("assignedAgent") or recommendation["agent"]).lower()
+    if assigned_agent not in {"codex", "claude", "local"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown agent")
+    scope_paths = body.get("scopePaths") or _work_item_scope(work_item)
+    if not isinstance(scope_paths, list) or any(not isinstance(path, str) for path in scope_paths):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "scopePaths must be an array of paths")
+    delegated = await _create_work_item_job(
+        ctx, project, work_item,
+        assigned_agent=assigned_agent,
+        max_turns=int(body.get("maxTurns", 10)),
+        scope_paths=scope_paths,
+    )
+    return {**delegated, "recommendation": recommendation}
+
+
+@router.post("/coordinator/projects/{project_id}/dispatch")
+async def coordinator_dispatch_project(project_id: str, body: dict[str, Any], ctx: Auth):
+    _require_authenticated_admin(ctx)
+    project = ctx.store.get_project(ctx.org, project_id)
+    if not project:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+    requested_limit = max(1, min(int(body.get("limit", 2)), 4))
+    health, all_jobs = await asyncio.gather(
+        _coordinator("/health"),
+        _coordinator("/api/v1/jobs?limit=500"),
+    )
+    scheduler_state = health.get("scheduler", {})
+    capacity = max(0, int(scheduler_state.get("maxConcurrent", 2)) - int(scheduler_state.get("running", 0)))
+    capacity = min(capacity, requested_limit)
+    if capacity == 0:
+        return {"delegated": [], "skipped": "Coordinator has no free execution slots"}
+    active_jobs = [job for job in all_jobs.get("jobs", []) if job.get("status") in {
+        "queued", "running", "review", "waiting_approval"
+    }]
+    active_work_items = {job.get("sourceWorkItemId") for job in active_jobs}
+    busy_agents = {job.get("assignedAgent") for job in active_jobs if job.get("status") == "running"}
+    priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    candidates = sorted(
+        [item for item in project.get("workItems", [])
+         if item.get("status") == "ready" and item.get("effectiveStatus") == "ready"
+         and item.get("id") not in active_work_items and item.get("title") != "Test task"],
+        key=lambda item: (priority_order.get(item.get("priority"), 9), item.get("dueDate") or "9999-12-31", item.get("title", "")),
+    )
+    delegated: list[dict[str, Any]] = []
+    selected_agents = set(busy_agents)
+    for work_item in candidates:
+        recommendation = _recommend_work_item_agent(work_item)
+        agent = recommendation["agent"]
+        if agent in selected_agents:
+            continue
+        result = await _create_work_item_job(ctx, project, work_item, assigned_agent=agent)
+        delegated.append({
+            "workItemId": work_item["id"], "title": work_item["title"],
+            "agent": agent, "reason": recommendation["reason"], "job": result["job"],
+        })
+        selected_agents.add(agent)
+        if len(delegated) >= capacity:
+            break
+    return {"delegated": delegated, "capacity": capacity}
+
+
 @router.get("/coordinator/jobs/{job_id}")
 async def coordinator_job_details(job_id: str, ctx: Auth, after: int = 0):
     _require_authenticated_admin(ctx)
@@ -444,23 +679,6 @@ async def coordinator_job_details(job_id: str, ctx: Auth, after: int = 0):
     }
 
 
-@router.post("/coordinator/jobs/{job_id}/{action}")
-async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
-    _require_authenticated_admin(ctx)
-    if action not in {"start", "retry", "cancel", "approve", "reject", "remove-worktree"}:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown coordinator action")
-    result = await _coordinator(f"/api/v1/jobs/{job_id}/{action}", method="POST", body={})
-    ctx.store.audit(
-        ctx.org,
-        ctx.user_id,
-        ctx.role,
-        f"coordinator.job.{action}",
-        "agent_job",
-        job_id,
-    )
-    return result
-
-
 @router.post("/coordinator/jobs/{job_id}/request-changes")
 async def coordinator_request_job_changes(job_id: str, body: dict[str, Any], ctx: Auth):
     _require_authenticated_admin(ctx)
@@ -469,11 +687,47 @@ async def coordinator_request_job_changes(job_id: str, body: dict[str, Any], ctx
         method="POST",
         body={"feedback": str(body.get("feedback", ""))},
     )
+    job = result.get("job", {})
+    if job.get("sourceOrganizationId") == ctx.org and job.get("sourceProjectId") and job.get("sourceWorkItemId"):
+        try:
+            _, work_item = _find_work_item(ctx, job["sourceProjectId"], job["sourceWorkItemId"])
+            _advance_work_item(ctx, job["sourceProjectId"], work_item, "progress")
+        except (HTTPException, LookupError, ValueError):
+            pass
     ctx.store.audit(
         ctx.org,
         ctx.user_id,
         ctx.role,
         "coordinator.job.request_changes",
+        "agent_job",
+        job_id,
+    )
+    return result
+
+
+@router.post("/coordinator/jobs/{job_id}/{action}")
+async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
+    _require_authenticated_admin(ctx)
+    if action not in {"start", "retry", "cancel", "approve", "reject", "remove-worktree"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown coordinator action")
+    result = await _coordinator(f"/api/v1/jobs/{job_id}/{action}", method="POST", body={})
+    job = result.get("job", {})
+    if job.get("sourceOrganizationId") == ctx.org and job.get("sourceProjectId") and job.get("sourceWorkItemId"):
+        try:
+            _, work_item = _find_work_item(ctx, job["sourceProjectId"], job["sourceWorkItemId"])
+            target = {
+                "start": "progress", "retry": "progress", "approve": "testing",
+                "reject": "blocked", "cancel": "blocked",
+            }.get(action)
+            if target:
+                _advance_work_item(ctx, job["sourceProjectId"], work_item, target)
+        except (HTTPException, LookupError, ValueError):
+            pass
+    ctx.store.audit(
+        ctx.org,
+        ctx.user_id,
+        ctx.role,
+        f"coordinator.job.{action}",
         "agent_job",
         job_id,
     )

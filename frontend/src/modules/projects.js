@@ -1,4 +1,4 @@
-import { apiFetch, apiJSON, apiPost } from '../core/api.js'
+import { apiFetch, apiJSON, apiPost, getSession } from '../core/api.js'
 import { timeAgo as uiTimeAgo, renderMarkdown, emptyState, openModal } from '../components/ui.js'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -202,6 +202,7 @@ async function mountDetail(view, pid) {
       <div style="display:flex;gap:8px;flex-shrink:0">
         <button class="btn btn-ghost" id="addWiBtn">＋ Задача</button>
         <button class="btn btn-ghost" id="aiWiBtn">✦ AI</button>
+        ${getSession()?.role === 'Administrator' ? `<button class="btn btn-primary" id="aiTeamBtn"><i class="ti ti-users-group"></i> Start AI team</button>` : ''}
       </div>
     </div>
 
@@ -272,6 +273,28 @@ async function mountDetail(view, pid) {
       await reload()
     } catch (e) { window.toast?.('Ошибка: ' + e.message, 'error') }
     finally { btn.disabled = false; btn.textContent = '✦ AI' }
+  })
+
+  document.getElementById('aiTeamBtn')?.addEventListener('click', async () => {
+    if (!confirm('Delegate the highest-priority Ready tasks to available agents now?')) return
+    const button = document.getElementById('aiTeamBtn')
+    button.disabled = true; button.innerHTML = '<i class="ti ti-loader-2 spin"></i> Dispatching…'
+    try {
+      const result = await apiJSON(`/api/v1/admin/coordinator/projects/${encodeURIComponent(pid)}/dispatch`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({limit:2}),
+      })
+      const delegated = result.delegated || []
+      if (delegated.length) {
+        window.toast?.(`AI team started: ${delegated.map(item => `${item.agent} → ${item.title}`).join('; ')}`, 'success')
+      } else {
+        window.toast?.(result.skipped || 'No compatible Ready tasks found', 'info')
+      }
+      await reload()
+    } catch (error) {
+      window.toast?.(error.message || 'AI team dispatch failed', 'error')
+    } finally {
+      button.disabled = false; button.innerHTML = '<i class="ti ti-users-group"></i> Start AI team'
+    }
   })
 
   renderTab('kanban')
@@ -617,6 +640,7 @@ function wiCardMobile(wi) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function openWiDetail(wi, project, onSave) {
+  const canDelegate = getSession()?.role === 'Administrator'
   modal('wiDetail', `
     <div class="modal-head">
       <div style="min-width:0">
@@ -660,11 +684,18 @@ function openWiDetail(wi, project, onSave) {
         ⛔ Заблокирована задачами: ${wi.blockedBy.map(b => esc(b)).join(', ')}
       </div>` : ''}
 
+    ${canDelegate ? `
+      <section class="wi-agent-panel" id="wdAgentPanel" aria-live="polite">
+        <div class="wi-agent-loading"><i class="ti ti-loader-2 spin"></i> Loading agent coordinator…</div>
+      </section>` : ''}
+
     <div class="modal-actions" style="margin-top:20px">
       <button class="btn btn-ghost" data-close>Закрыть</button>
       <button class="btn btn-primary" id="wdSave">Сохранить</button>
     </div>
   `)
+
+  if (canDelegate) loadWorkItemAgentPanel(project, wi, onSave)
 
   document.getElementById('wdSave')?.addEventListener('click', async () => {
     const btn = document.getElementById('wdSave')
@@ -691,6 +722,101 @@ function openWiDetail(wi, project, onSave) {
       btn.disabled = false; btn.textContent = 'Сохранить'
     }
   })
+}
+
+async function loadWorkItemAgentPanel(project, wi, onSave) {
+  const panel = document.getElementById('wdAgentPanel')
+  if (!panel) return
+  try {
+    const data = await apiJSON(`/api/v1/admin/coordinator/work-items/${encodeURIComponent(project.id)}/${encodeURIComponent(wi.id)}`)
+    if (!document.getElementById('wdAgentPanel')) return
+    renderWorkItemAgentPanel(project, wi, data, onSave)
+  } catch (error) {
+    panel.innerHTML = `<div class="wi-agent-error">Coordinator unavailable: ${esc(error.message || error)}</div>`
+  }
+}
+
+function renderWorkItemAgentPanel(project, wi, data, onSave) {
+  const panel = document.getElementById('wdAgentPanel')
+  if (!panel) return
+  const jobs = data.jobs || []
+  const job = jobs[0]
+  const recommendation = data.recommendation || { agent: 'codex', reason: '' }
+  const agents = (data.agents || []).filter(agent => agent.available)
+  const active = job && ['queued', 'running', 'review', 'waiting_approval'].includes(job.status)
+  const statusLabels = {
+    queued: 'Queued', running: 'Running', review: 'Review required', waiting_approval: 'Waiting approval',
+    completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', rate_limited: 'Rate limited',
+  }
+  panel.innerHTML = `
+    <div class="wi-agent-head">
+      <div><span class="eyebrow">AI DEVELOPMENT TEAM</span><strong>Agent execution</strong></div>
+      ${job ? `<span class="wi-agent-status wi-agent-status--${esc(job.status)}">${esc(statusLabels[job.status] || job.status)}</span>` : ''}
+    </div>
+    ${job ? `
+      <div class="wi-agent-job">
+        <div><span>Agent</span><strong>${esc(job.assignedAgent)}</strong></div>
+        <div><span>Attempt</span><strong>${Number(job.attempt || 0)}</strong></div>
+        <div><span>Branch</span><strong title="${esc(job.branchName)}">${esc(job.branchName || '—')}</strong></div>
+      </div>
+      ${job.error ? `<p class="wi-agent-message wi-agent-message--error">${esc(job.error)}</p>` : ''}
+      ${job.resultSummary ? `<p class="wi-agent-message">${esc(String(job.resultSummary).slice(-600))}</p>` : ''}
+      <div class="wi-agent-actions">
+        ${job.status === 'review' || job.status === 'waiting_approval' ? `<button class="btn btn-primary" data-agent-action="approve" data-job-id="${esc(job.id)}">Approve → Testing</button>` : ''}
+        ${['failed','cancelled','rate_limited'].includes(job.status) ? `<button class="btn btn-primary" data-agent-action="retry" data-job-id="${esc(job.id)}">Retry</button>` : ''}
+        ${active && ['queued','running'].includes(job.status) ? `<button class="btn btn-ghost" data-agent-action="cancel" data-job-id="${esc(job.id)}">Cancel</button>` : ''}
+        <button class="btn btn-ghost" id="wdOpenAgents">Open live activity</button>
+      </div>` : `
+      <p class="wi-agent-reason">Recommended: <strong>${esc(recommendation.agent)}</strong> — ${esc(recommendation.reason)}</p>
+      <div class="wi-agent-delegate">
+        <select class="field-input" id="wdAgentSelect" aria-label="Agent">
+          ${agents.map(agent => `<option value="${esc(agent.agent)}" ${agent.agent===recommendation.agent?'selected':''}>${esc(agent.agent)} · ${esc(agent.version || 'available')}</option>`).join('')}
+        </select>
+        <button class="btn btn-primary" id="wdDelegate" ${wi.blockedBy?.length ? 'disabled' : ''}>Delegate and start</button>
+      </div>
+      <p class="wi-agent-scope">Scope: ${(data.scopePaths || []).map(esc).join(' · ')}</p>`}
+  `
+
+  document.getElementById('wdDelegate')?.addEventListener('click', async () => {
+    const button = document.getElementById('wdDelegate')
+    button.disabled = true; button.textContent = 'Creating isolated job…'
+    try {
+      await apiJSON(`/api/v1/admin/coordinator/work-items/${encodeURIComponent(project.id)}/${encodeURIComponent(wi.id)}/delegate`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ assignedAgent: document.getElementById('wdAgentSelect')?.value, maxTurns: 10 }),
+      })
+      window.toast?.('Task delegated to the agent team', 'success')
+      await onSave()
+      await loadWorkItemAgentPanel(project, wi, onSave)
+    } catch (error) {
+      window.toast?.(error.message || 'Delegation failed', 'error')
+      button.disabled = false; button.textContent = 'Delegate and start'
+    }
+  })
+
+  panel.querySelectorAll('[data-agent-action]').forEach(button => button.addEventListener('click', async () => {
+    button.disabled = true
+    try {
+      await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(button.dataset.jobId)}/${button.dataset.agentAction}`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:'{}',
+      })
+      await onSave()
+      await loadWorkItemAgentPanel(project, wi, onSave)
+    } catch (error) {
+      window.toast?.(error.message || 'Agent action failed', 'error')
+      button.disabled = false
+    }
+  }))
+  document.getElementById('wdOpenAgents')?.addEventListener('click', () => {
+    closeModal('wiDetail')
+    location.hash = '#admin'
+  })
+
+  if (active) {
+    window.setTimeout(() => {
+      if (document.getElementById('wdAgentPanel')) loadWorkItemAgentPanel(project, wi, onSave)
+    }, 2500)
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

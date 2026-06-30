@@ -40,8 +40,9 @@ def _token() -> str:
 
 
 def _health() -> dict[str, object] | None:
+    coordinator_port = os.getenv("RACKPILOT_COORDINATOR_PORT", "4180")
     try:
-        with urllib.request.urlopen("http://127.0.0.1:4180/health", timeout=2) as response:
+        with urllib.request.urlopen(f"http://127.0.0.1:{coordinator_port}/health", timeout=2) as response:
             return json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError):
         return None
@@ -101,6 +102,9 @@ def stop() -> int:
 
 def run() -> int:
     token = _token()
+    coordinator_port = os.getenv("RACKPILOT_COORDINATOR_PORT", "4180")
+    api_port = os.getenv("RACKPILOT_API_PORT", "4174")
+    frontend_port = os.getenv("RACKPILOT_FRONTEND_PORT", "5174")
     stop_requested = False
 
     def request_stop(*_: object) -> None:
@@ -122,7 +126,8 @@ def run() -> int:
                 "RACKPILOT_COORDINATOR_MAX_PER_AGENT", "1"
             ),
             "COORDINATOR_TOKEN": token,
-            "COORDINATOR_URL": "http://127.0.0.1:4180",
+            "COORDINATOR_URL": f"http://127.0.0.1:{coordinator_port}",
+            "PORT": coordinator_port,
         }
     )
     specs = {
@@ -130,12 +135,12 @@ def run() -> int:
         "api": (
             [str(PYTHON), "run.py"],
             ROOT / "backend",
-            {**base_env, "PORT": "4174", "STATIC_DEV_PROXY": "http://127.0.0.1:5174"},
+            {**base_env, "PORT": api_port, "STATIC_DEV_PROXY": f"http://127.0.0.1:{frontend_port}"},
         ),
         "frontend": (
-            ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5174"],
+            ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", frontend_port],
             ROOT / "frontend",
-            {**base_env, "VITE_API_PROXY_TARGET": "http://127.0.0.1:4174"},
+            {**base_env, "VITE_API_PROXY_TARGET": f"http://127.0.0.1:{api_port}"},
         ),
     }
     processes: dict[str, subprocess.Popen[bytes]] = {}

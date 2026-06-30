@@ -127,6 +127,14 @@ Runtime PID, token and log files stay under ignored `data/` paths. The token is 
 
 Scheduler defaults are two parallel jobs and one job per agent. They can be overridden with `RACKPILOT_COORDINATOR_MAX_CONCURRENT` and `RACKPILOT_COORDINATOR_MAX_PER_AGENT`.
 
+The supervised ports can be selected with `RACKPILOT_COORDINATOR_PORT`, `RACKPILOT_API_PORT` and `RACKPILOT_FRONTEND_PORT`. Set `DB_PATH` to the canonical RackPilot database when the supervisor runs from an integration worktree.
+
+## Development Kanban integration
+
+Administrator task cards expose the live agent recommendation, available agents, repository scope, current job status and review controls. `Delegate and start` creates an isolated managed worktree linked to that Work Item and moves the task to In Progress. Approval moves it to Testing; completion remains subject to owner acceptance.
+
+`Start AI team` dispatches up to the currently free scheduler capacity from the highest-priority unblocked Ready tasks. Agent selection follows the team contract: Claude for architecture and data contracts, Codex for implementation/integration, and Local AI for bounded text analysis. The scheduler still enforces per-agent, worktree and path-scope locks.
+
 ## Live activity
 
 Coordinator stores bounded, line-oriented agent output while a process is running. Admin → Agents → Live polls incrementally and presents elapsed time, status transitions, commands, file changes, agent messages, errors and the retained console stream. Each job keeps its latest 2,000 log records; older runs created before this capability retain only their final result summary.

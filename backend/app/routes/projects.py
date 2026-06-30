@@ -64,13 +64,17 @@ async def list_work_items(project_id: str, ctx: Auth):
 
 @router.post("/{project_id}/work-items")
 async def create_work_item(project_id: str, body: dict[str, Any], ctx: Auth):
-    wi = ctx.store.create_work_item(ctx.org, project_id, body, actor=ctx.user_id)
+    body = {**body, "createdBy": ctx.user_id}
+    wi = ctx.store.create_work_item(ctx.org, project_id, body)
     return {"workItem": wi}
 
 
 @router.post("/{project_id}/work-items/{wi_id}")
+@router.patch("/{project_id}/work-items/{wi_id}")
 async def update_work_item(project_id: str, wi_id: str, body: dict[str, Any], ctx: Auth):
-    wi = ctx.store.update_work_item(ctx.org, wi_id, body, actor=ctx.user_id)
+    if "version" in body and "expectedVersion" not in body:
+        body = {**body, "expectedVersion": body["version"]}
+    wi = ctx.store.update_work_item(ctx.org, project_id, wi_id, body)
     return {"workItem": wi}
 
 

@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     coordinator_url: str = "http://127.0.0.1:4180"
     coordinator_token: str = ""
     coordinator_timeout_seconds: float = 5.0
+    coordinator_base_ref: str = "codex/integrate-claude-batch"
 
     # Email
     smtp_host: str = ""

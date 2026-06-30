@@ -1039,6 +1039,35 @@ body {
   background: var(--red-bg); color: var(--red); border: 1px solid rgba(242,87,87,0.25);
   border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 8px;
 }
+.wi-agent-panel { margin-top:18px; padding:16px; border:1px solid rgba(124,140,255,.35); border-radius:12px; background:linear-gradient(145deg,rgba(124,140,255,.09),rgba(10,16,32,.7)); }
+.wi-agent-loading,.wi-agent-error { color:var(--text-muted); font-size:13px; }
+.wi-agent-error { color:#ff8898; }
+.wi-agent-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.wi-agent-head strong,.wi-agent-head span { display:block; }
+.wi-agent-head strong { margin-top:4px; font-size:16px; }
+.wi-agent-status { flex:0 0 auto; padding:5px 8px; border-radius:6px; background:#252d3a; color:#b8c1d1; font-size:11px; font-weight:700; text-transform:uppercase; }
+.wi-agent-status--running { color:#ffd18a; background:#3b2c17; }
+.wi-agent-status--review,.wi-agent-status--waiting_approval { color:#79e3c4; background:#15372f; }
+.wi-agent-status--completed { color:#9cacff; background:#20294b; }
+.wi-agent-status--failed,.wi-agent-status--rate_limited { color:#ff8ea0; background:#3a1d24; }
+.wi-agent-job { display:grid; grid-template-columns:110px 80px minmax(0,1fr); gap:8px; margin-top:14px; }
+.wi-agent-job>div { min-width:0; padding:9px 10px; border:1px solid var(--border); border-radius:8px; background:rgba(8,12,22,.65); }
+.wi-agent-job span,.wi-agent-job strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wi-agent-job span { color:var(--text-muted); font-size:10px; text-transform:uppercase; }
+.wi-agent-job strong { margin-top:4px; font-size:12px; }
+.wi-agent-reason,.wi-agent-message,.wi-agent-scope { margin:12px 0 0; color:var(--text-muted); font-size:12px; line-height:1.5; }
+.wi-agent-message { max-height:120px; overflow:auto; padding:10px; border-radius:8px; background:#080d16; white-space:pre-wrap; }
+.wi-agent-message--error { color:#ff9bab; }
+.wi-agent-delegate { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; margin-top:12px; }
+.wi-agent-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+
+@media (max-width:680px) {
+  .wi-agent-panel { padding:14px; }
+  .wi-agent-job { grid-template-columns:1fr 1fr; }
+  .wi-agent-job>div:last-child { grid-column:1/-1; }
+  .wi-agent-delegate { grid-template-columns:1fr; }
+  .wi-agent-delegate .btn,.wi-agent-actions .btn { min-height:44px; }
+}
 
 /* ── Field Progress Module ─────────────────────────────────────────────── */
 

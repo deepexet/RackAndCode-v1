@@ -235,3 +235,13 @@ For each material release, append a dated section containing product version, us
 - Backed up and migrated the real workspace database, then added 14 linked Project Wiki tasks to the existing RackPilot Kanban with security-first priorities and explicit dependencies.
 - Moved the existing Transport and Work Order migration tasks to Testing after implementation; final end-to-end product acceptance remains required.
 - Verification: 34 legacy Transport/notification tests, 5 focused FastAPI integration tests and the Vite production build passed. The full 209-test suite retains the same five known baseline failures (stale schema-version assertions, legacy CSS contract, internal-project rule and project-progress expectation).
+
+## 2026-06-30 — Development Kanban agent dispatch
+
+- Linked Coordinator jobs to their source organization, project and Work Item while keeping the Kanban as the task source of truth.
+- Added deterministic role-based agent recommendations, repository scope inference, isolated job creation and duplicate/blocked-task protection.
+- Added Administrator controls in Work Item details for delegation, live state, cancel/retry and approval; approval advances the task to Testing.
+- Added project-level Start AI team dispatch for the highest-priority unblocked Ready tasks, bounded by scheduler capacity and per-agent concurrency.
+- Corrected FastAPI Work Item create/update contracts and added the missing PATCH route used by the new frontend.
+- Made supervised Coordinator/API/frontend ports configurable so the integrated stack can run against the canonical database.
+- Verification: 21 focused Coordinator/FastAPI tests, Python and JavaScript syntax checks, and Vite production build passed.

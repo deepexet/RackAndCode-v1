@@ -104,6 +104,53 @@ class FastApiPreviewTests(unittest.TestCase):
                 settings.db_path = original_db_path
                 settings.lan_mode = original_lan_mode
 
+    def test_admin_can_delegate_real_kanban_item_to_recommended_agent(self) -> None:
+        original_db_path = settings.db_path
+        original_lan_mode = settings.lan_mode
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings.db_path = Path(temporary_directory) / "rackpilot.db"
+            settings.lan_mode = True
+            auth._store = None
+            try:
+                with TestClient(app) as client:
+                    self.assertEqual(client.post("/api/v1/auth/dev-login").status_code, 200)
+                    store = auth.get_store()
+                    project = store.create_project("local-dev", {"code": "DEV", "name": "Development"})
+                    work_item = store.create_work_item("local-dev", project["id"], {
+                        "title": "Design secure Wiki vault architecture",
+                        "description": "Create an ADR and threat model.",
+                        "status": "ready",
+                        "priority": "critical",
+                    })
+                    coordinator_job = {
+                        "id": "job-linked",
+                        "status": "queued",
+                        "assignedAgent": "claude",
+                        "sourceOrganizationId": "local-dev",
+                        "sourceProjectId": project["id"],
+                        "sourceWorkItemId": work_item["id"],
+                    }
+                    with patch(
+                        "app.routes.admin._coordinator",
+                        new=AsyncMock(side_effect=[{"jobs": []}, {"job": coordinator_job}]),
+                    ) as coordinator:
+                        response = client.post(
+                            f"/api/v1/admin/coordinator/work-items/{project['id']}/{work_item['id']}/delegate",
+                            json={},
+                        )
+
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()["job"]["assignedAgent"], "claude")
+                    self.assertEqual(response.json()["workItem"]["status"], "progress")
+                    create_payload = coordinator.await_args_list[1].kwargs["body"]
+                    self.assertEqual(create_payload["sourceWorkItemId"], work_item["id"])
+                    self.assertTrue(create_payload["autoWorktree"])
+                    self.assertIn("docs", create_payload["scopePaths"])
+            finally:
+                auth._store = None
+                settings.db_path = original_db_path
+                settings.lan_mode = original_lan_mode
+
 
 if __name__ == "__main__":
     unittest.main()

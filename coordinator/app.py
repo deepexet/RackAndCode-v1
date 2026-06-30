@@ -79,6 +79,9 @@ class JobRequest(BaseModel):
     createdBy: str = "owner"
     requiresReview: bool = True
     maxTurns: int = Field(default=8, ge=1, le=20)
+    sourceOrganizationId: str = Field(default="", max_length=200)
+    sourceProjectId: str = Field(default="", max_length=200)
+    sourceWorkItemId: str = Field(default="", max_length=200)
 
 
 class ReviewFeedbackRequest(BaseModel):
@@ -169,9 +172,13 @@ async def worktrees() -> dict[str, Any]:
 
 
 @app.get("/api/v1/jobs")
-async def jobs(status_filter: str | None = Query(default=None, alias="status"), limit: int = 100):
+async def jobs(
+    status_filter: str | None = Query(default=None, alias="status"),
+    work_item_id: str | None = Query(default=None, alias="workItemId"),
+    limit: int = 100,
+):
     try:
-        return {"jobs": store.list_jobs(status_filter, limit)}
+        return {"jobs": store.list_jobs(status_filter, limit, source_work_item_id=work_item_id)}
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -264,6 +271,9 @@ async def create_job(body: JobRequest, x_coordinator_token: str | None = Header(
                 managed_worktree=body.autoWorktree and body.assignedAgent != "local",
                 base_ref=body.baseRef if body.autoWorktree and body.assignedAgent != "local" else "",
                 scope_paths=tuple(body.scopePaths),
+                source_organization_id=body.sourceOrganizationId,
+                source_project_id=body.sourceProjectId,
+                source_work_item_id=body.sourceWorkItemId,
             )
         )
     except ValueError as exc:

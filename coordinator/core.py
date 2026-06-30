@@ -56,6 +56,9 @@ class JobCreate:
     managed_worktree: bool = False
     base_ref: str = ""
     scope_paths: tuple[str, ...] = ()
+    source_organization_id: str = ""
+    source_project_id: str = ""
+    source_work_item_id: str = ""
 
     def validate(self) -> None:
         if not self.title.strip():
@@ -76,6 +79,13 @@ class JobCreate:
             normalized = path.strip().strip("/")
             if not normalized or normalized.startswith(".") or ".." in Path(normalized).parts:
                 raise ValueError("scope paths must be safe repository-relative paths")
+        source_values = (
+            self.source_organization_id.strip(),
+            self.source_project_id.strip(),
+            self.source_work_item_id.strip(),
+        )
+        if any(source_values) and not all(source_values):
+            raise ValueError("all source Kanban identifiers are required together")
 
 
 @dataclass(frozen=True)
@@ -371,6 +381,9 @@ class CoordinatorStore:
                     managed_worktree INTEGER NOT NULL DEFAULT 0,
                     base_ref TEXT NOT NULL DEFAULT '',
                     scope_paths_json TEXT NOT NULL DEFAULT '[]',
+                    source_organization_id TEXT NOT NULL DEFAULT '',
+                    source_project_id TEXT NOT NULL DEFAULT '',
+                    source_work_item_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
@@ -418,6 +431,16 @@ class CoordinatorStore:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN base_ref TEXT NOT NULL DEFAULT ''")
             if "scope_paths_json" not in job_columns:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN scope_paths_json TEXT NOT NULL DEFAULT '[]'")
+            if "source_organization_id" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN source_organization_id TEXT NOT NULL DEFAULT ''")
+            if "source_project_id" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN source_project_id TEXT NOT NULL DEFAULT ''")
+            if "source_work_item_id" not in job_columns:
+                connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN source_work_item_id TEXT NOT NULL DEFAULT ''")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_coordinator_jobs_source_work_item "
+                "ON coordinator_jobs(source_organization_id, source_project_id, source_work_item_id, created_at)"
+            )
             log_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coordinator_job_logs)")}
             if "attempt" not in log_columns:
                 connection.execute("ALTER TABLE coordinator_job_logs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
@@ -441,6 +464,9 @@ class CoordinatorStore:
             "managedWorktree": bool(row["managed_worktree"]),
             "baseRef": row["base_ref"],
             "scopePaths": json.loads(row["scope_paths_json"] or "[]"),
+            "sourceOrganizationId": row["source_organization_id"],
+            "sourceProjectId": row["source_project_id"],
+            "sourceWorkItemId": row["source_work_item_id"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
             "startedAt": row["started_at"],
@@ -497,8 +523,9 @@ class CoordinatorStore:
                 """
                 INSERT INTO coordinator_jobs(
                     id,title,instructions,assigned_agent,status,worktree_path,
-                    branch_name,created_by,requires_review,max_turns,managed_worktree,base_ref,scope_paths_json,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    branch_name,created_by,requires_review,max_turns,managed_worktree,base_ref,scope_paths_json,
+                    source_organization_id,source_project_id,source_work_item_id,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     job_id,
@@ -514,6 +541,9 @@ class CoordinatorStore:
                     int(payload.managed_worktree),
                     payload.base_ref,
                     json.dumps([path.strip().strip("/") for path in payload.scope_paths]),
+                    payload.source_organization_id.strip(),
+                    payload.source_project_id.strip(),
+                    payload.source_work_item_id.strip(),
                     now,
                     now,
                 ),
@@ -522,7 +552,11 @@ class CoordinatorStore:
                 "job.created",
                 job_id=job_id,
                 actor=payload.created_by,
-                payload={"assignedAgent": payload.assigned_agent, "branchName": payload.branch_name},
+                payload={
+                    "assignedAgent": payload.assigned_agent,
+                    "branchName": payload.branch_name,
+                    "sourceWorkItemId": payload.source_work_item_id,
+                },
                 connection=connection,
             )
         return self.get_job(job_id)
@@ -630,10 +664,22 @@ class CoordinatorStore:
             for row in rows
         ]
 
-    def list_jobs(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    def list_jobs(self, status: str | None = None, limit: int = 100,
+                  source_work_item_id: str | None = None) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 500))
         with self._connect() as connection:
-            if status:
+            if source_work_item_id:
+                query = "SELECT * FROM coordinator_jobs WHERE source_work_item_id=?"
+                args: list[Any] = [source_work_item_id]
+                if status:
+                    if status not in JOB_STATUSES:
+                        raise ValueError("unknown status")
+                    query += " AND status=?"
+                    args.append(status)
+                query += " ORDER BY created_at DESC LIMIT ?"
+                args.append(limit)
+                rows = connection.execute(query, args).fetchall()
+            elif status:
                 if status not in JOB_STATUSES:
                     raise ValueError("unknown status")
                 rows = connection.execute(

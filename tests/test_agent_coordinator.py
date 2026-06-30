@@ -53,6 +53,18 @@ class CoordinatorStoreTests(unittest.TestCase):
         events = self.store.list_events(job["id"])
         self.assertEqual(events[0]["eventType"], "job.created")
 
+    def test_job_keeps_kanban_source_and_can_be_filtered(self):
+        linked = self.store.create_job(self.payload(
+            source_organization_id="local-dev",
+            source_project_id="rackpilot",
+            source_work_item_id="wi-123",
+        ))
+        self.store.create_job(self.payload(branch_name="claude/unrelated"))
+
+        self.assertEqual(linked["sourceWorkItemId"], "wi-123")
+        filtered = self.store.list_jobs(source_work_item_id="wi-123")
+        self.assertEqual([job["id"] for job in filtered], [linked["id"]])
+
     def test_integration_branch_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "integration branch"):
             self.store.create_job(self.payload(branch_name="main"))
