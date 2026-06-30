@@ -26,6 +26,38 @@ export async function mount() {
   return unmount
 }
 
+// snake_case → camelCase for stock/sku/movement rows from API
+function normStock(r) {
+  return {
+    ...r,
+    skuId: r.skuId ?? r.sku_id ?? '',
+    skuCode: r.skuCode ?? r.sku_code ?? '',
+    skuName: r.skuName ?? r.sku_name ?? '',
+    warehouseId: r.warehouseId ?? r.warehouse_id ?? '',
+    warehouseName: r.warehouseName ?? r.warehouse_name ?? '',
+    minQuantity: r.minQuantity ?? r.min_quantity ?? 0,
+    locationBin: r.locationBin ?? r.location_bin ?? '',
+  }
+}
+function normSku(r) {
+  return {
+    ...r,
+    skuCode: r.skuCode ?? r.sku_code ?? '',
+    unitCost: r.unitCost ?? r.unit_cost ?? null,
+    reorderPoint: r.reorderPoint ?? r.reorder_point ?? 0,
+  }
+}
+function normMovement(r) {
+  return {
+    ...r,
+    skuCode: r.skuCode ?? r.sku_code ?? '',
+    skuName: r.skuName ?? r.sku_name ?? '',
+    warehouseName: r.warehouseName ?? r.warehouse_name ?? '',
+    movementType: r.movementType ?? r.movement_type ?? '',
+    createdAt: r.createdAt ?? r.created_at ?? '',
+  }
+}
+
 async function loadData() {
   try {
     const [whData, stockData, alertsData] = await Promise.all([
@@ -36,7 +68,7 @@ async function loadData() {
     state.set({
       loading: false,
       warehouses: whData.warehouses || [],
-      stock: stockData.stock || [],
+      stock: (stockData.stock || []).map(normStock),
       alerts: alertsData.alerts || [],
     })
   } catch {
@@ -49,7 +81,7 @@ async function loadSkus(category) {
     ? `/api/v1/inventory/skus?category=${encodeURIComponent(category)}`
     : '/api/v1/inventory/skus'
   const d = await apiJSON(url).catch(() => ({ skus: [] }))
-  state.set({ skus: d.skus || [] })
+  state.set({ skus: (d.skus || []).map(normSku) })
 }
 
 async function loadMovements(warehouseId) {
@@ -57,7 +89,7 @@ async function loadMovements(warehouseId) {
     ? `/api/v1/inventory/movements?warehouseId=${encodeURIComponent(warehouseId)}&limit=100`
     : '/api/v1/inventory/movements?limit=100'
   const d = await apiJSON(url).catch(() => ({ movements: [] }))
-  state.set({ movements: d.movements || [] })
+  state.set({ movements: (d.movements || []).map(normMovement) })
 }
 
 async function loadAssets() {
@@ -364,7 +396,7 @@ function openReceiveModal() {
                  || cur.stock.find(st => st.skuCode === skuCode)?.skuId
     if (!skuId) throw new Error(`SKU "${skuCode}" not found — add it first in the SKUs tab`)
     await apiPost('/api/v1/inventory/movements', {
-      type: 'receive',
+      movementType: 'receive',
       warehouseId,
       skuId,
       quantity,

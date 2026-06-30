@@ -4666,6 +4666,20 @@ Rules:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_inventory_alerts(self, org: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT s.sku_id, sk.sku_code, sk.name, s.warehouse_id, w.name as warehouse_name, "
+                "s.quantity, s.min_quantity, s.reserved, s.location_bin, s.updated_at "
+                "FROM inventory_stock s "
+                "JOIN inventory_skus sk ON sk.id=s.sku_id "
+                "JOIN warehouses w ON w.id=s.warehouse_id "
+                "WHERE s.organization_id=? AND s.min_quantity IS NOT NULL AND s.quantity<=s.min_quantity "
+                "ORDER BY (s.quantity / NULLIF(s.min_quantity,0)) ASC",
+                (org,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # Pending AI/email approval queue
     def create_inventory_pending(self, org: str, source: str, raw_input: str,
                                   suggested_movements: list[dict[str, Any]],
@@ -9768,8 +9782,8 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     "SELECT COUNT(*) FROM work_orders WHERE organization_id=? AND status IN ('open','in_progress') AND due_date IS NOT NULL AND due_date < date('now')", (org,)
                 ).fetchone()[0]
                 stock_alerts = conn.execute(
-                    "SELECT COUNT(*) FROM v_stock_alerts WHERE organization_id=?", (org,)
-                ).fetchone()[0] if conn.execute("SELECT name FROM sqlite_master WHERE type='view' AND name='v_stock_alerts'").fetchone() else 0
+                    "SELECT COUNT(*) FROM inventory_stock WHERE organization_id=? AND min_quantity IS NOT NULL AND quantity<=min_quantity", (org,)
+                ).fetchone()[0]
             self._json(HTTPStatus.OK, {
                 "activeProjects": active_projects,
                 "openWorkOrders": open_wo,
