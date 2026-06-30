@@ -396,7 +396,7 @@ def _integrate_job(job_id: str) -> None:
                 f"Integrated {result['resultCommit'][:12]} as {result['integratedCommit'][:12]} — {result['qualitySummary']}",
                 "system",
             )
-            store.transition_job(job_id, "completed", actor="integration-gate")
+            store.transition_job(job_id, "completed", actor="integration-gate", error="")
         except Exception as exc:
             message = str(exc)[:4000]
             store.update_integration_result(job_id, integration_error=message)

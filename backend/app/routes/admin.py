@@ -575,7 +575,7 @@ async def coordinator_work_item(project_id: str, work_item_id: str, ctx: Auth):
         _coordinator("/api/v1/agents"),
     )
     latest_job = next(iter(jobs.get("jobs", [])), None)
-    if latest_job and latest_job.get("status") == "completed" and work_item.get("status") == "review":
+    if latest_job and latest_job.get("status") == "completed" and work_item.get("status") in {"progress", "review"}:
         work_item = _advance_work_item(ctx, project_id, work_item, "testing")
     return {
         "recommendation": recommendation,
@@ -598,7 +598,7 @@ async def coordinator_delegate_work_item(project_id: str, work_item_id: str, bod
     encoded = urllib.parse.quote(work_item_id, safe="")
     existing = await _coordinator(f"/api/v1/jobs?workItemId={encoded}&limit=20")
     active = next((job for job in existing.get("jobs", []) if job.get("status") in {
-        "queued", "running", "review", "waiting_approval"
+        "queued", "running", "review", "waiting_approval", "integrating"
     }), None)
     if active:
         raise HTTPException(status.HTTP_409_CONFLICT, "This work item already has an active agent job")
