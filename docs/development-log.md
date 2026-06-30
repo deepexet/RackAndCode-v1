@@ -245,3 +245,12 @@ For each material release, append a dated section containing product version, us
 - Corrected FastAPI Work Item create/update contracts and added the missing PATCH route used by the new frontend.
 - Made supervised Coordinator/API/frontend ports configurable so the integrated stack can run against the canonical database.
 - Verification: 21 focused Coordinator/FastAPI tests, Python and JavaScript syntax checks, and Vite production build passed.
+
+## 2026-06-30 — Agent integration gate
+
+- Replaced status-only approval with an asynchronous Integrating lifecycle and controlled agent-commit cherry-pick.
+- Added fail-closed repository-scope validation, immutable historical migration protection, Python/JavaScript syntax checks and clean migration replay.
+- Persisted base, result and integrated commit identifiers plus quality summaries and integration errors for every job.
+- Extended scope locks through Review and Integrating so overlapping jobs cannot run before reviewed work is integrated.
+- Added Review preserved changes to recover useful output after an agent turn-limit or CLI failure.
+- Verification includes isolated temporary-repository tests proving successful commit/cherry-pick and rejection of out-of-scope changes.

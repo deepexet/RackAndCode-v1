@@ -14,6 +14,7 @@ from coordinator.core import (
     build_agent_command,
     create_managed_worktree,
     inspect_worktree,
+    integrate_job_worktree,
     remove_managed_worktree,
 )
 from coordinator.scheduler import CoordinatorScheduler
@@ -244,6 +245,7 @@ class CoordinatorStoreTests(unittest.TestCase):
             "Reached maximum number of turns (10)",
         )
 
+
     def test_managed_worktree_create_and_safe_remove(self):
         repo = Path(self.temp_dir.name) / "source"
         managed_root = Path(self.temp_dir.name) / "managed"
@@ -323,6 +325,51 @@ class CoordinatorStoreTests(unittest.TestCase):
 
         self.assertEqual(self.store.get_job(first["id"])["status"], "running")
         self.assertEqual(self.store.get_job(second["id"])["status"], "queued")
+
+
+class IntegrationGateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name) / "repo"
+        self.root.mkdir()
+        subprocess.run(["git", "init", "-b", "integration"], cwd=self.root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True)
+        (self.root / "README.md").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "base"], cwd=self.root, check=True, capture_output=True)
+        self.managed = create_managed_worktree(
+            self.root, Path(self.temp_dir.name) / "worktrees",
+            agent="claude", title="Architecture docs", base_ref="integration",
+        )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def job(self, scope_paths=("docs",)):
+        return {
+            "title": "Document architecture", "assignedAgent": "claude",
+            "worktreePath": self.managed["worktreePath"], "branchName": self.managed["branchName"],
+            "baseCommit": self.managed["baseCommit"], "scopePaths": list(scope_paths),
+        }
+
+    def test_scoped_changes_are_committed_and_cherry_picked(self):
+        docs = Path(self.managed["worktreePath"]) / "docs"
+        docs.mkdir()
+        (docs / "adr.md").write_text("# Decision\n", encoding="utf-8")
+        result = integrate_job_worktree(self.root, self.job())
+        self.assertTrue((self.root / "docs" / "adr.md").exists())
+        self.assertTrue(result["resultCommit"])
+        self.assertTrue(result["integratedCommit"])
+        self.assertIn("no syntax check", result["qualitySummary"])
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=self.root, capture_output=True, text=True, check=True)
+        self.assertEqual(status.stdout, "")
+
+    def test_out_of_scope_change_is_rejected_before_commit(self):
+        (Path(self.managed["worktreePath"]) / "server.py").write_text("print('unsafe')\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "outside declared scope"):
+            integrate_job_worktree(self.root, self.job())
+        self.assertFalse((self.root / "server.py").exists())
 
 
 if __name__ == "__main__":

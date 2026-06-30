@@ -25,6 +25,7 @@ from .core import (
     probe_agent,
     probes_as_dict,
     inspect_worktree,
+    integrate_job_worktree,
     remove_managed_worktree,
     validate_worktree,
 )
@@ -46,6 +47,7 @@ WORKTREE_ROOT = Path(
 store = CoordinatorStore(DB_PATH)
 processes: dict[str, subprocess.Popen[str]] = {}
 process_lock = threading.RLock()
+integration_lock = threading.RLock()
 
 
 @asynccontextmanager
@@ -60,7 +62,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="RackPilot Agent Coordinator",
-    version="1.1.0",
+    version="1.2.0",
     docs_url="/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -297,6 +299,7 @@ async def create_job(body: JobRequest, x_coordinator_token: str | None = Header(
                 source_organization_id=body.sourceOrganizationId,
                 source_project_id=body.sourceProjectId,
                 source_work_item_id=body.sourceWorkItemId,
+                base_commit=(managed or {}).get("baseCommit", ""),
             )
         )
     except ValueError as exc:
@@ -375,6 +378,35 @@ def _run_job(job_id: str) -> None:
 
 def _launch_job(job_id: str) -> None:
     threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"agent-{job_id[:8]}").start()
+
+
+def _integrate_job(job_id: str) -> None:
+    with integration_lock:
+        try:
+            job = store.get_job(job_id)
+            store.append_job_log(job_id, "Integration gate: validating scope and quality", "system")
+            result = integrate_job_worktree(REPO_ROOT, job)
+            store.update_integration_result(job_id, **{
+                "result_commit": result["resultCommit"],
+                "integrated_commit": result["integratedCommit"],
+                "quality_summary": result["qualitySummary"],
+            })
+            store.append_job_log(
+                job_id,
+                f"Integrated {result['resultCommit'][:12]} as {result['integratedCommit'][:12]} — {result['qualitySummary']}",
+                "system",
+            )
+            store.transition_job(job_id, "completed", actor="integration-gate")
+        except Exception as exc:
+            message = str(exc)[:4000]
+            store.update_integration_result(job_id, integration_error=message)
+            store.append_job_log(job_id, f"Integration stopped: {message}", "stderr")
+            try:
+                store.transition_job(job_id, "failed", actor="integration-gate", error=message)
+            except ValueError:
+                pass
+        finally:
+            scheduler.wake()
 
 
 scheduler = CoordinatorScheduler(
@@ -463,7 +495,34 @@ async def approve_job(job_id: str, x_coordinator_token: str | None = Header(defa
         job = store.get_job(job_id)
         if job["status"] not in {"review", "waiting_approval"}:
             raise ValueError("Only a reviewed job can be approved")
-        return {"job": store.transition_job(job_id, "completed", actor="owner")}
+        if job["assignedAgent"] == "local":
+            return {"job": store.transition_job(job_id, "completed", actor="owner")}
+        _validate_job_workspace(job)
+        integrating = store.transition_job(job_id, "integrating", actor="owner")
+        threading.Thread(
+            target=_integrate_job, args=(job_id,), daemon=True, name=f"integrate-{job_id[:8]}"
+        ).start()
+        return {"job": integrating}
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+
+@app.post("/api/v1/jobs/{job_id}/submit-review")
+async def submit_job_review(job_id: str, x_coordinator_token: str | None = Header(default=None)):
+    """Recover useful worktree output after turn-limit or CLI failure."""
+    require_control_token(x_coordinator_token)
+    try:
+        job = store.get_job(job_id)
+        if job["status"] not in {"failed", "rate_limited"}:
+            raise ValueError("Only a failed job can submit preserved changes")
+        _validate_job_workspace(job)
+        review = inspect_worktree(job["worktreePath"])
+        if not review["dirty"]:
+            raise ValueError("Worktree contains no preserved changes")
+        store.append_job_log(job_id, "Preserved changes submitted for integration review", "system")
+        return {"job": store.transition_job(job_id, "review", actor="owner")}
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
     except ValueError as exc:
@@ -526,7 +585,7 @@ async def remove_job_worktree(job_id: str, x_coordinator_token: str | None = Hea
         job = store.get_job(job_id)
         if not job["managedWorktree"]:
             raise ValueError("Job does not own a managed worktree")
-        if job["status"] in {"queued", "running", "review", "waiting_approval"}:
+        if job["status"] in {"queued", "running", "review", "waiting_approval", "integrating"}:
             raise ValueError("Active or unreviewed job worktrees cannot be removed")
         remove_managed_worktree(REPO_ROOT, job["worktreePath"])
         store.append_event("worktree.removed", job_id=job_id, actor="owner", payload={"path": job["worktreePath"]})

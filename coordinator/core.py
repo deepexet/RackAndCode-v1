@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -35,6 +36,7 @@ JOB_STATUSES = {
     "failed",
     "cancelled",
     "rate_limited",
+    "integrating",
 }
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "rate_limited"}
 
@@ -59,6 +61,7 @@ class JobCreate:
     source_organization_id: str = ""
     source_project_id: str = ""
     source_work_item_id: str = ""
+    base_commit: str = ""
 
     def validate(self) -> None:
         if not self.title.strip():
@@ -208,7 +211,10 @@ def create_managed_worktree(
     )
     if result.returncode != 0:
         raise ValueError((result.stderr or "could not create managed worktree").strip())
-    return {"worktreePath": str(path), "branchName": branch, "baseRef": base_ref}
+    return {
+        "worktreePath": str(path), "branchName": branch, "baseRef": base_ref,
+        "baseCommit": verify.stdout.strip(),
+    }
 
 
 def remove_managed_worktree(repo_root: Path, worktree_path: str) -> None:
@@ -293,6 +299,117 @@ def inspect_worktree(worktree_path: str) -> dict[str, Any]:
         "unstagedStat": unstaged,
         "stagedStat": staged,
         "recentCommits": commits,
+    }
+
+
+def _git(root: Path, *args: str, timeout: int = 30, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, text=True,
+        timeout=timeout, check=False, env=env,
+    )
+
+
+def _changed_paths(worktree: Path) -> list[str]:
+    tracked = _git(worktree, "diff", "--name-only", "HEAD")
+    untracked = _git(worktree, "ls-files", "--others", "--exclude-standard")
+    if tracked.returncode != 0 or untracked.returncode != 0:
+        raise ValueError("Unable to inspect agent changes")
+    return sorted(set(filter(None, tracked.stdout.splitlines() + untracked.stdout.splitlines())))
+
+
+def _path_in_scope(path: str, scopes: list[str]) -> bool:
+    normalized = path.strip("/")
+    return any(normalized == scope.strip("/") or normalized.startswith(f"{scope.strip('/')}/") for scope in scopes)
+
+
+def validate_job_scope(job: dict[str, Any]) -> list[str]:
+    worktree = Path(job["worktreePath"]).resolve()
+    paths = _changed_paths(worktree)
+    scopes = [str(path).strip("/") for path in job.get("scopePaths", []) if str(path).strip("/")]
+    if not scopes:
+        raise ValueError("Integration requires an explicit repository scope")
+    outside = [path for path in paths if not _path_in_scope(path, scopes)]
+    if outside:
+        raise ValueError(f"Agent changed files outside declared scope: {', '.join(outside[:10])}")
+    return paths
+
+
+def run_job_quality_checks(repo_root: Path, job: dict[str, Any], changed_paths: list[str]) -> str:
+    """Run deterministic bounded checks selected only from changed file types."""
+    worktree = Path(job["worktreePath"]).resolve()
+    checks: list[tuple[str, list[str]]] = []
+    python_files = [path for path in changed_paths if path.endswith(".py")]
+    js_files = [path for path in changed_paths if path.endswith((".js", ".mjs"))]
+    migration_files = [path for path in changed_paths if path.startswith("server/migrations/") and path.endswith(".sql")]
+    for path in migration_files:
+        exists_at_base = _git(repo_root, "cat-file", "-e", f"{job.get('baseCommit') or 'HEAD'}:{path}")
+        if exists_at_base.returncode == 0:
+            raise ValueError(f"Applied migration is immutable and cannot be edited: {path}")
+    if python_files:
+        checks.append(("python syntax", [sys.executable, "-m", "py_compile", *python_files]))
+    for path in js_files:
+        checks.append((f"javascript syntax: {path}", ["node", "--check", path]))
+    if migration_files:
+        migration_script = (
+            "import tempfile; from pathlib import Path; from server.migrations import MigrationRunner; "
+            "d=tempfile.TemporaryDirectory(); "
+            "r=MigrationRunner(Path(d.name)/'quality.db', Path('server/migrations')).apply(); "
+            "print(r.current_version)"
+        )
+        checks.append(("migration replay", [sys.executable, "-c", migration_script]))
+    summaries: list[str] = []
+    env = {**os.environ, "PYTHONPATH": str(worktree)}
+    for label, command in checks:
+        result = subprocess.run(
+            command, cwd=worktree, capture_output=True, text=True,
+            timeout=120, check=False, env=env,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "check failed").strip()[-2000:]
+            raise ValueError(f"{label} failed: {detail}")
+        summaries.append(f"{label}: passed")
+    return "; ".join(summaries) if summaries else "documentation/content scope: no syntax check required"
+
+
+def integrate_job_worktree(repo_root: Path, job: dict[str, Any]) -> dict[str, str]:
+    """Commit scoped agent changes and cherry-pick them into a clean integration worktree."""
+    repo_root = Path(repo_root).resolve()
+    worktree = validate_worktree(repo_root, job["worktreePath"], job["branchName"])
+    changed_paths = validate_job_scope(job)
+    root_status = _git(repo_root, "status", "--porcelain")
+    if root_status.returncode != 0 or root_status.stdout.strip():
+        raise ValueError("Integration worktree must be clean before approval")
+    quality = run_job_quality_checks(repo_root, job, changed_paths)
+    if changed_paths:
+        add = _git(worktree, "add", "--all", "--", *changed_paths, timeout=60)
+        if add.returncode != 0:
+            raise ValueError((add.stderr or "Unable to stage agent changes").strip())
+        commit = _git(
+            worktree, "-c", "user.name=RackPilot Agent Coordinator",
+            "-c", "user.email=coordinator@rackpilot.local", "commit",
+            "-m", f"agent({job['assignedAgent']}): {job['title']}", timeout=60,
+        )
+        if commit.returncode != 0:
+            raise ValueError((commit.stderr or commit.stdout or "Unable to commit agent changes").strip())
+    base_commit = str(job.get("baseCommit") or "").strip()
+    if not base_commit:
+        merge_base = _git(repo_root, "merge-base", job["branchName"], "HEAD")
+        if merge_base.returncode != 0:
+            raise ValueError("Unable to determine agent branch base")
+        base_commit = merge_base.stdout.strip()
+    commits = _git(repo_root, "rev-list", "--reverse", f"{base_commit}..{job['branchName']}")
+    commit_ids = [value for value in commits.stdout.splitlines() if value]
+    if commits.returncode != 0 or not commit_ids:
+        raise ValueError("Agent worktree contains no commits to integrate")
+    cherry_pick = _git(repo_root, "cherry-pick", *commit_ids, timeout=180)
+    if cherry_pick.returncode != 0:
+        _git(repo_root, "cherry-pick", "--abort")
+        raise ValueError(f"Integration conflict: {(cherry_pick.stderr or cherry_pick.stdout).strip()[-2000:]}")
+    integrated = _git(repo_root, "rev-parse", "HEAD")
+    return {
+        "resultCommit": commit_ids[-1],
+        "integratedCommit": integrated.stdout.strip(),
+        "qualitySummary": quality,
     }
 
 
@@ -384,6 +501,11 @@ class CoordinatorStore:
                     source_organization_id TEXT NOT NULL DEFAULT '',
                     source_project_id TEXT NOT NULL DEFAULT '',
                     source_work_item_id TEXT NOT NULL DEFAULT '',
+                    base_commit TEXT NOT NULL DEFAULT '',
+                    result_commit TEXT NOT NULL DEFAULT '',
+                    integrated_commit TEXT NOT NULL DEFAULT '',
+                    quality_summary TEXT NOT NULL DEFAULT '',
+                    integration_error TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     started_at TEXT,
@@ -437,6 +559,9 @@ class CoordinatorStore:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN source_project_id TEXT NOT NULL DEFAULT ''")
             if "source_work_item_id" not in job_columns:
                 connection.execute("ALTER TABLE coordinator_jobs ADD COLUMN source_work_item_id TEXT NOT NULL DEFAULT ''")
+            for column in ("base_commit", "result_commit", "integrated_commit", "quality_summary", "integration_error"):
+                if column not in job_columns:
+                    connection.execute(f"ALTER TABLE coordinator_jobs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_coordinator_jobs_source_work_item "
                 "ON coordinator_jobs(source_organization_id, source_project_id, source_work_item_id, created_at)"
@@ -467,6 +592,11 @@ class CoordinatorStore:
             "sourceOrganizationId": row["source_organization_id"],
             "sourceProjectId": row["source_project_id"],
             "sourceWorkItemId": row["source_work_item_id"],
+            "baseCommit": row["base_commit"],
+            "resultCommit": row["result_commit"],
+            "integratedCommit": row["integrated_commit"],
+            "qualitySummary": row["quality_summary"],
+            "integrationError": row["integration_error"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
             "startedAt": row["started_at"],
@@ -525,7 +655,8 @@ class CoordinatorStore:
                     id,title,instructions,assigned_agent,status,worktree_path,
                     branch_name,created_by,requires_review,max_turns,managed_worktree,base_ref,scope_paths_json,
                     source_organization_id,source_project_id,source_work_item_id,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ,base_commit
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     job_id,
@@ -546,6 +677,7 @@ class CoordinatorStore:
                     payload.source_work_item_id.strip(),
                     now,
                     now,
+                    payload.base_commit.strip(),
                 ),
             )
             self.append_event(
@@ -558,6 +690,18 @@ class CoordinatorStore:
                     "sourceWorkItemId": payload.source_work_item_id,
                 },
                 connection=connection,
+            )
+        return self.get_job(job_id)
+
+    def update_integration_result(
+        self, job_id: str, *, result_commit: str = "", integrated_commit: str = "",
+        quality_summary: str = "", integration_error: str = "",
+    ) -> dict[str, Any]:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """UPDATE coordinator_jobs SET result_commit=?,integrated_commit=?,quality_summary=?,
+                   integration_error=?,updated_at=? WHERE id=?""",
+                (result_commit, integrated_commit, quality_summary[:4000], integration_error[:4000], utc_now(), job_id),
             )
         return self.get_job(job_id)
 
@@ -721,9 +865,10 @@ class CoordinatorStore:
         allowed = {
             "queued": {"running", "cancelled"},
             "running": {"review", "waiting_approval", "completed", "failed", "cancelled", "rate_limited"},
-            "review": {"waiting_approval", "completed", "failed", "cancelled"},
+            "review": {"waiting_approval", "integrating", "completed", "failed", "cancelled"},
             "waiting_approval": {"completed", "failed", "cancelled", "queued"},
-            "failed": {"queued"},
+            "integrating": {"completed", "failed"},
+            "failed": {"queued", "review"},
             "cancelled": {"queued"},
             "rate_limited": {"queued"},
         }

@@ -743,9 +743,9 @@ function renderWorkItemAgentPanel(project, wi, data, onSave) {
   const job = jobs[0]
   const recommendation = data.recommendation || { agent: 'codex', reason: '' }
   const agents = (data.agents || []).filter(agent => agent.available)
-  const active = job && ['queued', 'running', 'review', 'waiting_approval'].includes(job.status)
+  const active = job && ['queued', 'running', 'review', 'waiting_approval', 'integrating'].includes(job.status)
   const statusLabels = {
-    queued: 'Queued', running: 'Running', review: 'Review required', waiting_approval: 'Waiting approval',
+    queued: 'Queued', running: 'Running', review: 'Review required', waiting_approval: 'Waiting approval', integrating: 'Integrating',
     completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', rate_limited: 'Rate limited',
   }
   panel.innerHTML = `
@@ -760,9 +760,12 @@ function renderWorkItemAgentPanel(project, wi, data, onSave) {
         <div><span>Branch</span><strong title="${esc(job.branchName)}">${esc(job.branchName || '—')}</strong></div>
       </div>
       ${job.error ? `<p class="wi-agent-message wi-agent-message--error">${esc(friendlyAgentError(job.error))}</p>` : ''}
+      ${job.integrationError ? `<p class="wi-agent-message wi-agent-message--error">Integration stopped: ${esc(job.integrationError)}</p>` : ''}
+      ${job.qualitySummary ? `<p class="wi-agent-message">Quality gate: ${esc(job.qualitySummary)}${job.integratedCommit ? ` · integrated ${esc(job.integratedCommit.slice(0,12))}` : ''}</p>` : ''}
       ${job.resultSummary ? `<p class="wi-agent-message">${esc(String(job.resultSummary).slice(-600))}</p>` : ''}
       <div class="wi-agent-actions">
         ${job.status === 'review' || job.status === 'waiting_approval' ? `<button class="btn btn-primary" data-agent-action="approve" data-job-id="${esc(job.id)}">Approve → Testing</button>` : ''}
+        ${job.status === 'failed' && job.assignedAgent !== 'local' ? `<button class="btn btn-ghost" data-agent-action="submit-review" data-job-id="${esc(job.id)}">Review preserved changes</button>` : ''}
         ${['failed','cancelled','rate_limited'].includes(job.status) ? `<button class="btn btn-primary" data-agent-action="retry" data-job-id="${esc(job.id)}">${String(job.error||'').includes('maximum number of turns') ? 'Continue' : 'Retry'}</button>` : ''}
         ${active && ['queued','running'].includes(job.status) ? `<button class="btn btn-ghost" data-agent-action="cancel" data-job-id="${esc(job.id)}">Cancel</button>` : ''}
         <button class="btn btn-ghost" id="wdOpenAgents">Open live activity</button>

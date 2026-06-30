@@ -108,9 +108,11 @@ queued -> running -> review -> waiting_approval -> completed
 
 The Administrator-only FastAPI proxy exposes agents, worktrees, queue and execution state. Status-aware Start, Retry, Cancel, Approve and Reject controls are available when execution and the server-side token are configured. Retry is limited to failed, cancelled and rate-limited jobs and starts a fresh run in the same validated worktree. The coordinator token never reaches browser code, and every successful action is written to the workspace audit log.
 
+Approve is an integration gate, not a status-only action. It validates every changed path against the declared scope, rejects edits to existing numbered migrations, runs bounded syntax/migration checks, creates an attributed agent commit, requires a clean integration worktree, and performs a controlled cherry-pick. Conflicts or failed checks leave the agent worktree intact and move the job to Failed with a concise integration error. A failed agent that preserved useful files can use Review preserved changes instead of repeating completed work.
+
 Administrators can create a bounded job from Admin → Agents by selecting an installed agent, defining instructions, repository scope and a 1–20 turn budget, and choosing whether review is required. The scheduler starts it when compatible capacity is available.
 
-By default New job creates a unique managed worktree from the selected base revision. The optional repository-relative scope list is also a scheduler lock: paths such as `backend/app/routes` and `backend/app/routes/projects.py` overlap and cannot run concurrently. Managed worktrees can be removed only after the job is terminal and the worktree is clean; their Git branches are preserved.
+By default New job creates a unique managed worktree from the selected base revision. The optional repository-relative scope list is also a scheduler lock: paths such as `backend/app/routes` and `backend/app/routes/projects.py` overlap and cannot run concurrently. Scope locks remain active through Review and Integrating, preventing another agent from starting overlapping work before the result is accepted. Managed worktrees can be removed only after the job is terminal and the worktree is clean; their Git branches are preserved.
 
 ## Persistent local stack
 

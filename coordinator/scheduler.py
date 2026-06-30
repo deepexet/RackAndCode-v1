@@ -49,6 +49,8 @@ class CoordinatorScheduler:
 
     def snapshot(self) -> dict[str, Any]:
         running = self.store.list_jobs("running", limit=500)
+        integrating = self.store.list_jobs("integrating", limit=500)
+        protected = running + integrating + self.store.list_jobs("review", limit=500) + self.store.list_jobs("waiting_approval", limit=500)
         queued = self.store.list_jobs("queued", limit=500)
         by_agent = {agent: 0 for agent in sorted(AGENTS)}
         for job in running:
@@ -56,11 +58,12 @@ class CoordinatorScheduler:
         return {
             "enabled": self.enabled,
             "running": len(running),
+            "integrating": len(integrating),
             "queued": len(queued),
             "maxConcurrent": self.max_concurrent,
             "maxPerAgent": self.max_per_agent,
             "runningByAgent": by_agent,
-            "lockedWorktrees": sorted({job["worktreePath"] for job in running}),
+            "lockedWorktrees": sorted({job["worktreePath"] for job in protected}),
         }
 
     def claim(self, job_id: str, *, actor: str = "scheduler") -> dict[str, Any]:
@@ -69,11 +72,15 @@ class CoordinatorScheduler:
             if job["status"] != "queued":
                 raise ValueError("Only queued jobs can start")
             running = self.store.list_jobs("running", limit=500)
-            if len(running) >= self.max_concurrent:
+            integrating = self.store.list_jobs("integrating", limit=500)
+            protected = running + integrating + self.store.list_jobs("review", limit=500) + self.store.list_jobs("waiting_approval", limit=500)
+            if len(running) + len(integrating) >= self.max_concurrent:
                 raise ValueError("Coordinator concurrency limit reached")
-            if any(item["worktreePath"] == job["worktreePath"] for item in running):
+            if any(item["worktreePath"] == job["worktreePath"] for item in protected):
                 raise ValueError("Worktree is already locked by another running job")
-            for item in running:
+            for item in protected:
+                if item["id"] == job["id"]:
+                    continue
                 overlaps = self._scope_overlaps(job.get("scopePaths", []), item.get("scopePaths", []))
                 if overlaps:
                     raise ValueError(f"Task scope overlaps running job {item['id']}: {', '.join(overlaps[:5])}")

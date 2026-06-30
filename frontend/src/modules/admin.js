@@ -249,7 +249,7 @@ function renderAgents(d) {
   const jobs = d.jobs || []
   const worktrees = d.worktrees || []
   const scheduler = health.scheduler || {}
-  const running = jobs.filter(j => j.status === 'running').length
+  const running = jobs.filter(j => ['running', 'integrating'].includes(j.status)).length
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
   const controlsReady = Boolean(health.controlConfigured)
   const localAgent = agents.find(agent => agent.agent === 'local')
@@ -279,11 +279,17 @@ function renderAgents(d) {
         ${!controlsReady || !health.executionEnabled ? 'disabled' : ''}><i class="ti ti-message-circle"></i> Request changes</button>`)
       buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--danger" data-coordinator-action="reject" data-job-id="${esc(job.id)}"
         ${!controlsReady ? 'disabled' : ''}><i class="ti ti-x"></i> Reject</button>`)
+    } else if (job.status === 'integrating') {
+      buttons.push('<span class="ui-dim">Quality gate and integration in progress…</span>')
     } else if (['failed', 'cancelled', 'rate_limited'].includes(job.status)) {
       const continuation = String(job.error || '').includes('max_turns') || String(job.error || '').includes('maximum number of turns')
       buttons.push(`<button class="ui-btn ui-btn--sm ui-btn--primary" data-coordinator-action="retry" data-job-id="${esc(job.id)}"
         ${!controlsReady || !health.executionEnabled ? 'disabled title="Enable autonomous execution to retry jobs"' : ''}>
         <i class="ti ti-refresh"></i> ${continuation ? 'Continue' : 'Retry'}</button>`)
+      if (job.status === 'failed' && job.assignedAgent !== 'local') {
+        buttons.push(`<button class="ui-btn ui-btn--sm" data-coordinator-action="submit-review" data-job-id="${esc(job.id)}">
+          <i class="ti ti-git-pull-request"></i> Review preserved changes</button>`)
+      }
     }
     if (job.managedWorktree && ['completed', 'failed', 'cancelled', 'rate_limited'].includes(job.status)) {
       buttons.push(`<button class="ui-btn ui-btn--sm" data-coordinator-action="remove-worktree" data-job-id="${esc(job.id)}"
@@ -720,7 +726,8 @@ function bindTabEvents() {
           start: 'Start this agent job now?',
           retry: 'Retry this agent job now?',
           cancel: 'Cancel this agent job?',
-          approve: 'Approve this completed job?',
+          approve: 'Run quality checks and integrate this reviewed job into the integration branch?',
+          'submit-review': 'Submit the preserved worktree changes for integration review?',
           reject: 'Reject this job and mark it failed?',
           'remove-worktree': 'Remove this clean managed worktree? The Git branch will be preserved.',
         }

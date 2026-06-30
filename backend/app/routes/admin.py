@@ -574,11 +574,15 @@ async def coordinator_work_item(project_id: str, work_item_id: str, ctx: Auth):
         _coordinator(f"/api/v1/jobs?workItemId={encoded}&limit=20"),
         _coordinator("/api/v1/agents"),
     )
+    latest_job = next(iter(jobs.get("jobs", [])), None)
+    if latest_job and latest_job.get("status") == "completed" and work_item.get("status") == "review":
+        work_item = _advance_work_item(ctx, project_id, work_item, "testing")
     return {
         "recommendation": recommendation,
         "scopePaths": _work_item_scope(work_item),
         "jobs": jobs.get("jobs", []),
         "agents": agents.get("agents", []),
+        "workItem": work_item,
     }
 
 
@@ -708,7 +712,7 @@ async def coordinator_request_job_changes(job_id: str, body: dict[str, Any], ctx
 @router.post("/coordinator/jobs/{job_id}/{action}")
 async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
     _require_authenticated_admin(ctx)
-    if action not in {"start", "retry", "cancel", "approve", "reject", "remove-worktree"}:
+    if action not in {"start", "retry", "cancel", "approve", "reject", "submit-review", "remove-worktree"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown coordinator action")
     result = await _coordinator(f"/api/v1/jobs/{job_id}/{action}", method="POST", body={})
     job = result.get("job", {})
@@ -716,7 +720,8 @@ async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
         try:
             _, work_item = _find_work_item(ctx, job["sourceProjectId"], job["sourceWorkItemId"])
             target = {
-                "start": "progress", "retry": "progress", "approve": "testing",
+                "start": "progress", "retry": "progress", "approve": "review",
+                "submit-review": "review",
                 "reject": "blocked", "cancel": "blocked",
             }.get(action)
             if target:
