@@ -6030,6 +6030,154 @@ Rules:
             conn.execute("DELETE FROM project_risks WHERE id=? AND organization_id=?", (risk_id, org))
         self.audit(org, "risk.delete", {"id": risk_id})
 
+    # ── Transport ────────────────────────────────────────────────────────
+    def list_vehicles(self, org: str, status: str | None = None) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            q = "SELECT * FROM vehicles WHERE organization_id=?"
+            args: list[Any] = [org]
+            if status:
+                q += " AND status=?"
+                args.append(status)
+            q += " ORDER BY make, model"
+            rows = conn.execute(q, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_vehicle(self, org: str, vid: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM vehicles WHERE organization_id=? AND id=?", (org, vid)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_vehicle(self, org: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import uuid as _uuid
+        vid = str(_uuid.uuid4()).replace("-", "")
+        wh_id = str(_uuid.uuid4()).replace("-", "")
+        plate = payload.get("plate", "").strip()
+        make  = payload.get("make", "").strip()
+        model = payload.get("model", "").strip()
+        with self._connect() as conn:
+            # Create a warehouse for this vehicle's inventory
+            conn.execute(
+                "INSERT OR IGNORE INTO warehouses (organization_id,id,name,location,description) VALUES (?,?,?,?,?)",
+                (org, wh_id, f"{make} {model} ({plate})", "vehicle", f"Auto-created for vehicle {plate}")
+            )
+            conn.execute(
+                """INSERT INTO vehicles
+                   (organization_id,id,plate,make,model,year,color,vin,fuel_type,status,mileage,warehouse_id,notes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (org, vid, plate, make, model,
+                 payload.get("year"), payload.get("color"), payload.get("vin"),
+                 payload.get("fuelType","gasoline"), payload.get("status","active"),
+                 payload.get("mileage", 0), wh_id, payload.get("notes"))
+            )
+            row = conn.execute("SELECT * FROM vehicles WHERE id=?", (vid,)).fetchone()
+        self.audit(org, None, None, "vehicle.create", "vehicle", vid)
+        return dict(row)
+
+    def update_vehicle(self, org: str, vid: str, payload: dict[str, Any]) -> dict[str, Any]:
+        fields, args = [], []
+        for col, key in [("plate","plate"),("make","make"),("model","model"),("year","year"),
+                         ("color","color"),("vin","vin"),("fuel_type","fuelType"),
+                         ("status","status"),("mileage","mileage"),("notes","notes")]:
+            if key in payload:
+                fields.append(f"{col}=?")
+                args.append(payload[key])
+        if not fields:
+            return self.get_vehicle(org, vid) or {}
+        args += [org, vid]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE vehicles SET {','.join(fields)},updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE organization_id=? AND id=?",
+                args
+            )
+            row = conn.execute("SELECT * FROM vehicles WHERE id=?", (vid,)).fetchone()
+        self.audit(org, None, None, "vehicle.update", "vehicle", vid)
+        return dict(row) if row else {}
+
+    def list_vehicle_assignments(self, org: str, vid: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM vehicle_assignments WHERE organization_id=? AND vehicle_id=? ORDER BY started_at DESC",
+                (org, vid)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def assign_vehicle(self, org: str, vid: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import uuid as _uuid
+        aid = str(_uuid.uuid4()).replace("-", "")
+        with self._connect() as conn:
+            # End any current open assignment
+            conn.execute(
+                "UPDATE vehicle_assignments SET ended_at=? WHERE organization_id=? AND vehicle_id=? AND ended_at IS NULL",
+                (payload.get("startedAt"), org, vid)
+            )
+            conn.execute(
+                "INSERT INTO vehicle_assignments (organization_id,id,vehicle_id,assignee_name,assignee_user_id,started_at,notes) VALUES (?,?,?,?,?,?,?)",
+                (org, aid, vid, payload.get("assigneeName",""), payload.get("assigneeUserId"),
+                 payload.get("startedAt"), payload.get("notes"))
+            )
+            row = conn.execute("SELECT * FROM vehicle_assignments WHERE id=?", (aid,)).fetchone()
+        self.audit(org, None, None, "vehicle.assign", "vehicle", vid)
+        return dict(row)
+
+    def unassign_vehicle(self, org: str, vid: str, end_at: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE vehicle_assignments SET ended_at=? WHERE organization_id=? AND vehicle_id=? AND ended_at IS NULL",
+                (end_at, org, vid)
+            )
+        self.audit(org, None, None, "vehicle.unassign", "vehicle", vid)
+
+    def list_vehicle_service(self, org: str, vid: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM vehicle_service_records WHERE organization_id=? AND vehicle_id=? ORDER BY service_date DESC, created_at DESC",
+                (org, vid)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_vehicle_service(self, org: str, vid: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import uuid as _uuid
+        sid = str(_uuid.uuid4()).replace("-", "")
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO vehicle_service_records
+                   (organization_id,id,vehicle_id,service_type,title,description,mileage,cost,performed_by,service_date,status)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (org, sid, vid,
+                 payload.get("serviceType","maintenance"), payload.get("title",""),
+                 payload.get("description"), payload.get("mileage"),
+                 payload.get("cost"), payload.get("performedBy"),
+                 payload.get("serviceDate"), payload.get("status","done"))
+            )
+            # Update vehicle mileage if higher
+            if payload.get("mileage"):
+                conn.execute(
+                    "UPDATE vehicles SET mileage=MAX(mileage,?),updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE organization_id=? AND id=?",
+                    (payload["mileage"], org, vid)
+                )
+            row = conn.execute("SELECT * FROM vehicle_service_records WHERE id=?", (sid,)).fetchone()
+        self.audit(org, None, None, "vehicle.service", "vehicle_service", sid)
+        return dict(row)
+
+    def get_vehicle_inventory(self, org: str, vid: str) -> list[dict[str, Any]]:
+        """Return inventory stock for the vehicle's warehouse."""
+        vehicle = self.get_vehicle(org, vid)
+        if not vehicle or not vehicle.get("warehouse_id"):
+            return []
+        wh_id = vehicle["warehouse_id"]
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT s.*, sk.sku_code, sk.name as sku_name, sk.unit
+                   FROM inventory_stock s
+                   JOIN inventory_skus sk ON sk.id=s.sku_id
+                   WHERE s.organization_id=? AND s.warehouse_id=? AND s.quantity>0
+                   ORDER BY sk.name""",
+                (org, wh_id)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     # ── Work orders ──────────────────────────────────────────────────────
     def list_work_orders(self, org: str, status: str | None = None, asset_id: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -10268,7 +10416,33 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                     movements = self.store.list_movements(org, warehouse_id=wh, limit=10000)
                     self._json(HTTPStatus.OK, {"stock": stock, "movements": movements})
                 return
+            if sub == "alerts":
+                self._json(HTTPStatus.OK, {"alerts": self.store.list_inventory_alerts(org)}); return
             self._error(HTTPStatus.NOT_FOUND, "not_found", "Unknown inventory route"); return
+        # ── Transport ─────────────────────────────────────────────────────────
+        if len(parts) >= 3 and parts[2] == "transport":
+            if not self._require_permission("projectRead"): return
+            org = self.organization_id
+            sub = parts[3] if len(parts) > 3 else ""
+            vid = parts[4] if len(parts) > 4 else ""
+            detail = parts[5] if len(parts) > 5 else ""
+            if not sub:
+                status_f = self.query_params.get("status", [None])[0]
+                self._json(HTTPStatus.OK, {"vehicles": self.store.list_vehicles(org, status_f)}); return
+            if sub == "vehicles" and not vid:
+                status_f = self.query_params.get("status", [None])[0]
+                self._json(HTTPStatus.OK, {"vehicles": self.store.list_vehicles(org, status_f)}); return
+            if sub == "vehicles" and vid and not detail:
+                v = self.store.get_vehicle(org, vid)
+                if not v: self._error(HTTPStatus.NOT_FOUND, "not_found", "Vehicle not found"); return
+                self._json(HTTPStatus.OK, {"vehicle": v}); return
+            if sub == "vehicles" and vid and detail == "assignments":
+                self._json(HTTPStatus.OK, {"assignments": self.store.list_vehicle_assignments(org, vid)}); return
+            if sub == "vehicles" and vid and detail == "service":
+                self._json(HTTPStatus.OK, {"records": self.store.list_vehicle_service(org, vid)}); return
+            if sub == "vehicles" and vid and detail == "inventory":
+                self._json(HTTPStatus.OK, {"stock": self.store.get_vehicle_inventory(org, vid)}); return
+            self._error(HTTPStatus.NOT_FOUND, "not_found", "Unknown transport route"); return
         # Budget forecast: GET /api/v1/projects/:id/budget/forecast
         if path.startswith("/api/v1/projects/") and len(parts) == 7 and parts[5] == "budget" and parts[6] == "forecast":
             if not self._require_permission("projectRead"): return
@@ -12320,6 +12494,34 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
                 self._json(HTTPStatus.OK, {"asset": dict(updated)}); return
             except Exception as e:
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "error", str(e)); return
+        # ── Transport POST ────────────────────────────────────────────────────
+        tr_parts = path.strip("/").split("/")
+        if len(tr_parts) >= 3 and tr_parts[2] == "transport":
+            if not self._require_permission("projectManage"): return
+            org = self.organization_id
+            sub = tr_parts[3] if len(tr_parts) > 3 else ""
+            vid = tr_parts[4] if len(tr_parts) > 4 else ""
+            detail = tr_parts[5] if len(tr_parts) > 5 else ""
+            try:
+                p = self._read_json()
+                if sub == "vehicles" and not vid:
+                    v = self.store.create_vehicle(org, p)
+                    self._json(HTTPStatus.CREATED, {"vehicle": v}); return
+                if sub == "vehicles" and vid and detail == "update":
+                    v = self.store.update_vehicle(org, vid, p)
+                    self._json(HTTPStatus.OK, {"vehicle": v}); return
+                if sub == "vehicles" and vid and detail == "assign":
+                    a = self.store.assign_vehicle(org, vid, p)
+                    self._json(HTTPStatus.CREATED, {"assignment": a}); return
+                if sub == "vehicles" and vid and detail == "unassign":
+                    self.store.unassign_vehicle(org, vid, p.get("endedAt", utc_now()))
+                    self._json(HTTPStatus.OK, {"ok": True}); return
+                if sub == "vehicles" and vid and detail == "service":
+                    rec = self.store.create_vehicle_service(org, vid, p)
+                    self._json(HTTPStatus.CREATED, {"record": rec}); return
+                self._error(HTTPStatus.NOT_FOUND, "not_found", "Unknown transport route"); return
+            except (ValueError, json.JSONDecodeError) as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e)); return
         # Work orders POST: /api/v1/work-orders and /:id/update
         if path == "/api/v1/work-orders":
             if not self._require_permission("projectManage"): return
