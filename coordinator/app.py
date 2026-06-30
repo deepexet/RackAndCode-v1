@@ -60,7 +60,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="RackPilot Agent Coordinator",
-    version="1.0.0",
+    version="1.1.0",
     docs_url="/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -83,6 +83,14 @@ class JobRequest(BaseModel):
 
 class ReviewFeedbackRequest(BaseModel):
     feedback: str = Field(min_length=3, max_length=10000)
+
+
+def _validate_job_workspace(job: dict[str, Any]) -> Path:
+    if job["assignedAgent"] == "local":
+        if Path(job["worktreePath"]).resolve() != REPO_ROOT or job["branchName"] != "local/read-only":
+            raise ValueError("local text jobs must use the coordinator read-only workspace")
+        return REPO_ROOT
+    return validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
 
 
 def _is_rate_limited_output(lines: deque[str]) -> bool:
@@ -193,7 +201,20 @@ async def job_logs(job_id: str, after: int = 0, limit: int = 250, attempt: int |
 async def job_review(job_id: str):
     try:
         job = store.get_job(job_id)
-        validated = validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
+        if job["assignedAgent"] == "local":
+            _validate_job_workspace(job)
+            return {
+                "review": {
+                    "dirty": False,
+                    "changeCount": 0,
+                    "changes": [],
+                    "unstagedStat": "",
+                    "stagedStat": "",
+                    "recentCommits": [],
+                    "mode": "text-only",
+                }
+            }
+        validated = _validate_job_workspace(job)
         return {"review": inspect_worktree(str(validated))}
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
@@ -206,7 +227,10 @@ async def create_job(body: JobRequest, x_coordinator_token: str | None = Header(
     require_control_token(x_coordinator_token)
     managed: dict[str, str] | None = None
     try:
-        if body.autoWorktree:
+        if body.assignedAgent == "local":
+            worktree_path = str(REPO_ROOT)
+            branch_name = "local/read-only"
+        elif body.autoWorktree:
             managed = create_managed_worktree(
                 REPO_ROOT,
                 WORKTREE_ROOT,
@@ -221,7 +245,12 @@ async def create_job(body: JobRequest, x_coordinator_token: str | None = Header(
                 raise ValueError("worktreePath and branchName are required when autoWorktree is false")
             worktree_path = body.worktreePath
             branch_name = body.branchName
-        validate_worktree(REPO_ROOT, worktree_path, branch_name)
+        workspace_job = {
+            "assignedAgent": body.assignedAgent,
+            "worktreePath": worktree_path,
+            "branchName": branch_name,
+        }
+        _validate_job_workspace(workspace_job)
         created = store.create_job(
             JobCreate(
                 title=body.title,
@@ -232,8 +261,8 @@ async def create_job(body: JobRequest, x_coordinator_token: str | None = Header(
                 created_by=body.createdBy,
                 requires_review=body.requiresReview,
                 max_turns=body.maxTurns,
-                managed_worktree=body.autoWorktree,
-                base_ref=body.baseRef if body.autoWorktree else "",
+                managed_worktree=body.autoWorktree and body.assignedAgent != "local",
+                base_ref=body.baseRef if body.autoWorktree and body.assignedAgent != "local" else "",
                 scope_paths=tuple(body.scopePaths),
             )
         )
@@ -335,7 +364,7 @@ async def start_job(job_id: str, x_coordinator_token: str | None = Header(defaul
         raise HTTPException(status.HTTP_409_CONFLICT, "Agent execution is disabled")
     try:
         job = store.get_job(job_id)
-        validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
+        _validate_job_workspace(job)
         if job["status"] != "queued":
             raise ValueError("Only queued jobs can start")
         claimed = scheduler.claim(job_id, actor="owner")
@@ -353,7 +382,7 @@ async def retry_job(job_id: str, x_coordinator_token: str | None = Header(defaul
         raise HTTPException(status.HTTP_409_CONFLICT, "Agent execution is disabled")
     try:
         job = store.get_job(job_id)
-        validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
+        _validate_job_workspace(job)
         if job["status"] not in {"failed", "cancelled", "rate_limited"}:
             raise ValueError("Only a failed, cancelled or rate-limited job can be retried")
         session_id = job["agentSessionId"] or _latest_logged_session_id(job_id)
@@ -439,7 +468,7 @@ async def request_job_changes(
         raise HTTPException(status.HTTP_409_CONFLICT, "Agent execution is disabled")
     try:
         job = store.get_job(job_id)
-        validate_worktree(REPO_ROOT, job["worktreePath"], job["branchName"])
+        _validate_job_workspace(job)
         if job["status"] not in {"review", "waiting_approval"}:
             raise ValueError("Only a reviewed job can receive change requests")
         store.update_execution_context(job_id, review_feedback=body.feedback)

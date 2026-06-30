@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Agent Coordinator is a local-only control plane for reviewable collaboration between Codex and Claude Code. It is an internal development tool, not a customer-facing RackPilot service.
+Agent Coordinator is a local-only control plane for reviewable collaboration between Codex, Claude Code and a constrained on-device helper. It is an internal development tool, not a customer-facing RackPilot service.
 
 The coordinator does not let agents freely share one working directory. It assigns bounded jobs to registered Git worktrees, captures append-only events and returns successful implementation jobs to review instead of merging them automatically.
 
@@ -29,6 +29,31 @@ The coordinator is ready for continuous local parallel development when:
 - Codex runs with `workspace-write`; Claude runs with `acceptEdits` inside its registered Git worktree. Neither agent receives unrestricted permission bypass.
 - Successful jobs requiring review stop in `review` status.
 - Rate-limit output becomes the explicit `rate_limited` state.
+- The `local` agent has no file or command tools. It can only return text and is capped to a small context and response budget.
+
+## Local AI helper
+
+The optional `local` agent uses Ollama on `127.0.0.1:11434` and defaults to
+`qwen3:1.7b`. It is intended for inexpensive, private tasks such as summarizing
+field notes and logs, classifying work, extracting action items and drafting
+short checklists. It is not a coding-agent replacement and cannot inspect the
+repository, modify files or execute commands.
+
+On Apple Silicon, install and start Ollama, then fetch the model:
+
+```bash
+brew install ollama
+brew services start ollama
+ollama pull qwen3:1.7b
+```
+
+Override the defaults with `RACKPILOT_LOCAL_MODEL` and
+`RACKPILOT_LOCAL_AI_URL`. A model is reported as available only when the local
+Ollama API is reachable and the configured model is already installed. Admin →
+Agents → Local quick task provides templates for the supported workload. Local
+text jobs use a fixed read-only Coordinator workspace and do not create Git
+branches or worktrees. Prompts and responses remain on the Mac; no paid model
+API is used.
 
 ## Local development
 

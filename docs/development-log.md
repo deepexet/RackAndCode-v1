@@ -199,3 +199,12 @@ For each material release, append a dated section containing product version, us
 - Classified Codex ChatGPT usage-limit output as `rate_limited` rather than an implementation failure.
 - Live acceptance created and launched Codex and Claude jobs concurrently in separate managed worktrees; temporary worktrees were inspected and removed without cross-write conflicts.
 - Verification: 19 focused Coordinator/FastAPI tests, Python compile checks, Vite production build, supervisor restart/health check and live two-agent scheduler smoke test.
+
+## 2026-06-29 — Local text-only AI worker
+
+- Added `local` as a third Coordinator agent backed by an on-device Ollama model, defaulting to `qwen3:1.7b` on Apple Silicon.
+- Restricted the worker to text-only classification, summarization, action extraction and short drafts; it has no repository, command or file-editing tools.
+- Added runtime/model health detection, scheduler accounting, bounded inference settings and structured live logs with token/timing metadata.
+- Added Admin → Agents local readiness status, a Local quick task action and reusable simple-task templates.
+- Installed Ollama as a login service and downloaded the compact local model on the development Mac; no paid API is used.
+- Verification: 16 focused Coordinator tests, Python compile check, frontend production build, two live local inference jobs, no-worktree isolation check and authenticated browser UI verification passed. The broader 171-test suite still has 5 unrelated baseline failures around migration version 094, legacy progress rules and a pre-existing CSS contract.

@@ -100,6 +100,15 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(codex_cmd[:3], ["/usr/local/bin/codex", "exec", "--json"])
         self.assertIn("workspace-write", codex_cmd)
 
+        local_job = self.store.create_job(
+            self.payload(assigned_agent="local", branch_name="local/summary")
+        )
+        local_cmd = build_agent_command(local_job, "/usr/bin/python3")
+        self.assertEqual(local_cmd[0], "/usr/bin/python3")
+        self.assertIn("local_worker.py", local_cmd[1])
+        self.assertIn("--model", local_cmd)
+        self.assertNotIn("workspace-write", local_cmd)
+
     def test_failed_job_can_be_requeued_for_retry(self):
         job = self.store.create_job(self.payload())
         self.store.transition_job(job["id"], "running")
@@ -252,7 +261,9 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(set(started), {codex["id"], claude["id"]})
         self.assertEqual(set(launched), set(started))
         self.assertEqual(self.store.get_job(waiting["id"])["status"], "queued")
-        self.assertEqual(scheduler.snapshot()["runningByAgent"], {"codex": 1, "claude": 1})
+        self.assertEqual(
+            scheduler.snapshot()["runningByAgent"], {"claude": 1, "codex": 1, "local": 0}
+        )
 
     def test_recovery_marks_orphaned_running_jobs_failed(self):
         job = self.store.create_job(self.payload())

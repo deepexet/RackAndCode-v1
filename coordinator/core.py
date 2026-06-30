@@ -7,11 +7,15 @@ safety behavior can be tested without starting FastAPI or either agent CLI.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -19,7 +23,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-AGENTS = {"codex", "claude"}
+AGENTS = {"codex", "claude", "local"}
+LOCAL_MODEL = os.getenv("RACKPILOT_LOCAL_MODEL", "qwen3:1.7b")
+LOCAL_AI_URL = os.getenv("RACKPILOT_LOCAL_AI_URL", "http://127.0.0.1:11434").rstrip("/")
 JOB_STATUSES = {
     "queued",
     "running",
@@ -57,7 +63,7 @@ class JobCreate:
         if not self.instructions.strip():
             raise ValueError("instructions are required")
         if self.assigned_agent not in AGENTS:
-            raise ValueError("assigned_agent must be codex or claude")
+            raise ValueError("assigned_agent must be codex, claude or local")
         if not 1 <= self.max_turns <= 20:
             raise ValueError("max_turns must be between 1 and 20")
         if not self.worktree_path.strip():
@@ -84,6 +90,8 @@ class AgentProbe:
 def probe_agent(agent: str, timeout_seconds: float = 5) -> AgentProbe:
     if agent not in AGENTS:
         raise ValueError(f"unsupported agent: {agent}")
+    if agent == "local":
+        return _probe_local_agent(timeout_seconds)
     executable = shutil.which(agent)
     if not executable:
         return AgentProbe(agent, False, None, None, "executable not found")
@@ -105,6 +113,27 @@ def probe_agent(agent: str, timeout_seconds: float = 5) -> AgentProbe:
         version=version[0] if version else None,
         error=None if result.returncode == 0 else f"version command exited {result.returncode}",
     )
+
+
+def _probe_local_agent(timeout_seconds: float) -> AgentProbe:
+    """Probe the local Ollama API and require the configured on-device model."""
+    try:
+        with urllib.request.urlopen(f"{LOCAL_AI_URL}/api/version", timeout=timeout_seconds) as response:
+            version = json.loads(response.read().decode("utf-8")).get("version", "unknown")
+        with urllib.request.urlopen(f"{LOCAL_AI_URL}/api/tags", timeout=timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        return AgentProbe("local", False, None, None, f"Ollama unavailable: {exc}")
+    models = {str(item.get("name", "")) for item in payload.get("models", [])}
+    if LOCAL_MODEL not in models:
+        return AgentProbe(
+            "local",
+            False,
+            sys.executable,
+            f"Ollama {version} · {LOCAL_MODEL}",
+            f"local model is not installed: {LOCAL_MODEL}",
+        )
+    return AgentProbe("local", True, sys.executable, f"Ollama {version} · {LOCAL_MODEL}")
 
 
 def discover_worktrees(repo_root: Path) -> list[dict[str, Any]]:
@@ -142,7 +171,7 @@ def create_managed_worktree(
     base_ref: str = "HEAD",
 ) -> dict[str, str]:
     if agent not in AGENTS:
-        raise ValueError("agent must be codex or claude")
+        raise ValueError("agent must be codex, claude or local")
     if not base_ref or base_ref.startswith("-") or not re.fullmatch(r"[A-Za-z0-9._/@{}^~:+-]+", base_ref):
         raise ValueError("base ref contains unsupported characters")
     safe_title = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:36] or "task"
@@ -298,6 +327,9 @@ def build_agent_command(job: dict[str, Any], executable: str) -> list[str]:
                      "Finish the remaining implementation, verification, and handoff, then stop for Codex review."
             )
         return command
+    if job["assignedAgent"] == "local":
+        worker = Path(__file__).with_name("local_worker.py").resolve()
+        return [executable, str(worker), "--model", LOCAL_MODEL, "--endpoint", LOCAL_AI_URL, instructions]
     raise ValueError("unsupported assigned agent")
 
 

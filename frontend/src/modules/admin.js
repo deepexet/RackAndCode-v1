@@ -252,6 +252,7 @@ function renderAgents(d) {
   const running = jobs.filter(j => j.status === 'running').length
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
   const controlsReady = Boolean(health.controlConfigured)
+  const localAgent = agents.find(agent => agent.agent === 'local')
   const jobActions = job => {
     const buttons = [
       `<button class="ui-btn ui-btn--sm" data-coordinator-view="${esc(job.id)}">
@@ -291,6 +292,8 @@ function renderAgents(d) {
         <h3><i class="ti ti-robot"></i> Agent Coordinator</h3>
         <span class="ui-dim" style="font-size:12px">Local control plane · ${esc(health.version || '—')}</span>
         <div class="adm-agent-toolbar">
+          <button class="ui-btn ui-btn--sm" id="adm-agent-local-new" ${!localAgent?.available ? 'disabled title="Local model is not ready"' : ''}>
+            <i class="ti ti-device-desktop-analytics"></i> Local quick task</button>
           <button class="ui-btn ui-btn--sm ui-btn--primary" id="adm-agent-new"><i class="ti ti-plus"></i> New job</button>
           <button class="ui-btn ui-btn--sm" id="adm-agents-refresh"><i class="ti ti-refresh"></i> Refresh</button>
         </div>
@@ -300,11 +303,13 @@ function renderAgents(d) {
         { icon: 'ti-player-play', label: 'Running', value: running, color: 'var(--blue)' },
         { icon: 'ti-list', label: 'Queued', value: scheduler.queued ?? jobs.filter(j => j.status === 'queued').length, color: 'var(--accent)' },
         { icon: 'ti-eye-check', label: 'Needs review', value: review, color: 'var(--amber)' },
+        { icon: 'ti-device-desktop-analytics', label: 'Local AI', value: localAgent?.available ? 'Ready' : 'Offline', color: localAgent?.available ? 'var(--green)' : 'var(--red)' },
       ])}
       <div class="adm-section-header" style="margin-top:18px"><h3>Installed agents</h3></div>
       ${table({
         columns: [
           { label: 'Agent', render: r => `<strong>${esc(r.agent)}</strong>` },
+          { label: 'Mode', render: r => r.agent === 'local' ? badge('local · text only') : badge('coding agent') },
           { label: 'Status', render: r => badge(r.available ? 'available' : 'unavailable') },
           { label: 'Version', render: r => `<span class="ui-mono">${esc(r.version || '—')}</span>` },
           { label: 'Executable', render: r => `<span class="ui-mono ui-dim">${esc(r.executable || '—')}</span>` },
@@ -329,6 +334,10 @@ function renderAgents(d) {
         Scheduler: <strong>${scheduler.enabled ? `enabled (${scheduler.maxConcurrent || 0} parallel, ${scheduler.maxPerAgent || 0}/agent)` : 'disabled'}</strong> ·
         Control token: <strong>${health.controlConfigured ? 'configured' : 'not configured'}</strong>.
         Actions are available only to an authenticated Administrator and every action is audited.
+      </p>
+      <p class="ui-dim" style="margin-top:8px;font-size:12px">
+        Local AI runs on this Mac without a paid API. It is intentionally text-only and suited to summaries,
+        classification, action-item extraction and short drafts; it cannot read files, execute commands or edit code.
       </p>
     </div>`
 }
@@ -485,7 +494,7 @@ function openAgentJobDetails(jobId) {
   refresh()
 }
 
-function openAgentJobCreate() {
+function openAgentJobCreate(preferredAgent = '') {
   const coordinator = _data.agents || {}
   const agents = (coordinator.agents || []).filter(agent => agent.available)
   const worktrees = (coordinator.worktrees || []).filter(item => {
@@ -497,7 +506,7 @@ function openAgentJobCreate() {
     return
   }
   const { close } = openModal({
-    title: 'Create agent job',
+    title: preferredAgent === 'local' ? 'Create local quick task' : 'Create agent job',
     width: 720,
     body: `<form class="ui-form" id="adm-agent-job-form">
       <div class="ui-form-row"><label>Title</label>
@@ -505,34 +514,64 @@ function openAgentJobCreate() {
       <div class="ui-form-row"><label>Instructions</label>
         <textarea class="ui-input" name="instructions" rows="8" maxlength="50000" required
           placeholder="Scope, expected output, verification, constraints, and where to stop for review"></textarea></div>
-      <div class="ui-form-row"><label>File/module scope</label>
+      <div class="ui-form-row"><label>Quick template</label>
+        <select class="ui-input" name="taskPreset">
+          <option value="">Custom task</option>
+          <option value="summary">Summarize a note or log</option>
+          <option value="classify">Classify and route a task</option>
+          <option value="actions">Extract action items</option>
+          <option value="checklist">Draft a short checklist</option>
+        </select></div>
+      <div class="ui-form-row" data-coding-agent-field><label>File/module scope</label>
         <input class="ui-input" name="scopePaths" placeholder="backend/app/routes/projects.py, frontend/src/modules/projects.js">
         <small class="ui-dim">Comma-separated repository paths. Overlapping scopes are never run concurrently.</small></div>
       <div class="ui-form-grid">
         <div class="ui-form-row"><label>Agent</label>
           <select class="ui-input" name="assignedAgent">
-            ${agents.map(agent => `<option value="${esc(agent.agent)}">${esc(agent.agent)} · ${esc(agent.version || 'available')}</option>`).join('')}
+            ${agents.map(agent => `<option value="${esc(agent.agent)}" ${agent.agent === preferredAgent ? 'selected' : ''}>${esc(agent.agent)} · ${esc(agent.version || 'available')}</option>`).join('')}
           </select></div>
         <div class="ui-form-row"><label>Turn budget</label>
           <input class="ui-input" name="maxTurns" type="number" min="1" max="20" value="10"></div>
       </div>
-      <label class="ui-check-row"><input type="checkbox" name="autoWorktree" checked>
+      <label class="ui-check-row" data-coding-agent-field><input type="checkbox" name="autoWorktree" checked>
         <span>Create a unique isolated worktree automatically</span></label>
-      <div class="ui-form-row"><label>Base revision for automatic worktree</label>
+      <div class="ui-form-row" data-coding-agent-field><label>Base revision for automatic worktree</label>
         <input class="ui-input" name="baseRef" value="HEAD" placeholder="HEAD, branch, tag, or commit"></div>
-      <div class="ui-form-row"><label>Existing worktree (used only when automatic creation is disabled)</label>
+      <div class="ui-form-row" data-coding-agent-field><label>Existing worktree (used only when automatic creation is disabled)</label>
         <select class="ui-input" name="worktreePath">
           ${worktrees.map(item => {
             const branch = String(item.branch).replace('refs/heads/', '')
             return `<option value="${esc(item.worktree)}">${esc(branch)} · ${esc(item.worktree)}</option>`
           }).join('')}
         </select></div>
-      <label class="ui-check-row"><input type="checkbox" name="requiresReview" checked>
+      <label class="ui-check-row"><input type="checkbox" name="requiresReview" ${preferredAgent === 'local' ? '' : 'checked'}>
         <span>Stop for Codex/human review before completion</span></label>
+      <p class="ui-dim" data-local-agent-note hidden>Local tasks are text-only and do not create a Git branch or worktree.</p>
       <p class="ui-dim">The persistent scheduler starts queued jobs automatically when the agent and worktree slots are available.</p>
     </form>`,
     footer: `<button class="ui-btn ui-btn--primary" id="adm-agent-job-save"><i class="ti ti-player-play"></i> Create job</button>
              <button class="ui-btn" id="adm-agent-job-cancel">Cancel</button>`,
+  })
+  const form = document.getElementById('adm-agent-job-form')
+  const updateAgentFields = () => {
+    const isLocal = form?.elements.assignedAgent?.value === 'local'
+    form?.querySelectorAll('[data-coding-agent-field]').forEach(element => { element.hidden = isLocal })
+    const localNote = form?.querySelector('[data-local-agent-note]')
+    if (localNote) localNote.hidden = !isLocal
+  }
+  form?.elements.assignedAgent?.addEventListener('change', updateAgentFields)
+  updateAgentFields()
+  form?.elements.taskPreset?.addEventListener('change', event => {
+    const templates = {
+      summary: ['Summarize field note', 'Summarize the text below in concise bullets. Separate completed work, blockers, risks, and follow-up items. Do not invent missing details.\n\nTEXT:\n'],
+      classify: ['Classify coordinator task', 'Classify the task below by type, urgency, recommended agent (local, Codex, or Claude), and likely module scope. Give a short reason.\n\nTASK:\n'],
+      actions: ['Extract action items', 'Extract actionable items from the text below. For each item provide owner if stated, priority, dependency, and acceptance condition.\n\nTEXT:\n'],
+      checklist: ['Draft checklist', 'Create a short practical checklist from the request below. Keep each item verifiable and do not add unsupported requirements.\n\nREQUEST:\n'],
+    }
+    const selected = templates[event.target.value]
+    if (!selected) return
+    if (!form.elements.title.value.trim()) form.elements.title.value = selected[0]
+    if (!form.elements.instructions.value.trim()) form.elements.instructions.value = selected[1]
   })
   document.getElementById('adm-agent-job-cancel')?.addEventListener('click', close)
   document.getElementById('adm-agent-job-save')?.addEventListener('click', async event => {
@@ -540,9 +579,10 @@ function openAgentJobCreate() {
     if (!form?.reportValidity()) return
     const fields = new FormData(form)
     const autoWorktree = fields.get('autoWorktree') === 'on'
+    const isLocal = fields.get('assignedAgent') === 'local'
     const worktreePath = String(fields.get('worktreePath') || '')
     const selectedWorktree = worktrees.find(item => item.worktree === worktreePath)
-    if (!autoWorktree && !selectedWorktree) return window.toast?.('Select a registered worktree', 'error')
+    if (!isLocal && !autoWorktree && !selectedWorktree) return window.toast?.('Select a registered worktree', 'error')
     const button = event.currentTarget
     button.disabled = true
     try {
@@ -555,8 +595,8 @@ function openAgentJobCreate() {
           assignedAgent: String(fields.get('assignedAgent') || ''),
           autoWorktree,
           baseRef: String(fields.get('baseRef') || 'HEAD').trim(),
-          worktreePath: autoWorktree ? null : worktreePath,
-          branchName: autoWorktree ? null : String(selectedWorktree.branch || '').replace('refs/heads/', ''),
+          worktreePath: autoWorktree || isLocal ? null : worktreePath,
+          branchName: autoWorktree || isLocal ? null : String(selectedWorktree.branch || '').replace('refs/heads/', ''),
           requiresReview: fields.get('requiresReview') === 'on',
           maxTurns: Number(fields.get('maxTurns') || 10),
           scopePaths: String(fields.get('scopePaths') || '').split(',').map(value => value.trim()).filter(Boolean),
@@ -657,7 +697,8 @@ function bindSystemRefresh() {
 function bindTabEvents() {
   if (_tab === 'system') { bindSystemRefresh(); return }
   if (_tab === 'agents') {
-    document.getElementById('adm-agent-new')?.addEventListener('click', openAgentJobCreate)
+    document.getElementById('adm-agent-new')?.addEventListener('click', () => openAgentJobCreate())
+    document.getElementById('adm-agent-local-new')?.addEventListener('click', () => openAgentJobCreate('local'))
     document.getElementById('adm-agents-refresh')?.addEventListener('click', () => {
       delete _data.agents
       switchTab()

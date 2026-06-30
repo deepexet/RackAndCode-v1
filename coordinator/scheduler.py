@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from .core import CoordinatorStore
+from .core import AGENTS, CoordinatorStore
 
 
 class CoordinatorScheduler:
@@ -50,7 +50,7 @@ class CoordinatorScheduler:
     def snapshot(self) -> dict[str, Any]:
         running = self.store.list_jobs("running", limit=500)
         queued = self.store.list_jobs("queued", limit=500)
-        by_agent = {"codex": 0, "claude": 0}
+        by_agent = {agent: 0 for agent in sorted(AGENTS)}
         for job in running:
             by_agent[job["assignedAgent"]] = by_agent.get(job["assignedAgent"], 0) + 1
         return {
