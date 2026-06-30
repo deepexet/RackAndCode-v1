@@ -6056,6 +6056,8 @@ Rules:
         plate = payload.get("plate", "").strip()
         make  = payload.get("make", "").strip()
         model = payload.get("model", "").strip()
+        if not plate or not make or not model:
+            raise ValueError("plate, make and model are required")
         with self._connect() as conn:
             # Create a warehouse for this vehicle's inventory
             conn.execute(
@@ -6106,16 +6108,24 @@ Rules:
     def assign_vehicle(self, org: str, vid: str, payload: dict[str, Any]) -> dict[str, Any]:
         import uuid as _uuid
         aid = str(_uuid.uuid4()).replace("-", "")
+        assignee_name = str(payload.get("assigneeName", "")).strip()
+        started_at = payload.get("startedAt") or utc_now()
+        if not assignee_name:
+            raise ValueError("assigneeName required")
         with self._connect() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM vehicles WHERE organization_id=? AND id=?", (org, vid)
+            ).fetchone():
+                raise LookupError("Vehicle not found")
             # End any current open assignment
             conn.execute(
                 "UPDATE vehicle_assignments SET ended_at=? WHERE organization_id=? AND vehicle_id=? AND ended_at IS NULL",
-                (payload.get("startedAt"), org, vid)
+                (started_at, org, vid)
             )
             conn.execute(
                 "INSERT INTO vehicle_assignments (organization_id,id,vehicle_id,assignee_name,assignee_user_id,started_at,notes) VALUES (?,?,?,?,?,?,?)",
-                (org, aid, vid, payload.get("assigneeName",""), payload.get("assigneeUserId"),
-                 payload.get("startedAt"), payload.get("notes"))
+                (org, aid, vid, assignee_name, payload.get("assigneeUserId"),
+                 started_at, payload.get("notes"))
             )
             row = conn.execute("SELECT * FROM vehicle_assignments WHERE id=?", (aid,)).fetchone()
         self.audit(org, None, None, "vehicle.assign", "vehicle", vid)
@@ -6123,6 +6133,10 @@ Rules:
 
     def unassign_vehicle(self, org: str, vid: str, end_at: str) -> None:
         with self._connect() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM vehicles WHERE organization_id=? AND id=?", (org, vid)
+            ).fetchone():
+                raise LookupError("Vehicle not found")
             conn.execute(
                 "UPDATE vehicle_assignments SET ended_at=? WHERE organization_id=? AND vehicle_id=? AND ended_at IS NULL",
                 (end_at, org, vid)
@@ -6140,13 +6154,20 @@ Rules:
     def create_vehicle_service(self, org: str, vid: str, payload: dict[str, Any]) -> dict[str, Any]:
         import uuid as _uuid
         sid = str(_uuid.uuid4()).replace("-", "")
+        title = str(payload.get("title", "")).strip()
+        if not title:
+            raise ValueError("title required")
         with self._connect() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM vehicles WHERE organization_id=? AND id=?", (org, vid)
+            ).fetchone():
+                raise LookupError("Vehicle not found")
             conn.execute(
                 """INSERT INTO vehicle_service_records
                    (organization_id,id,vehicle_id,service_type,title,description,mileage,cost,performed_by,service_date,status)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (org, sid, vid,
-                 payload.get("serviceType","maintenance"), payload.get("title",""),
+                 payload.get("serviceType","maintenance"), title,
                  payload.get("description"), payload.get("mileage"),
                  payload.get("cost"), payload.get("performedBy"),
                  payload.get("serviceDate"), payload.get("status","done"))
@@ -6248,6 +6269,15 @@ Rules:
                 "SELECT * FROM work_order_comments WHERE work_order_id=? AND organization_id=? ORDER BY created_at",
                 (wo_id, org)
             ).fetchall()]
+            wo["materials"] = [dict(r) for r in conn.execute(
+                """SELECT m.*, s.sku_code, s.name AS sku_name, s.unit
+                   FROM work_order_materials m
+                   JOIN inventory_skus s
+                     ON s.id=m.sku_id AND s.organization_id=m.organization_id
+                   WHERE m.work_order_id=? AND m.organization_id=?
+                   ORDER BY m.created_at""",
+                (wo_id, org)
+            ).fetchall()]
             if wo.get("asset_id"):
                 asset_row = conn.execute(
                     "SELECT id, name, asset_tag, category, status FROM tracked_assets WHERE id=? AND organization_id=?",
@@ -6257,6 +6287,71 @@ Rules:
             else:
                 wo["asset"] = None
             return wo
+
+    def add_wo_material(self, org: str, wo_id: str, payload: dict[str, Any],
+                        actor: str | None = None) -> dict[str, Any]:
+        quantity = float(payload.get("quantity", 0))
+        if quantity <= 0:
+            raise ValueError("quantity must be greater than zero")
+        sku_id = str(payload.get("skuId", payload.get("sku_id", ""))).strip()
+        sku_code = str(payload.get("skuCode", payload.get("sku_code", ""))).strip()
+        now = utc_now()
+        with self._connect() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM work_orders WHERE id=? AND organization_id=?", (wo_id, org)
+            ).fetchone():
+                raise LookupError("Work order not found")
+            if sku_id:
+                sku = conn.execute(
+                    "SELECT id FROM inventory_skus WHERE id=? AND organization_id=? AND active=1",
+                    (sku_id, org),
+                ).fetchone()
+            else:
+                sku = conn.execute(
+                    "SELECT id FROM inventory_skus WHERE lower(sku_code)=lower(?) AND organization_id=? AND active=1",
+                    (sku_code, org),
+                ).fetchone()
+            if not sku:
+                raise ValueError("Active SKU not found")
+            sku_id = sku["id"]
+            existing = conn.execute(
+                "SELECT id, quantity FROM work_order_materials WHERE organization_id=? AND work_order_id=? AND sku_id=?",
+                (org, wo_id, sku_id),
+            ).fetchone()
+            if existing:
+                material_id = existing["id"]
+                conn.execute(
+                    "UPDATE work_order_materials SET quantity=?, note=?, added_by=?, updated_at=? WHERE id=? AND organization_id=?",
+                    (existing["quantity"] + quantity, str(payload.get("note", "")), actor, now, material_id, org),
+                )
+            else:
+                material_id = str(uuid.uuid4())
+                conn.execute(
+                    """INSERT INTO work_order_materials
+                       (id,organization_id,work_order_id,sku_id,quantity,note,added_by,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (material_id, org, wo_id, sku_id, quantity, str(payload.get("note", "")), actor, now, now),
+                )
+            row = conn.execute(
+                """SELECT m.*, s.sku_code, s.name AS sku_name, s.unit
+                   FROM work_order_materials m JOIN inventory_skus s
+                     ON s.id=m.sku_id AND s.organization_id=m.organization_id
+                   WHERE m.id=? AND m.organization_id=?""",
+                (material_id, org),
+            ).fetchone()
+        self.audit(org, actor, None, "wo_material.add", "work_order", wo_id)
+        return dict(row)
+
+    def delete_wo_material(self, org: str, wo_id: str, material_id: str,
+                           actor: str | None = None) -> None:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM work_order_materials WHERE id=? AND work_order_id=? AND organization_id=?",
+                (material_id, wo_id, org),
+            )
+            if result.rowcount == 0:
+                raise LookupError("Work order material not found")
+        self.audit(org, actor, None, "wo_material.delete", "work_order", wo_id)
 
     def create_wo_task(self, org: str, wo_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         import uuid

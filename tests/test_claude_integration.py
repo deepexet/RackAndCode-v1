@@ -112,6 +112,61 @@ class ClaudeBatchIntegrationTests(unittest.TestCase):
         detail = self.store.get_work_order(settings.default_org, work_order["id"])
         self.assertNotIn("Injected child", [task["title"] for task in detail["tasks"]])
 
+    def test_transport_routes_enforce_permissions_and_tenant_boundary(self) -> None:
+        supervisor = {"X-RackPilot-Role": "Supervisor"}
+        technician = {"X-RackPilot-Role": "Technician"}
+        created = self.client.post(
+            "/api/v1/transport/vehicles",
+            headers=supervisor,
+            json={"plate": "RP-001", "make": "Ford", "model": "Transit"},
+        )
+        self.assertEqual(created.status_code, 200)
+        vehicle_id = created.json()["vehicle"]["id"]
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/transport/vehicles/{vehicle_id}/service",
+                headers=technician,
+                json={"title": "Forbidden service"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/transport/vehicles/not-in-this-tenant/assign",
+                headers=supervisor,
+                json={"assigneeName": "Alex"},
+            ).status_code,
+            404,
+        )
+
+    def test_work_order_materials_are_persisted_and_tenant_scoped(self) -> None:
+        supervisor = {"X-RackPilot-Role": "Supervisor"}
+        technician = {"X-RackPilot-Role": "Technician"}
+        work_order = self.store.create_work_order(settings.default_org, {"title": "Install readers"})
+        sku = self.store.create_sku(
+            settings.default_org,
+            {"skuCode": "ACC-RDR-01", "name": "Door reader", "category": "access", "unit": "ea"},
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/v1/work-orders/{work_order['id']}/materials",
+                headers=technician,
+                json={"skuId": sku["id"], "quantity": 2},
+            ).status_code,
+            403,
+        )
+        added = self.client.post(
+            f"/api/v1/work-orders/{work_order['id']}/materials",
+            headers=supervisor,
+            json={"skuCode": "ACC-RDR-01", "quantity": 2},
+        )
+        self.assertEqual(added.status_code, 200)
+        detail = self.client.get(
+            f"/api/v1/work-orders/{work_order['id']}", headers=technician
+        ).json()["workOrder"]
+        self.assertEqual(len(detail["materials"]), 1)
+        self.assertEqual(detail["materials"][0]["quantity"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

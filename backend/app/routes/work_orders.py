@@ -79,3 +79,23 @@ async def add_comment(wo_id: str, body: dict[str, Any], ctx: Auth):
     except (LookupError, ValueError) as exc:
         raise HTTPException(404 if isinstance(exc, LookupError) else 400, str(exc)) from exc
     return {"comment": comment}
+
+
+@router.post("/{wo_id}/materials")
+async def add_material(wo_id: str, body: dict[str, Any], ctx: Auth):
+    require_permission(ctx, "projectManage")
+    try:
+        material = ctx.store.add_wo_material(ctx.org, wo_id, body, actor=ctx.user_id)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(404 if isinstance(exc, LookupError) else 400, str(exc)) from exc
+    return {"material": material}
+
+
+@router.post("/{wo_id}/materials/{material_id}/delete")
+async def delete_material(wo_id: str, material_id: str, ctx: Auth):
+    require_permission(ctx, "projectManage")
+    try:
+        ctx.store.delete_wo_material(ctx.org, wo_id, material_id, actor=ctx.user_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"ok": True}

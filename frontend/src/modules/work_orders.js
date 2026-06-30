@@ -80,6 +80,18 @@ async function addComment(woId, body) {
   return d.comment
 }
 
+async function addMaterial(woId, skuCode, quantity) {
+  const d = await apiJSON(`/api/v1/work-orders/${woId}/materials`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ skuCode, quantity }),
+  })
+  return d.material
+}
+
+async function deleteMaterial(woId, materialId) {
+  await apiPost(`/api/v1/work-orders/${woId}/materials/${materialId}/delete`, {})
+}
+
 // ── Filters ───────────────────────────────────────────────────────────────
 
 function filteredOrders() {
@@ -539,6 +551,18 @@ function renderComment(c) {
     </div>`
 }
 
+function renderMaterialItem(material) {
+  return `
+    <li class="wo-task-item" data-material-id="${esc(material.id)}">
+      <span class="wo-task-check"><i class="ti ti-package"></i></span>
+      <span class="wo-task-title">
+        <strong>${esc(material.sku_code || '')}</strong> · ${esc(material.sku_name || '')}
+      </span>
+      <span class="wo-material-qty">${Number(material.quantity)} ${esc(material.unit || '')}</span>
+      <button class="wo-task-del" data-action="delete-material" title="Удалить"><i class="ti ti-x"></i></button>
+    </li>`
+}
+
 function bindDetailEvents(wo) {
   _el.querySelector('#wd-back').addEventListener('click', () => {
     render()
@@ -659,6 +683,50 @@ function bindDetailEvents(wo) {
       window.toast?.(err.message || 'Ошибка', 'error')
     }
     commentSend.disabled = false
+  })
+
+  const materialList = _el.querySelector('#wd-materials')
+  const materialSku = _el.querySelector('#wd-mat-sku')
+  const materialQty = _el.querySelector('#wd-mat-qty')
+  const materialAdd = _el.querySelector('#wd-mat-add')
+  apiJSON('/api/v1/inventory/skus?limit=5000').then(data => {
+    const datalist = _el?.querySelector('#wd-mat-dl')
+    if (datalist) datalist.innerHTML = (data.skus || [])
+      .map(s => `<option value="${esc(s.sku_code)}">${esc(s.name)}</option>`).join('')
+  }).catch(() => {})
+
+  materialAdd.addEventListener('click', async () => {
+    const skuCode = materialSku.value.trim()
+    const quantity = Number(materialQty.value)
+    if (!skuCode || !Number.isFinite(quantity) || quantity <= 0) return
+    materialAdd.disabled = true
+    try {
+      const material = await addMaterial(wo.id, skuCode, quantity)
+      const existing = (wo.materials || []).findIndex(m => m.id === material.id)
+      if (existing >= 0) wo.materials[existing] = material
+      else wo.materials = [...(wo.materials || []), material]
+      materialList.innerHTML = wo.materials.map(renderMaterialItem).join('')
+      materialSku.value = ''
+      materialQty.value = ''
+    } catch (err) {
+      window.toast?.(err.message || 'Ошибка добавления материала', 'error')
+    }
+    materialAdd.disabled = false
+  })
+
+  materialList.addEventListener('click', async e => {
+    if (!e.target.closest('[data-action="delete-material"]')) return
+    const item = e.target.closest('[data-material-id]')
+    if (!item) return
+    item.style.opacity = '0.4'
+    try {
+      await deleteMaterial(wo.id, item.dataset.materialId)
+      wo.materials = (wo.materials || []).filter(m => m.id !== item.dataset.materialId)
+      item.remove()
+    } catch (err) {
+      item.style.opacity = ''
+      window.toast?.(err.message || 'Ошибка удаления материала', 'error')
+    }
   })
 }
 

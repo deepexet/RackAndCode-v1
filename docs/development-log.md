@@ -225,3 +225,13 @@ For each material release, append a dated section containing product version, us
 - Removed duplicate unauthenticated FastAPI notification shims and enforced authenticated role permissions on notifications, inventory alerts and Work Orders.
 - Added Work Order child tenant checks, organization-scoped queries and indexes, validated task/comment input and server-derived comment authors.
 - Added focused FastAPI and store tests for notification authentication, Work Order RBAC and cross-tenant child isolation.
+
+## 2026-06-30 — Transport, Work Order materials and real Kanban integration
+
+- Integrated Claude's partial Transport module into the FastAPI/frontend stack and restored its router, breadcrumb and command-palette entry.
+- Added role enforcement, tenant ownership validation, input validation and not-found behavior for vehicles, assignments, service records and vehicle inventory.
+- Completed the unfinished Work Order materials scaffold with persistent SKU/quantity records, add/remove FastAPI endpoints, audit events, tenant-safe joins and responsive UI behavior.
+- Preserved immutable migration `095`; moved tenant-leading indexes to migration `098` and introduced Work Order materials through migration `097`.
+- Backed up and migrated the real workspace database, then added 14 linked Project Wiki tasks to the existing RackPilot Kanban with security-first priorities and explicit dependencies.
+- Moved the existing Transport and Work Order migration tasks to Testing after implementation; final end-to-end product acceptance remains required.
+- Verification: 34 legacy Transport/notification tests, 5 focused FastAPI integration tests and the Vite production build passed. The full 209-test suite retains the same five known baseline failures (stale schema-version assertions, legacy CSS contract, internal-project rule and project-progress expectation).

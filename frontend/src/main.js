@@ -125,6 +125,7 @@ function startApp() {
     .on('projects',     (params) => import('./modules/projects.js').then(m => m.mount(params)))
     .on('inventory',    () => import('./modules/inventory.js').then(m => m.mount()))
     .on('work-orders',  () => import('./modules/work_orders.js').then(m => m.mount()))
+    .on('transport',    () => import('./modules/transport.js').then(m => m.mount()))
     .on('tech',         () => import('./modules/tech.js').then(m => m.mount()))
     .on('logs',         () => import('./modules/logs.js').then(m => m.mount()))
     .on('wiki',         () => import('./modules/wiki.js').then(m => m.mount()))
@@ -137,7 +138,7 @@ function startApp() {
   window.addEventListener('rp:route', e => {
     const labels = {
       overview: 'Overview', projects: 'Projects', inventory: 'Inventory',
-      'work-orders': 'Work orders', tech: 'Field', logs: 'Logs',
+      'work-orders': 'Work orders', transport: 'Transport', tech: 'Field', logs: 'Logs',
       wiki: 'Wiki', diagrams: 'Схемы', docs: 'Platform Docs', admin: 'Admin',
     }
     const bc = document.getElementById('topbarBreadcrumb')
@@ -185,6 +186,7 @@ function initCommandPalette() {
     { icon: 'ti-briefcase', label: 'Projects', hash: '#projects' },
     { icon: 'ti-packages', label: 'Inventory', hash: '#inventory' },
     { icon: 'ti-clipboard-list', label: 'Work orders', hash: '#work-orders' },
+    { icon: 'ti-car', label: 'Transport', hash: '#transport' },
     { icon: 'ti-map-pin', label: 'Field', hash: '#tech' },
     { icon: 'ti-settings', label: 'Admin', hash: '#admin' },
   ]
