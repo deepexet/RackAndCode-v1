@@ -11,7 +11,6 @@ import {
 let _el = null
 let _tab = 'settings'
 let _data = {}
-let _agentChat = []
 
 const TABS = [
   { id: 'settings',  label: 'Настройки',  icon: 'ti-settings' },
@@ -336,18 +335,6 @@ function renderAgents(d) {
           <span>${esc((shiftReport.counts || {}).rate_limited || 0)} waiting for limit</span>
           <span>${esc((shiftReport.counts || {}).failed || 0)} need attention</span>
         </div>
-      </div>
-      <div class="adm-section" style="margin-top:18px">
-        <div class="adm-section-header"><h3><i class="ti ti-message-chatbot"></i> Coordinator Chat</h3><span class="ui-dim">Local AI · live coordinator context</span></div>
-        <div id="adm-coordinator-chat" class="adm-agent-log" style="min-height:120px;max-height:320px">
-          ${_agentChat.length ? _agentChat.map(row => `<div class="adm-agent-log-line"><strong>${esc(row.role)}</strong><span>${esc(row.text)}</span></div>`).join('')
-            : '<p class="ui-dim">Ask what agents are doing, why work stopped, what should run next, or use a command below.</p>'}
-        </div>
-        <form id="adm-coordinator-chat-form" class="ui-form" style="margin-top:10px">
-          <div class="ui-form-row"><textarea class="ui-input" name="message" rows="3" maxlength="4000" required placeholder="What are Claude, Codex and Local AI doing right now?"></textarea></div>
-          <div class="adm-agent-actions"><button class="ui-btn ui-btn--primary" type="submit"><i class="ti ti-send"></i> Send</button>
-            <span class="ui-dim">Commands: /status · /start 10 · /stop · /retry JOB_ID · /priority WORK_ITEM_ID high</span></div>
-        </form>
       </div>
       <div class="adm-section-header" style="margin-top:18px"><h3>Installed agents</h3></div>
       ${table({
@@ -788,30 +775,6 @@ function bindSystemRefresh() {
 function bindTabEvents() {
   if (_tab === 'system') { bindSystemRefresh(); return }
   if (_tab === 'agents') {
-    document.getElementById('adm-coordinator-chat-form')?.addEventListener('submit', async event => {
-      event.preventDefault()
-      const form = event.currentTarget
-      const message = String(new FormData(form).get('message') || '').trim()
-      if (!message) return
-      const button = form.querySelector('button[type="submit"]')
-      button.disabled = true
-      _agentChat.push({ role: 'You', text: message })
-      try {
-        const result = await apiJSON('/api/v1/admin/coordinator/chat', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }),
-        })
-        _agentChat.push({ role: 'Coordinator', text: result.answer || 'No response' })
-        _agentChat = _agentChat.slice(-30)
-        delete _data.agents
-        switchTab()
-      } catch (err) {
-        _agentChat.push({ role: 'System', text: err.message })
-        _agentChat = _agentChat.slice(-30)
-        button.disabled = false
-        const target = document.getElementById('adm-coordinator-chat')
-        if (target) target.innerHTML = _agentChat.map(row => `<div class="adm-agent-log-line"><strong>${esc(row.role)}</strong><span>${esc(row.text)}</span></div>`).join('')
-      }
-    })
     document.getElementById('adm-shift-start')?.addEventListener('click', openAutonomousShift)
     document.getElementById('adm-shift-stop')?.addEventListener('click', async event => {
       if (!window.confirm('Stop autonomous dispatch and limit retries? Running jobs will finish safely.')) return

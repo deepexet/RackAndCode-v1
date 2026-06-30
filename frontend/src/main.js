@@ -6,6 +6,7 @@
 import { router } from './core/router.js'
 import { apiJSON, setSession, getSession, clearSession } from './core/api.js'
 import { appState } from './core/store.js'
+import { initCoordinatorChat } from './components/coordinator_chat.js'
 
 // ── Auth bootstrap ────────────────────────────────────────────────────────
 
@@ -156,6 +157,9 @@ function startApp() {
 
   // System monitoring widget
   startSysWidget()
+
+  // Development control surface available from every route for Administrators.
+  initCoordinatorChat()
 
   router.start()
 }

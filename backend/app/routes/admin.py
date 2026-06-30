@@ -22,7 +22,10 @@ def _require_authenticated_admin(ctx: Auth) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Administrator role required")
 
 
-def _coordinator_request(path: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
+def _coordinator_request(
+    path: str, *, method: str = "GET", body: dict[str, Any] | None = None,
+    timeout_seconds: float | None = None,
+) -> Any:
     url = f"{settings.coordinator_url.rstrip('/')}/{path.lstrip('/')}"
     headers = {"Accept": "application/json"}
     data = None
@@ -35,7 +38,9 @@ def _coordinator_request(path: str, *, method: str = "GET", body: dict[str, Any]
         headers["X-Coordinator-Token"] = settings.coordinator_token
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=settings.coordinator_timeout_seconds) as response:
+        with urllib.request.urlopen(
+            request, timeout=timeout_seconds or settings.coordinator_timeout_seconds
+        ) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
@@ -47,8 +52,13 @@ def _coordinator_request(path: str, *, method: str = "GET", body: dict[str, Any]
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Coordinator is unavailable") from exc
 
 
-async def _coordinator(path: str, *, method: str = "GET", body: dict[str, Any] | None = None) -> Any:
-    return await asyncio.to_thread(_coordinator_request, path, method=method, body=body)
+async def _coordinator(
+    path: str, *, method: str = "GET", body: dict[str, Any] | None = None,
+    timeout_seconds: float | None = None,
+) -> Any:
+    return await asyncio.to_thread(
+        _coordinator_request, path, method=method, body=body, timeout_seconds=timeout_seconds
+    )
 
 
 def _find_work_item(ctx: Auth, project_id: str, work_item_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -661,7 +671,9 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
         )
         answer = f"Autonomous shift started for {max(1, min(hours, 24))} hours."
     else:
-        result = await _coordinator("/api/v1/chat", method="POST", body={"message": message})
+        result = await _coordinator(
+            "/api/v1/chat", method="POST", body={"message": message}, timeout_seconds=150
+        )
         answer = result.get("answer", "Coordinator Assistant did not return an answer.")
         action = {"context": result.get("context", {})}
     ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.chat", "agent_coordinator", "current")
