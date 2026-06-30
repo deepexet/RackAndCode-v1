@@ -16,13 +16,15 @@ let _tab = 'info' // info | service | inventory | assignments
 // ── Public API ─────────────────────────────────────────────────────────────
 
 export function mount() {
-  _el = document.getElementById('mainContent')
-  if (!_el) return
+  _el = document.querySelector('[data-view="transport"]')
+  if (!_el) return unmount
   _el.innerHTML = `<div class="tr-shell"><div class="tr-loading"><i class="ti ti-loader-2 spin"></i> Загрузка…</div></div>`
   loadVehicles()
+  return unmount
 }
 
 export function unmount() {
+  if (_el) _el.innerHTML = ''
   _el = null
   _vehicles = []
   _activeVehicle = null
