@@ -215,3 +215,13 @@ For each material release, append a dated section containing product version, us
 - Assigned Codex the Engineering & Integration Lead role for repository validation, security, implementation planning, code review and controlled integration.
 - Preserved the Product Owner's authority over priorities, product tradeoffs and final acceptance.
 - Added the role contract and mandatory architecture-to-review delivery loop to Coordinator documentation and Admin → Agents.
+
+## 2026-06-30 — Claude batch integration review
+
+- Integrated the completed diagram editor, Overview critical-task, Work Order detail, notification and inventory-normalization commits into an isolated Codex integration branch.
+- Reconciled the collaboration protocol with Claude as Architecture Lead and Codex as Engineering & Integration Lead.
+- Removed an accidental Transport route reference from the notification commit; the partial Transport module and migration `096` remain deferred outside the integration branch.
+- Kept the unfinished Work Order materials UI outside integration while preserving the independent Kanban initial-scroll fix.
+- Removed duplicate unauthenticated FastAPI notification shims and enforced authenticated role permissions on notifications, inventory alerts and Work Orders.
+- Added Work Order child tenant checks, organization-scoped queries and indexes, validated task/comment input and server-derived comment authors.
+- Added focused FastAPI and store tests for notification authentication, Work Order RBAC and cross-tenant child isolation.

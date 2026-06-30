@@ -132,7 +132,6 @@ function startApp() {
     .on('docs',         () => import('./modules/docs.js').then(m => m.mount()))
     .on('api',          () => import('./modules/api_metrics.js').then(m => m.mount()))
     .on('admin',        () => import('./modules/admin.js').then(m => m.mount()))
-    .on('transport',   () => import('./modules/transport.js').then(m => m.mount()))
 
   // Update breadcrumb on route change
   window.addEventListener('rp:route', e => {
@@ -140,7 +139,6 @@ function startApp() {
       overview: 'Overview', projects: 'Projects', inventory: 'Inventory',
       'work-orders': 'Work orders', tech: 'Field', logs: 'Logs',
       wiki: 'Wiki', diagrams: 'Схемы', docs: 'Platform Docs', admin: 'Admin',
-      transport: 'Транспорт',
     }
     const bc = document.getElementById('topbarBreadcrumb')
     if (bc) bc.innerHTML = `<span>${labels[e.detail.route] || e.detail.route}</span>`
@@ -188,7 +186,6 @@ function initCommandPalette() {
     { icon: 'ti-packages', label: 'Inventory', hash: '#inventory' },
     { icon: 'ti-clipboard-list', label: 'Work orders', hash: '#work-orders' },
     { icon: 'ti-map-pin', label: 'Field', hash: '#tech' },
-    { icon: 'ti-truck', label: 'Транспорт', hash: '#transport' },
     { icon: 'ti-settings', label: 'Admin', hash: '#admin' },
   ]
 

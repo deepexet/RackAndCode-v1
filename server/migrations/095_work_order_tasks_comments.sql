@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS work_order_tasks (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_wo_tasks_wo ON work_order_tasks(work_order_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_wo_tasks_org_wo ON work_order_tasks(organization_id, work_order_id, sort_order);
 
 -- Activity / comments on work orders
 CREATE TABLE IF NOT EXISTS work_order_comments (
@@ -20,4 +20,4 @@ CREATE TABLE IF NOT EXISTS work_order_comments (
     body            TEXT NOT NULL,
     created_at      TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_wo_comments_wo ON work_order_comments(work_order_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_wo_comments_org_wo ON work_order_comments(organization_id, work_order_id, created_at);

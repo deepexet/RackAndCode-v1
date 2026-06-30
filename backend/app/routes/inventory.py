@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query, UploadFile, File
 from typing import Any
 
-from app.middleware.auth import Auth
+from app.middleware.auth import Auth, require_permission
 
 router = APIRouter()
 
@@ -223,6 +223,7 @@ async def commit_cycle_count(recon_id: str, body: dict[str, Any], ctx: Auth):
 
 @router.get("/alerts")
 async def inventory_alerts(ctx: Auth):
+    require_permission(ctx, "projectRead")
     return {"alerts": ctx.store.list_inventory_alerts(ctx.org)}
 
 

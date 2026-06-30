@@ -6093,12 +6093,12 @@ Rules:
                 return None
             wo = dict(row)
             wo["tasks"] = [dict(r) for r in conn.execute(
-                "SELECT * FROM work_order_tasks WHERE work_order_id=? ORDER BY sort_order, created_at",
-                (wo_id,)
+                "SELECT * FROM work_order_tasks WHERE work_order_id=? AND organization_id=? ORDER BY sort_order, created_at",
+                (wo_id, org)
             ).fetchall()]
             wo["comments"] = [dict(r) for r in conn.execute(
-                "SELECT * FROM work_order_comments WHERE work_order_id=? ORDER BY created_at",
-                (wo_id,)
+                "SELECT * FROM work_order_comments WHERE work_order_id=? AND organization_id=? ORDER BY created_at",
+                (wo_id, org)
             ).fetchall()]
             if wo.get("asset_id"):
                 asset_row = conn.execute(
@@ -6111,22 +6111,30 @@ Rules:
             return wo
 
     def create_wo_task(self, org: str, wo_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        import uuid, datetime
+        import uuid
+        title = str(payload.get("title", "")).strip()
+        if not title:
+            raise ValueError("title required")
         tid = str(uuid.uuid4())
-        now = datetime.datetime.utcnow().isoformat() + "+00:00"
+        now = utc_now()
         with self._connect() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM work_orders WHERE id=? AND organization_id=?", (wo_id, org)
+            ).fetchone():
+                raise LookupError("Work order not found")
             conn.execute(
                 "INSERT INTO work_order_tasks (id,organization_id,work_order_id,title,completed,sort_order,created_at,updated_at) "
                 "VALUES (?,?,?,?,0,?,?,?)",
-                (tid, org, wo_id, payload.get("title",""), payload.get("sort_order", 0), now, now)
+                (tid, org, wo_id, title, payload.get("sort_order", 0), now, now)
             )
-            row = conn.execute("SELECT * FROM work_order_tasks WHERE id=?", (tid,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM work_order_tasks WHERE id=? AND organization_id=?", (tid, org)
+            ).fetchone()
         self.audit(org, None, None, "wo_task.create", "work_order", wo_id)
         return dict(row)
 
     def update_wo_task(self, org: str, wo_id: str, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        import datetime
-        now = datetime.datetime.utcnow().isoformat() + "+00:00"
+        now = utc_now()
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM work_order_tasks WHERE id=? AND work_order_id=? AND organization_id=?",
@@ -6137,32 +6145,45 @@ Rules:
             completed = int(payload.get("completed", row["completed"]))
             title = payload.get("title", row["title"])
             conn.execute(
-                "UPDATE work_order_tasks SET title=?,completed=?,updated_at=? WHERE id=?",
-                (title, completed, now, task_id)
+                "UPDATE work_order_tasks SET title=?,completed=?,updated_at=? WHERE id=? AND organization_id=?",
+                (title, completed, now, task_id, org)
             )
-            row = conn.execute("SELECT * FROM work_order_tasks WHERE id=?", (task_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM work_order_tasks WHERE id=? AND organization_id=?", (task_id, org)
+            ).fetchone()
         self.audit(org, None, None, "wo_task.update", "work_order", wo_id)
         return dict(row)
 
     def delete_wo_task(self, org: str, wo_id: str, task_id: str) -> None:
         with self._connect() as conn:
-            conn.execute(
+            result = conn.execute(
                 "DELETE FROM work_order_tasks WHERE id=? AND work_order_id=? AND organization_id=?",
                 (task_id, wo_id, org)
             )
+            if not result.rowcount:
+                raise LookupError("Task not found")
         self.audit(org, None, None, "wo_task.delete", "work_order", wo_id)
 
     def add_wo_comment(self, org: str, wo_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        import uuid, datetime
+        import uuid
+        body = str(payload.get("body", "")).strip()
+        if not body:
+            raise ValueError("body required")
         cid = str(uuid.uuid4())
-        now = datetime.datetime.utcnow().isoformat() + "+00:00"
+        now = utc_now()
         with self._connect() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM work_orders WHERE id=? AND organization_id=?", (wo_id, org)
+            ).fetchone():
+                raise LookupError("Work order not found")
             conn.execute(
                 "INSERT INTO work_order_comments (id,organization_id,work_order_id,author,body,created_at) "
                 "VALUES (?,?,?,?,?,?)",
-                (cid, org, wo_id, payload.get("author",""), payload.get("body",""), now)
+                (cid, org, wo_id, payload.get("author",""), body, now)
             )
-            row = conn.execute("SELECT * FROM work_order_comments WHERE id=?", (cid,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM work_order_comments WHERE id=? AND organization_id=?", (cid, org)
+            ).fetchone()
         self.audit(org, None, None, "wo_comment.add", "work_order", wo_id)
         return dict(row)
 

@@ -158,24 +158,6 @@ async def knowledge_rebuild(store: StoreOnly):
     return {"indexed": count}
 
 
-@app.get("/api/v1/notifications")
-async def notifications_top(store: StoreOnly, unread: bool = False):
-    notifications, unread_count = store.list_notifications(settings.default_org, unread_only=unread)
-    return {"notifications": notifications, "unreadCount": unread_count}
-
-
-@app.post("/api/v1/notifications/read")
-async def mark_read_top(body: dict[str, Any], store: StoreOnly):
-    store.mark_notifications_read(settings.default_org, notif_ids=body.get("ids"))
-    return {"ok": True}
-
-
-@app.post("/api/v1/notifications/generate-alerts")
-async def generate_alerts_top(store: StoreOnly):
-    count = store.generate_inventory_alerts(settings.default_org)
-    return {"generated": count}
-
-
 @app.get("/api/v1/work-items/{wi_id}/dependencies")
 async def wi_dependencies(wi_id: str, store: StoreOnly):
     return store.get_wi_dependencies(settings.default_org, wi_id)

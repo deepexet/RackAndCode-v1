@@ -313,6 +313,12 @@ async function mountDetail(view, pid) {
 
     setupDragDrop(el)
 
+    // Keep the first workflow column visible when opening a project.
+    requestAnimationFrame(() => {
+      const board = el.querySelector('.kanban-board')
+      if (board) board.scrollLeft = 0
+    })
+
     el.querySelectorAll('.kanban-card').forEach(card =>
       card.addEventListener('click', () => {
         const wi = wis.find(w => w.id === card.dataset.id)
