@@ -208,3 +208,10 @@ For each material release, append a dated section containing product version, us
 - Added Admin → Agents local readiness status, a Local quick task action and reusable simple-task templates.
 - Installed Ollama as a login service and downloaded the compact local model on the development Mac; no paid API is used.
 - Verification: 16 focused Coordinator tests, Python compile check, frontend production build, two live local inference jobs, no-worktree isolation check and authenticated browser UI verification passed. The broader 171-test suite still has 5 unrelated baseline failures around migration version 094, legacy progress rules and a pre-existing CSS contract.
+
+## 2026-06-29 — AI development team contract
+
+- Assigned Claude the Architecture Lead role for ADRs, module boundaries, data contracts and architectural risk analysis.
+- Assigned Codex the Engineering & Integration Lead role for repository validation, security, implementation planning, code review and controlled integration.
+- Preserved the Product Owner's authority over priorities, product tradeoffs and final acceptance.
+- Added the role contract and mandatory architecture-to-review delivery loop to Coordinator documentation and Admin → Agents.

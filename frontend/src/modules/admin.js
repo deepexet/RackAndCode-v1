@@ -253,6 +253,11 @@ function renderAgents(d) {
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
   const controlsReady = Boolean(health.controlConfigured)
   const localAgent = agents.find(agent => agent.agent === 'local')
+  const agentRole = agent => ({
+    claude: 'Architecture Lead',
+    codex: 'Engineering & Integration Lead',
+    local: 'Local AI Helper',
+  }[agent] || 'Agent')
   const jobActions = job => {
     const buttons = [
       `<button class="ui-btn ui-btn--sm" data-coordinator-view="${esc(job.id)}">
@@ -309,7 +314,7 @@ function renderAgents(d) {
       ${table({
         columns: [
           { label: 'Agent', render: r => `<strong>${esc(r.agent)}</strong>` },
-          { label: 'Mode', render: r => r.agent === 'local' ? badge('local · text only') : badge('coding agent') },
+          { label: 'Team role', render: r => badge(agentRole(r.agent)) },
           { label: 'Status', render: r => badge(r.available ? 'available' : 'unavailable') },
           { label: 'Version', render: r => `<span class="ui-mono">${esc(r.version || '—')}</span>` },
           { label: 'Executable', render: r => `<span class="ui-mono ui-dim">${esc(r.executable || '—')}</span>` },
@@ -338,6 +343,10 @@ function renderAgents(d) {
       <p class="ui-dim" style="margin-top:8px;font-size:12px">
         Local AI runs on this Mac without a paid API. It is intentionally text-only and suited to summaries,
         classification, action-item extraction and short drafts; it cannot read files, execute commands or edit code.
+      </p>
+      <p class="ui-dim" style="margin-top:8px;font-size:12px">
+        Team contract: Claude proposes architecture and ADRs; Codex validates architecture, reviews implementation and controls integration;
+        the Product Owner approves priorities and material product decisions.
       </p>
     </div>`
 }

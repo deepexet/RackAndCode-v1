@@ -6,6 +6,23 @@ Agent Coordinator is a local-only control plane for reviewable collaboration bet
 
 The coordinator does not let agents freely share one working directory. It assigns bounded jobs to registered Git worktrees, captures append-only events and returns successful implementation jobs to review instead of merging them automatically.
 
+## Team roles and decision contract
+
+- **Product Owner — Valeri:** owns product direction, priorities, commercial decisions and final acceptance of material scope changes.
+- **Architecture Lead — Claude:** proposes system architecture, module boundaries, data contracts, ADRs, dependency plans and architectural risk assessments.
+- **Engineering & Integration Lead — Codex:** validates architecture against the repository, security and operational constraints; plans implementation; reviews code and tests; resolves integration conflicts and controls what enters the integration branch.
+- **Local AI Helper:** performs bounded text-only triage, summaries, classification and extraction without repository or command access.
+
+Architecture becomes actionable only after Claude records the proposal in an ADR and Codex records its technical review. Product-impacting tradeoffs remain subject to Product Owner approval. Neither agent merges to the integration branch automatically.
+
+The normal delivery loop is:
+
+```text
+Product priority -> Claude architecture/ADR -> Codex technical review and task split
+                 -> isolated Claude/Codex implementation jobs -> Codex integration review
+                 -> tests and preview -> Product Owner acceptance
+```
+
 ## v1.0 readiness contract
 
 The coordinator is ready for continuous local parallel development when:
