@@ -28,6 +28,7 @@ from .core import (
     probes_as_dict,
     inspect_worktree,
     integrate_job_worktree,
+    local_chat,
     remove_managed_worktree,
     validate_worktree,
 )
@@ -109,6 +110,10 @@ class AutonomousShiftRequest(BaseModel):
     durationHours: int = Field(default=10, ge=1, le=24)
     retryMinutes: int = Field(default=60, ge=5, le=1440)
     autoApprove: bool = True
+
+
+class CoordinatorChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
 
 
 def _validate_job_workspace(job: dict[str, Any]) -> Path:
@@ -558,6 +563,32 @@ async def autonomous_shift_status() -> dict[str, Any]:
     return {"shift": shift, "report": _autonomous_report(shift)}
 
 
+@app.post("/api/v1/chat")
+async def coordinator_chat(
+    body: CoordinatorChatRequest, x_coordinator_token: str | None = Header(default=None),
+):
+    require_control_token(x_coordinator_token)
+    shift = store.get_autonomous_shift()
+    jobs = store.list_jobs(limit=30)
+    context = {
+        "scheduler": scheduler.snapshot(),
+        "shift": shift,
+        "agents": probes_as_dict(probe_agent(agent) for agent in sorted(AGENTS)),
+        "recentJobs": [
+            {"id": job["id"], "title": job["title"], "agent": job["assignedAgent"],
+             "status": job["status"], "error": job.get("error", "")[:300]}
+            for job in jobs[:15]
+        ],
+        "report": _autonomous_report(shift),
+    }
+    try:
+        answer = await __import__("asyncio").to_thread(local_chat, body.message, context)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    store.append_event("coordinator.chat", actor="owner", payload={"message": body.message[:500]})
+    return {"answer": answer, "context": context}
+
+
 @app.post("/api/v1/autonomous-shift/start")
 async def start_autonomous_shift(
     body: AutonomousShiftRequest, x_coordinator_token: str | None = Header(default=None),
@@ -646,7 +677,7 @@ async def cancel_job(job_id: str, x_coordinator_token: str | None = Header(defau
         job = store.get_job(job_id)
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
-    if job["status"] not in {"queued", "running", "review", "waiting_approval"}:
+    if job["status"] not in {"queued", "running", "review", "waiting_approval", "rate_limited"}:
         raise HTTPException(status.HTTP_409_CONFLICT, "Job cannot be cancelled")
     with process_lock:
         process = processes.get(job_id)

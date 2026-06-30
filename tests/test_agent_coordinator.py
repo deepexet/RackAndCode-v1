@@ -149,6 +149,13 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertIsNone(queued["completedAt"])
         self.assertEqual(queued["error"], "")
 
+    def test_rate_limited_job_can_be_cancelled_for_agent_handoff(self):
+        job = self.store.create_job(self.payload())
+        self.store.transition_job(job["id"], "running")
+        self.store.transition_job(job["id"], "rate_limited", error="usage limit")
+        handed_off = self.store.transition_job(job["id"], "cancelled", actor="autonomous-utilization")
+        self.assertEqual(handed_off["status"], "cancelled")
+
     def test_job_logs_are_ordered_and_incremental(self):
         job = self.store.create_job(self.payload())
         first = self.store.append_job_log(job["id"], "Agent session started", "system")

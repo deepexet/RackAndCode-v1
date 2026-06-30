@@ -27,6 +27,42 @@ from typing import Any, Iterable
 AGENTS = {"codex", "claude", "local"}
 LOCAL_MODEL = os.getenv("RACKPILOT_LOCAL_MODEL", "qwen3:1.7b")
 LOCAL_AI_URL = os.getenv("RACKPILOT_LOCAL_AI_URL", "http://127.0.0.1:11434").rstrip("/")
+
+
+def local_chat(message: str, context: dict[str, Any]) -> str:
+    """Answer coordinator questions locally; context is bounded and contains no secrets."""
+    request_body = {
+        "model": LOCAL_MODEL,
+        "stream": False,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are RackPilot Coordinator Assistant. Explain current agent activity, queues, "
+                    "limits and safe next actions from the supplied context. Be concise. Never claim an "
+                    "action was performed unless the context says so. Never request or expose secrets."
+                ),
+            },
+            {"role": "user", "content": f"/no_think\nCOORDINATOR CONTEXT:\n{json.dumps(context, ensure_ascii=False)[:12000]}\n\nUSER:\n{message[:4000]}"},
+        ],
+        "options": {"temperature": 0.2, "num_ctx": 4096, "num_predict": 700},
+        "keep_alive": "10m",
+    }
+    request = urllib.request.Request(
+        f"{LOCAL_AI_URL}/api/chat",
+        data=json.dumps(request_body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        raise ValueError(f"Local coordinator assistant unavailable: {exc}") from exc
+    content = str(result.get("message", {}).get("content", "")).strip()
+    if not content:
+        raise ValueError("Local coordinator assistant returned an empty response")
+    return content
 JOB_STATUSES = {
     "queued",
     "running",
@@ -914,7 +950,7 @@ class CoordinatorStore:
             "integrating": {"completed", "failed"},
             "failed": {"queued", "review"},
             "cancelled": {"queued"},
-            "rate_limited": {"queued"},
+            "rate_limited": {"queued", "cancelled"},
         }
         if status not in allowed.get(current["status"], set()):
             raise ValueError(f"invalid transition {current['status']} -> {status}")

@@ -622,6 +622,147 @@ async def coordinator_stop_autonomous_shift(ctx: Auth):
     return result
 
 
+@router.post("/coordinator/chat")
+async def coordinator_chat(body: dict[str, Any], ctx: Auth):
+    """Chat with local Coordinator Assistant; mutations require explicit slash commands."""
+    _require_authenticated_admin(ctx)
+    message = str(body.get("message", "")).strip()
+    if not message or len(message) > 4000:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Message must contain 1-4000 characters")
+    command = message.split()
+    answer: str | None = None
+    action: dict[str, Any] | None = None
+    if command and command[0].lower() == "/retry" and len(command) == 2:
+        action = await _coordinator(f"/api/v1/jobs/{urllib.parse.quote(command[1], safe='')}/retry", method="POST", body={})
+        answer = f"Job {command[1]} was queued for retry."
+    elif command and command[0].lower() == "/priority" and len(command) == 3:
+        item_id, priority = command[1], command[2].lower()
+        if priority not in {"critical", "high", "medium", "low"}:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Priority must be critical, high, medium or low")
+        found = None
+        for project in ctx.store.list_projects(ctx.org):
+            item = next((row for row in project.get("workItems", []) if row["id"] == item_id), None)
+            if item:
+                found = ctx.store.update_work_item(ctx.org, project["id"], item_id, {
+                    "expectedVersion": item["version"], "priority": priority,
+                })
+                break
+        if not found:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Work item not found")
+        action = {"workItem": found}
+        answer = f"Priority for {found['title']} changed to {priority}."
+    elif command and command[0].lower() == "/stop":
+        action = await _coordinator("/api/v1/autonomous-shift/stop", method="POST", body={})
+        answer = "Autonomous shift stopped. Running work will finish safely."
+    elif command and command[0].lower() == "/start":
+        hours = int(command[1]) if len(command) == 2 and command[1].isdigit() else 10
+        action = await coordinator_start_autonomous_shift(
+            {"durationHours": max(1, min(hours, 24)), "maxTasks": 8, "retryMinutes": 60}, ctx
+        )
+        answer = f"Autonomous shift started for {max(1, min(hours, 24))} hours."
+    else:
+        result = await _coordinator("/api/v1/chat", method="POST", body={"message": message})
+        answer = result.get("answer", "Coordinator Assistant did not return an answer.")
+        action = {"context": result.get("context", {})}
+    ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.chat", "agent_coordinator", "current")
+    return {"answer": answer, "action": action}
+
+
+async def autonomous_maintenance_cycle(ctx: Any) -> dict[str, Any]:
+    """Keep useful agent capacity occupied without bypassing dependencies or scope locks."""
+    autonomous, jobs_payload = await asyncio.gather(
+        _coordinator("/api/v1/autonomous-shift"), _coordinator("/api/v1/jobs?limit=500")
+    )
+    if not autonomous.get("shift", {}).get("enabled"):
+        return {"active": False, "created": []}
+    jobs = jobs_payload.get("jobs", [])
+    active_states = {"queued", "running", "review", "waiting_approval", "integrating"}
+    active = [job for job in jobs if job.get("status") in active_states]
+    busy_agents = {job.get("assignedAgent") for job in active}
+    active_items = {job.get("sourceWorkItemId") for job in active if job.get("sourceWorkItemId")}
+    created: list[dict[str, Any]] = []
+
+    # Claude takes over a Codex worktree when Codex cannot proceed because of a subscription limit.
+    if "claude" not in busy_agents:
+        limited = next((job for job in jobs if job.get("assignedAgent") == "codex"
+                        and job.get("status") == "rate_limited"
+                        and job.get("sourceWorkItemId") not in active_items), None)
+        if limited:
+            payload = {
+                "title": f"Claude assist: {limited['title']}",
+                "instructions": (
+                    "Codex reached its subscription limit. Continue the same scoped task from the existing "
+                    "worktree. Inspect preserved work, finish only the assigned task, run focused tests, and stop "
+                    "for integration review. Do not expand scope.\n\n" + limited.get("instructions", "")
+                ),
+                "assignedAgent": "claude", "autoWorktree": False,
+                "worktreePath": limited["worktreePath"], "branchName": limited["branchName"],
+                "scopePaths": limited.get("scopePaths", []), "requiresReview": True, "maxTurns": 14,
+                "createdBy": "autonomous-utilization", "sourceOrganizationId": limited.get("sourceOrganizationId", ""),
+                "sourceProjectId": limited.get("sourceProjectId", ""), "sourceWorkItemId": limited.get("sourceWorkItemId", ""),
+            }
+            try:
+                result = await _coordinator("/api/v1/jobs", method="POST", body=payload)
+                await _coordinator(f"/api/v1/jobs/{limited['id']}/cancel", method="POST", body={})
+                created.append(result.get("job", {}))
+                busy_agents.add("claude")
+                active_items.add(limited.get("sourceWorkItemId"))
+            except HTTPException:
+                pass
+
+    priority = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for project in ctx.store.list_projects(ctx.org):
+        if project.get("status") not in {"active", "planned"}:
+            continue
+        for item in project.get("workItems", []):
+            if (item.get("status") == "ready" and item.get("effectiveStatus") == "ready"
+                    and item.get("id") not in active_items and item.get("title") != "Test task"):
+                candidates.append((project, item))
+    candidates.sort(key=lambda pair: (priority.get(pair[1].get("priority"), 9), pair[1].get("dueDate") or "9999-12-31"))
+    for project, item in candidates:
+        recommendation = _recommend_work_item_agent(item)
+        agent = recommendation["agent"]
+        if agent in busy_agents:
+            if agent == "codex" and "claude" not in busy_agents:
+                agent = "claude"
+            else:
+                continue
+        try:
+            result = await _create_work_item_job(ctx, project, item, assigned_agent=agent)
+        except (HTTPException, ValueError, LookupError):
+            continue
+        created.append(result.get("job", {}))
+        busy_agents.add(agent)
+        active_items.add(item["id"])
+        if {"codex", "claude", "local"}.issubset(busy_agents):
+            break
+
+    # Give the local model one useful triage pass per hour when no local-ready task exists.
+    if "local" not in busy_agents:
+        hour_key = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H")
+        title = f"Autonomous Kanban triage {hour_key} UTC"
+        if not any(job.get("title") == title for job in jobs):
+            backlog = []
+            for project in ctx.store.list_projects(ctx.org):
+                backlog.extend({"project": project.get("name"), "title": item.get("title"),
+                                "priority": item.get("priority"), "status": item.get("status")}
+                               for item in project.get("workItems", [])
+                               if item.get("status") in {"backlog", "ready", "blocked"})
+            payload = {
+                "title": title,
+                "instructions": "Classify the next useful work and summarize blockers from this bounded Kanban snapshot:\n" + json.dumps(backlog[:40], ensure_ascii=False),
+                "assignedAgent": "local", "autoWorktree": False, "scopePaths": [],
+                "requiresReview": False, "maxTurns": 1, "createdBy": "autonomous-utilization",
+            }
+            try:
+                result = await _coordinator("/api/v1/jobs", method="POST", body=payload)
+                created.append(result.get("job", {}))
+            except HTTPException:
+                pass
+    return {"active": True, "created": created}
+
+
 @router.post("/coordinator/jobs")
 async def coordinator_create_job(body: dict[str, Any], ctx: Auth):
     _require_authenticated_admin(ctx)

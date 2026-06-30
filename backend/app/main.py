@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,9 +31,35 @@ async def lifespan(app: FastAPI):
     log.info("RackPilot starting — running migrations…")
     run_migrations()
     log.info(f"Database ready: {settings.db_path}")
-    yield
-    # Shutdown
-    log.info("RackPilot shutting down")
+    async def utilization_loop() -> None:
+        from app.middleware.auth import SessionContext, get_store
+        from app.routes.admin import autonomous_maintenance_cycle
+        ctx = SessionContext(
+            org=settings.default_org, user_id="local-admin", role="Administrator",
+            token=None, store=get_store(),
+        )
+        while True:
+            try:
+                await autonomous_maintenance_cycle(ctx)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("Autonomous utilization cycle failed: %s", exc)
+            await asyncio.sleep(30)
+    utilization_task = (
+        asyncio.create_task(utilization_loop(), name="autonomous-agent-utilization")
+        if settings.coordinator_token else None
+    )
+    try:
+        yield
+    finally:
+        if utilization_task:
+            utilization_task.cancel()
+            try:
+                await utilization_task
+            except asyncio.CancelledError:
+                pass
+        log.info("RackPilot shutting down")
 
 
 app = FastAPI(

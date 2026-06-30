@@ -150,6 +150,14 @@ An Administrator can start a bounded autonomous development shift from **Admin �
 
 The host Mac must remain powered on, online, and signed in to the agent CLIs. On macOS the coordinator runs `caffeinate` for the lifetime of an active shift and releases it when the shift stops. Autonomous Shift does not bypass provider limits, shutdown, logout, or loss of network connectivity.
 
+### Utilization and failover
+
+While a shift is active, FastAPI runs a maintenance cycle every 30 seconds. It synchronizes completed work, fills free agent slots from dependency-ready Kanban items, and gives the local model a bounded hourly triage pass when no text task is ready. If Codex is blocked by a subscription limit and Claude is free, Claude continues the same registered worktree and scope; the old Codex run is cancelled only after the Claude handoff job is created successfully. The coordinator does not invent product changes merely to keep an agent busy, and overlapping scopes remain locked.
+
+### Coordinator Chat
+
+Admin → Agents includes a local Coordinator Chat. Normal questions are answered by the on-device model with bounded live context containing agent availability, queue state, current shift and recent job outcomes. Explicit mutations require slash commands: `/start 10`, `/stop`, `/retry JOB_ID`, and `/priority WORK_ITEM_ID high`. The browser never receives the coordinator control token, and every chat/action is audited.
+
 ## Live activity
 
 Coordinator stores bounded, line-oriented agent output while a process is running. Admin → Agents → Live polls incrementally and presents elapsed time, status transitions, commands, file changes, agent messages, errors and the retained console stream. Each job keeps its latest 2,000 log records; older runs created before this capability retain only their final result summary.
