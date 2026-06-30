@@ -148,7 +148,7 @@ An Administrator can start a bounded autonomous development shift from **Admin â
 - The shift stops at its configured end time or when an Administrator presses Stop. Running jobs finish safely.
 - The report records completed commits, checks, limit waits, and jobs requiring attention.
 
-The host Mac must remain powered on, awake, online, and signed in to the agent CLIs. Autonomous Shift does not bypass provider limits or operating-system sleep.
+The host Mac must remain powered on, online, and signed in to the agent CLIs. On macOS the coordinator runs `caffeinate` for the lifetime of an active shift and releases it when the shift stops. Autonomous Shift does not bypass provider limits, shutdown, logout, or loss of network connectivity.
 
 ## Live activity
 

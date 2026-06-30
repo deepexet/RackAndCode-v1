@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import signal
 import subprocess
 import threading
@@ -51,6 +52,7 @@ process_lock = threading.RLock()
 integration_lock = threading.RLock()
 autonomous_stop = threading.Event()
 autonomous_thread: threading.Thread | None = None
+awake_process: subprocess.Popen[Any] | None = None
 
 
 @asynccontextmanager
@@ -69,6 +71,7 @@ async def lifespan(_: FastAPI):
         autonomous_stop.set()
         if autonomous_thread.is_alive():
             autonomous_thread.join(timeout=3)
+        _ensure_awake(False)
         scheduler.stop()
 
 
@@ -438,6 +441,30 @@ def _parse_utc(value: str | None) -> datetime | None:
         return None
 
 
+def _ensure_awake(enabled: bool) -> bool:
+    """Use macOS caffeinate only while an autonomous shift is active."""
+    global awake_process
+    if enabled:
+        if awake_process is not None and awake_process.poll() is None:
+            return True
+        executable = shutil.which("caffeinate")
+        if not executable:
+            return False
+        awake_process = subprocess.Popen(
+            [executable, "-dimsu"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    if awake_process is not None and awake_process.poll() is None:
+        awake_process.terminate()
+        try:
+            awake_process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            awake_process.kill()
+    awake_process = None
+    return False
+
+
 def _autonomous_report(shift: dict[str, Any]) -> dict[str, Any]:
     started = _parse_utc(shift.get("startedAt"))
     jobs = store.list_jobs(limit=500)
@@ -464,7 +491,9 @@ def _autonomous_report(shift: dict[str, Any]) -> dict[str, Any]:
 def _autonomous_tick() -> None:
     shift = store.get_autonomous_shift()
     if not shift["enabled"]:
+        _ensure_awake(False)
         return
+    _ensure_awake(True)
     now = datetime.now(timezone.utc)
     ends_at = _parse_utc(shift.get("endsAt"))
     if ends_at and now >= ends_at:
@@ -473,6 +502,7 @@ def _autonomous_tick() -> None:
             retry_minutes=shift["retryMinutes"], auto_approve=shift["autoApprove"],
         )
         store.append_event("autonomous_shift.completed", actor="autonomous-shift", payload=_autonomous_report(shift))
+        _ensure_awake(False)
         return
     if shift["autoApprove"]:
         for job in store.list_jobs("review", limit=100):
@@ -524,6 +554,7 @@ async def scheduler_status() -> dict[str, Any]:
 @app.get("/api/v1/autonomous-shift")
 async def autonomous_shift_status() -> dict[str, Any]:
     shift = store.get_autonomous_shift()
+    shift["keepAwake"] = bool(awake_process is not None and awake_process.poll() is None)
     return {"shift": shift, "report": _autonomous_report(shift)}
 
 
@@ -543,6 +574,7 @@ async def start_autonomous_shift(
         auto_approve=body.autoApprove,
     )
     store.append_event("autonomous_shift.started", actor="owner", payload=shift)
+    _ensure_awake(True)
     scheduler.wake()
     return {"shift": shift, "report": _autonomous_report(shift)}
 
@@ -556,6 +588,7 @@ async def stop_autonomous_shift(x_coordinator_token: str | None = Header(default
         retry_minutes=current["retryMinutes"], auto_approve=current["autoApprove"],
     )
     report = _autonomous_report(shift)
+    _ensure_awake(False)
     store.append_event("autonomous_shift.stopped", actor="owner", payload=report)
     return {"shift": shift, "report": report}
 

@@ -326,7 +326,7 @@ function renderAgents(d) {
         <div class="adm-section-header"><h3><i class="ti ti-clock-play"></i> Autonomous Shift</h3>${badge(shift.enabled ? 'running' : 'stopped')}</div>
         <p class="ui-dim">
           ${shift.enabled
-            ? `Runs until ${esc(shift.endsAt ? new Date(shift.endsAt).toLocaleString() : 'manually stopped')}. Usage-limit jobs wait ${esc(shift.retryMinutes || 60)} minutes and continue automatically.`
+            ? `Runs until ${esc(shift.endsAt ? new Date(shift.endsAt).toLocaleString() : 'manually stopped')}. Usage-limit jobs wait ${esc(shift.retryMinutes || 60)} minutes and continue automatically. Mac awake: ${shift.keepAwake ? 'yes' : 'unavailable'}.`
             : 'Queue Ready tasks, run agents, retry after subscription limits, pass safe results through the integration gate, and produce a shift report.'}
         </p>
         <div class="adm-agent-actions" style="margin-top:10px">
