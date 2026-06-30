@@ -133,6 +133,29 @@ def _session_id_from_line(line: str) -> str | None:
     return session_id if isinstance(session_id, str) and session_id else None
 
 
+def _concise_failure(lines: deque[str], *, rate_limited: bool = False) -> str:
+    """Extract a user-facing terminal reason while full output remains in result/logs."""
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except (TypeError, json.JSONDecodeError):
+            lowered = line.lower()
+            if "usage limit" in lowered or "maximum number of turns" in lowered:
+                return line[-1000:]
+            continue
+        if isinstance(entry.get("errors"), list) and entry["errors"]:
+            return str(entry["errors"][-1])[:1000]
+        if entry.get("type") == "error" and entry.get("message"):
+            return str(entry["message"])[:1000]
+        if entry.get("type") == "turn.failed":
+            message = entry.get("error", {}).get("message")
+            if message:
+                return str(message)[:1000]
+        if entry.get("type") == "result" and entry.get("is_error") and entry.get("result"):
+            return str(entry["result"])[:1000]
+    return "Agent usage limit reached" if rate_limited else "Agent exited before completing the task"
+
+
 def _latest_logged_session_id(job_id: str) -> str | None:
     logs = store.list_job_logs(job_id, limit=1000)
     for log in reversed(logs):
@@ -335,8 +358,9 @@ def _run_job(job_id: str) -> None:
         store.append_job_log(job_id, "Job cancelled", "system")
         return
     combined = "\n".join(output_lines)[-65536:]
-    error_text = combined[-8192:] if process.returncode else ""
-    if _is_rate_limited_output(output_lines):
+    rate_limited = _is_rate_limited_output(output_lines)
+    error_text = _concise_failure(output_lines, rate_limited=rate_limited) if process.returncode else ""
+    if rate_limited:
         store.transition_job(job_id, "rate_limited", exit_code=process.returncode, result_summary=combined, error=error_text)
     elif process.returncode != 0:
         store.transition_job(job_id, "failed", exit_code=process.returncode, result_summary=combined, error=error_text)

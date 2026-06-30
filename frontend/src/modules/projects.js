@@ -759,11 +759,11 @@ function renderWorkItemAgentPanel(project, wi, data, onSave) {
         <div><span>Attempt</span><strong>${Number(job.attempt || 0)}</strong></div>
         <div><span>Branch</span><strong title="${esc(job.branchName)}">${esc(job.branchName || '—')}</strong></div>
       </div>
-      ${job.error ? `<p class="wi-agent-message wi-agent-message--error">${esc(job.error)}</p>` : ''}
+      ${job.error ? `<p class="wi-agent-message wi-agent-message--error">${esc(friendlyAgentError(job.error))}</p>` : ''}
       ${job.resultSummary ? `<p class="wi-agent-message">${esc(String(job.resultSummary).slice(-600))}</p>` : ''}
       <div class="wi-agent-actions">
         ${job.status === 'review' || job.status === 'waiting_approval' ? `<button class="btn btn-primary" data-agent-action="approve" data-job-id="${esc(job.id)}">Approve → Testing</button>` : ''}
-        ${['failed','cancelled','rate_limited'].includes(job.status) ? `<button class="btn btn-primary" data-agent-action="retry" data-job-id="${esc(job.id)}">Retry</button>` : ''}
+        ${['failed','cancelled','rate_limited'].includes(job.status) ? `<button class="btn btn-primary" data-agent-action="retry" data-job-id="${esc(job.id)}">${String(job.error||'').includes('maximum number of turns') ? 'Continue' : 'Retry'}</button>` : ''}
         ${active && ['queued','running'].includes(job.status) ? `<button class="btn btn-ghost" data-agent-action="cancel" data-job-id="${esc(job.id)}">Cancel</button>` : ''}
         <button class="btn btn-ghost" id="wdOpenAgents">Open live activity</button>
       </div>` : `
@@ -817,6 +817,15 @@ function renderWorkItemAgentPanel(project, wi, data, onSave) {
       if (document.getElementById('wdAgentPanel')) loadWorkItemAgentPanel(project, wi, onSave)
     }, 2500)
   }
+}
+
+function friendlyAgentError(value) {
+  const text = String(value || '')
+  const usage = text.match(/You've hit your usage limit[^\n"]*/i)
+  if (usage) return usage[0]
+  const turns = text.match(/Reached maximum number of turns \(\d+\)/i)
+  if (turns) return `${turns[0]}. Continue resumes the same agent session with a larger turn budget.`
+  return text.length > 600 ? `${text.slice(-600)}` : text
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

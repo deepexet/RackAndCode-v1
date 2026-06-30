@@ -216,7 +216,7 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_job(job["id"])["status"], "review")
 
     def test_allowed_claude_usage_warning_is_not_a_rate_limit(self):
-        from coordinator.app import _is_rate_limited_output
+        from coordinator.app import _concise_failure, _is_rate_limited_output
 
         allowed = deque([
             '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","utilization":0.83}}',
@@ -232,6 +232,17 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertFalse(_is_rate_limited_output(allowed))
         self.assertTrue(_is_rate_limited_output(blocked))
         self.assertTrue(_is_rate_limited_output(codex_blocked))
+        self.assertEqual(
+            _concise_failure(codex_blocked, rate_limited=True),
+            "You have hit your usage limit. Try again later.",
+        )
+        max_turns = deque([
+            '{"type":"result","errors":["Reached maximum number of turns (10)"]}'
+        ])
+        self.assertEqual(
+            _concise_failure(max_turns),
+            "Reached maximum number of turns (10)",
+        )
 
     def test_managed_worktree_create_and_safe_remove(self):
         repo = Path(self.temp_dir.name) / "source"
