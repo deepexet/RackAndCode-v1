@@ -9028,6 +9028,7 @@ Rules:
 
     def append_coordinator_chat_message(
         self, org: str, user_id: str, role: str, content: str,
+        agent_job_id: str | None = None,
     ) -> dict[str, Any]:
         if role not in {"user", "assistant", "system"}:
             raise ValueError("Invalid coordinator chat role")
@@ -9038,10 +9039,20 @@ Rules:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """INSERT INTO coordinator_chat_messages
-                   (id,organization_id,user_id,role,content,created_at) VALUES(?,?,?,?,?,?)""",
-                (message["id"], org, user_id, role, text, message["createdAt"]),
+                   (id,organization_id,user_id,role,content,created_at,agent_job_id)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (message["id"], org, user_id, role, text, message["createdAt"], agent_job_id),
             )
         return message
+
+    def has_coordinator_chat_agent_result(self, org: str, user_id: str, job_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM coordinator_chat_messages
+                   WHERE organization_id=? AND user_id=? AND agent_job_id=?""",
+                (org, user_id, job_id),
+            ).fetchone()
+        return row is not None
 
     def list_coordinator_chat_messages(
         self, org: str, user_id: str, limit: int = 100,

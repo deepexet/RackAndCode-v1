@@ -158,6 +158,8 @@ While a shift is active, FastAPI runs a maintenance cycle every 30 seconds. It s
 
 Administrators have a global Coordinator Chat launcher on every platform page. It acts as the owner's single development interface rather than requiring separate conversations with Codex and Claude. Normal questions are answered by the on-device model with bounded live context containing agent availability, queue state, current shift and recent job outcomes. Conversation history is stored in the canonical database and scoped by organization plus user ID, so the same account sees one history across devices without exposing it to another tenant or account. Explicit mutations require slash commands: `/start 10`, `/stop`, `/retry JOB_ID`, and `/priority WORK_ITEM_ID high`. The browser never receives the coordinator control token, and every chat/action is audited.
 
+Local AI is the default route and therefore consumes no Codex or Claude subscription allowance. `/local TASK` makes that choice explicit. `/codex REQUEST` and `/claude REQUEST` are the only conversational routes that create paid-agent jobs; they run asynchronously in isolated worktrees and their final answers are written back into the same database-backed conversation. The browser refreshes an open conversation periodically, so delegated answers appear without navigating to the Agents page.
+
 ## Live activity
 
 Coordinator stores bounded, line-oriented agent output while a process is running. Admin → Agents → Live polls incrementally and presents elapsed time, status transitions, commands, file changes, agent messages, errors and the retained console stream. Each job keeps its latest 2,000 log records; older runs created before this capability retain only their final result summary.

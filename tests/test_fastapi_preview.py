@@ -215,6 +215,32 @@ class FastApiPreviewTests(unittest.TestCase):
                 settings.db_path = original_db_path
                 settings.lan_mode = original_lan_mode
 
+    def test_coordinator_chat_delegates_to_paid_agents_only_on_explicit_command(self) -> None:
+        original_db_path = settings.db_path
+        original_lan_mode = settings.lan_mode
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings.db_path = Path(temporary_directory) / "rackpilot.db"
+            settings.lan_mode = True
+            auth._store = None
+            try:
+                with TestClient(app) as client:
+                    self.assertEqual(client.post("/api/v1/auth/dev-login").status_code, 200)
+                    job = {"id": "chat-job", "status": "queued", "assignedAgent": "claude"}
+                    with patch("app.routes.admin._coordinator", new=AsyncMock(return_value={"job": job})) as coordinator:
+                        response = client.post(
+                            "/api/v1/admin/coordinator/chat",
+                            json={"message": "/claude Review the FastAPI migration strategy"},
+                        )
+                    self.assertEqual(response.status_code, 200, response.text)
+                    payload = coordinator.await_args.kwargs["body"]
+                    self.assertEqual(payload["assignedAgent"], "claude")
+                    self.assertTrue(payload["createdBy"].startswith("chat:local-dev:local-admin:"))
+                    self.assertIn("response will appear", response.json()["answer"])
+            finally:
+                auth._store = None
+                settings.db_path = original_db_path
+                settings.lan_mode = original_lan_mode
+
 
 if __name__ == "__main__":
     unittest.main()

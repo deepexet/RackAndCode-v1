@@ -632,9 +632,43 @@ async def coordinator_stop_autonomous_shift(ctx: Auth):
     return result
 
 
+def _chat_agent_result(job: dict[str, Any]) -> str:
+    if job.get("status") != "completed":
+        return f"{job.get('assignedAgent', 'Agent')} could not complete the request: {job.get('error') or job.get('status')}"
+    for line in reversed(str(job.get("resultSummary", "")).splitlines()):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        item = entry.get("item", {})
+        if item.get("type") == "agent_message" and item.get("text"):
+            return str(item["text"])
+        if entry.get("type") == "result" and entry.get("result"):
+            return str(entry["result"])
+    return f"{job.get('assignedAgent', 'Agent')} completed the request without a textual response."
+
+
+async def _sync_chat_agent_results(ctx: Any) -> None:
+    jobs = (await _coordinator("/api/v1/jobs?limit=500")).get("jobs", [])
+    prefix = f"chat:{ctx.org}:{ctx.user_id}:"
+    for job in reversed(jobs):
+        if not str(job.get("createdBy", "")).startswith(prefix):
+            continue
+        if job.get("status") not in {"completed", "failed", "cancelled"}:
+            continue
+        if ctx.store.has_coordinator_chat_agent_result(ctx.org, ctx.user_id, job["id"]):
+            continue
+        ctx.store.append_coordinator_chat_message(
+            ctx.org, ctx.user_id, "assistant",
+            f"{job.get('assignedAgent', 'Agent').capitalize()} response:\n{_chat_agent_result(job)}",
+            agent_job_id=job["id"],
+        )
+
+
 @router.get("/coordinator/chat")
 async def coordinator_chat_history(ctx: Auth, limit: int = 100):
     _require_authenticated_admin(ctx)
+    await _sync_chat_agent_results(ctx)
     return {"messages": ctx.store.list_coordinator_chat_messages(ctx.org, ctx.user_id, limit)}
 
 
@@ -645,7 +679,7 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
     message = str(body.get("message", "")).strip()
     if not message or len(message) > 4000:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Message must contain 1-4000 characters")
-    ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "user", message)
+    user_message = ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "user", message)
     command = message.split()
     answer: str | None = None
     action: dict[str, Any] | None = None
@@ -677,9 +711,32 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
             {"durationHours": max(1, min(hours, 24)), "maxTasks": 8, "retryMinutes": 60}, ctx
         )
         answer = f"Autonomous shift started for {max(1, min(hours, 24))} hours."
+    elif command and command[0].lower() in {"/codex", "/claude"}:
+        agent = command[0].lower().removeprefix("/")
+        request_text = message[len(command[0]):].strip()
+        if not request_text:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Use /{agent} followed by a question or task")
+        created = await _coordinator("/api/v1/jobs", method="POST", body={
+            "title": f"Chat request for {agent}: {request_text[:100]}",
+            "instructions": (
+                "Answer the owner's request as an advisory task. You may inspect the repository when useful, "
+                "but do not edit files, create commits, or perform external actions. Return a concise, concrete "
+                f"answer for the shared Coordinator Chat.\n\nOWNER REQUEST:\n{request_text}"
+            ),
+            "assignedAgent": agent, "autoWorktree": True, "baseRef": settings.coordinator_base_ref,
+            "scopePaths": ["docs"], "requiresReview": False, "maxTurns": 8,
+            "createdBy": f"chat:{ctx.org}:{ctx.user_id}:{user_message['id']}",
+        })
+        job = created.get("job", {})
+        action = {"job": job}
+        answer = f"Request sent to {agent.capitalize()} as job {job.get('id')}. The response will appear in this chat automatically."
     else:
+        history = ctx.store.list_coordinator_chat_messages(ctx.org, ctx.user_id, 20)
+        local_message = message[len("/local"):].strip() if command and command[0].lower() == "/local" else message
+        if not local_message:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Use /local followed by a question or simple task")
         result = await _coordinator(
-            "/api/v1/chat", method="POST", body={"message": message}, timeout_seconds=150
+            "/api/v1/chat", method="POST", body={"message": local_message, "history": history}, timeout_seconds=150
         )
         answer = result.get("answer", "Coordinator Assistant did not return an answer.")
         action = {"context": result.get("context", {})}

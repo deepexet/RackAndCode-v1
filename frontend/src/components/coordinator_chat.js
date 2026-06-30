@@ -65,7 +65,7 @@ export function initCoordinatorChat() {
         <textarea name="message" rows="2" maxlength="4000" required placeholder="Ask the coordinator…"></textarea>
         <button type="submit" aria-label="Send to coordinator"><i class="ti ti-send"></i></button>
       </form>
-      <div class="coord-chat-help">/status · /start 10 · /stop · /retry JOB_ID · /priority WORK_ITEM_ID high</div>
+      <div class="coord-chat-help">Default: Local AI · /local TASK · /codex REQUEST · /claude REQUEST · /status · /start 10 · /stop</div>
     </aside>`
   document.body.append(...host.children)
   renderMessages()
@@ -81,6 +81,9 @@ export function initCoordinatorChat() {
   })
   document.getElementById('coordinatorChatClose')?.addEventListener('click', close)
   window.addEventListener('rp:unauthorized', close)
+  setInterval(() => {
+    if (panel.classList.contains('open')) loadHistory().catch(() => {})
+  }, 15000)
 
   document.getElementById('coordinatorChatForm')?.addEventListener('submit', async event => {
     event.preventDefault()
