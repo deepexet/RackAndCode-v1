@@ -9026,6 +9026,39 @@ Rules:
                 (str(uuid.uuid4()), org, actor_id, actor_role, action, target_type, target_id, outcome, ip, utc_now()),
             )
 
+    def append_coordinator_chat_message(
+        self, org: str, user_id: str, role: str, content: str,
+    ) -> dict[str, Any]:
+        if role not in {"user", "assistant", "system"}:
+            raise ValueError("Invalid coordinator chat role")
+        text = str(content).strip()
+        if not text or len(text) > 12000:
+            raise ValueError("Coordinator chat message must contain 1-12000 characters")
+        message = {"id": str(uuid.uuid4()), "role": role, "content": text, "createdAt": utc_now()}
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO coordinator_chat_messages
+                   (id,organization_id,user_id,role,content,created_at) VALUES(?,?,?,?,?,?)""",
+                (message["id"], org, user_id, role, text, message["createdAt"]),
+            )
+        return message
+
+    def list_coordinator_chat_messages(
+        self, org: str, user_id: str, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT id,role,content,created_at FROM coordinator_chat_messages
+                   WHERE organization_id=? AND user_id=?
+                   ORDER BY created_at DESC,id DESC LIMIT ?""",
+                (org, user_id, limit),
+            ).fetchall()
+        return [
+            {"id": row["id"], "role": row["role"], "content": row["content"], "createdAt": row["created_at"]}
+            for row in reversed(rows)
+        ]
+
     def list_project_activity(self, org: str, project_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch audit events related to a specific project."""
         with self._connect() as conn:

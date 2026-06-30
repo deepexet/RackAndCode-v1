@@ -1,6 +1,5 @@
 import { apiJSON, getSession } from '../core/api.js'
 
-const STORAGE_KEY = 'rackpilot.coordinator.chat.v1'
 let history = []
 
 function esc(value) {
@@ -8,13 +7,13 @@ function esc(value) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-function loadHistory() {
-  try { history = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]').slice(-40) }
-  catch { history = [] }
-}
-
-function saveHistory() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(history.slice(-40)))
+async function loadHistory() {
+  const data = await apiJSON('/api/v1/admin/coordinator/chat?limit=100')
+  history = (data.messages || []).map(row => ({
+    role: row.role === 'user' ? 'You' : row.role === 'assistant' ? 'Coordinator' : 'System',
+    text: row.content,
+  }))
+  renderMessages()
 }
 
 function renderMessages() {
@@ -47,7 +46,10 @@ async function refreshStatus() {
 
 export function initCoordinatorChat() {
   if (getSession()?.role !== 'Administrator' || document.getElementById('coordinatorChatLauncher')) return
-  loadHistory()
+  loadHistory().catch(err => {
+    history = [{ role: 'System', text: `Could not load shared history: ${err.message}` }]
+    renderMessages()
+  })
   const host = document.createElement('div')
   host.innerHTML = `
     <button class="coord-chat-launcher" id="coordinatorChatLauncher" type="button" aria-label="Open Coordinator Chat">
@@ -102,7 +104,6 @@ export function initCoordinatorChat() {
         ? 'Coordinator backend is updating. Try again in a few seconds.' : err.message })
     } finally {
       button.disabled = false
-      saveHistory()
       renderMessages()
       input.focus()
     }

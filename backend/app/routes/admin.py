@@ -632,6 +632,12 @@ async def coordinator_stop_autonomous_shift(ctx: Auth):
     return result
 
 
+@router.get("/coordinator/chat")
+async def coordinator_chat_history(ctx: Auth, limit: int = 100):
+    _require_authenticated_admin(ctx)
+    return {"messages": ctx.store.list_coordinator_chat_messages(ctx.org, ctx.user_id, limit)}
+
+
 @router.post("/coordinator/chat")
 async def coordinator_chat(body: dict[str, Any], ctx: Auth):
     """Chat with local Coordinator Assistant; mutations require explicit slash commands."""
@@ -639,6 +645,7 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
     message = str(body.get("message", "")).strip()
     if not message or len(message) > 4000:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Message must contain 1-4000 characters")
+    ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "user", message)
     command = message.split()
     answer: str | None = None
     action: dict[str, Any] | None = None
@@ -677,6 +684,7 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
         answer = result.get("answer", "Coordinator Assistant did not return an answer.")
         action = {"context": result.get("context", {})}
     ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.chat", "agent_coordinator", "current")
+    ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "assistant", answer)
     return {"answer": answer, "action": action}
 
 

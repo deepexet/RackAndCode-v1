@@ -156,7 +156,7 @@ While a shift is active, FastAPI runs a maintenance cycle every 30 seconds. It s
 
 ### Coordinator Chat
 
-Administrators have a global Coordinator Chat launcher on every platform page. It acts as the owner's single development interface rather than requiring separate conversations with Codex and Claude. Normal questions are answered by the on-device model with bounded live context containing agent availability, queue state, current shift and recent job outcomes. Conversation history is retained locally in that browser. Explicit mutations require slash commands: `/start 10`, `/stop`, `/retry JOB_ID`, and `/priority WORK_ITEM_ID high`. The browser never receives the coordinator control token, and every chat/action is audited.
+Administrators have a global Coordinator Chat launcher on every platform page. It acts as the owner's single development interface rather than requiring separate conversations with Codex and Claude. Normal questions are answered by the on-device model with bounded live context containing agent availability, queue state, current shift and recent job outcomes. Conversation history is stored in the canonical database and scoped by organization plus user ID, so the same account sees one history across devices without exposing it to another tenant or account. Explicit mutations require slash commands: `/start 10`, `/stop`, `/retry JOB_ID`, and `/priority WORK_ITEM_ID high`. The browser never receives the coordinator control token, and every chat/action is audited.
 
 ## Live activity
 
