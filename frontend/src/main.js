@@ -285,10 +285,38 @@ function fmtBytes(b) {
   return (b / 1024).toFixed(0) + 'K'
 }
 
+let _tempHistory = []
+let _tempHistoryFetchedAt = 0
+
+function renderTemperatureSparkline(samples) {
+  const svg = document.getElementById('sw-temp-spark')
+  const values = samples.map(row => Number(row.temperatureC)).filter(Number.isFinite)
+  if (!svg || values.length < 2) { if (svg) svg.innerHTML = ''; return }
+  const min = Math.min(...values) - 1
+  const max = Math.max(...values) + 1
+  const range = Math.max(1, max - min)
+  const points = values.map((value, index) => {
+    const x = values.length === 1 ? 0 : index * 90 / (values.length - 1)
+    const y = 18 - ((value - min) / range) * 16
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+  svg.innerHTML = `<polyline points="${points}" fill="none" stroke="currentColor" stroke-width="1.8" vector-effect="non-scaling-stroke"/>`
+}
+
+async function refreshTemperatureHistory(headers) {
+  if (Date.now() - _tempHistoryFetchedAt < 60000) return
+  _tempHistoryFetchedAt = Date.now()
+  const response = await fetch('/api/v1/admin/system-stats/history?hours=6', { headers })
+  if (!response.ok) return
+  _tempHistory = (await response.json()).samples || []
+  renderTemperatureSparkline(_tempHistory)
+}
+
 async function refreshSysWidget() {
   try {
+    const headers = { 'Authorization': 'Bearer ' + (JSON.parse(localStorage.getItem('rp_session') || '{}').token || '') }
     const d = await (await fetch('/api/v1/admin/system-stats', {
-      headers: { 'Authorization': 'Bearer ' + (JSON.parse(localStorage.getItem('rp_session') || '{}').token || '') }
+      headers
     })).json()
     if (!d.cpu) return
 
@@ -300,6 +328,7 @@ async function refreshSysWidget() {
     const $batBar = document.getElementById('sw-bat-bar')
     const $batIcon = document.getElementById('sw-bat-icon')
     const $volt = document.getElementById('sw-volt')
+    const $temp = document.getElementById('sw-temp')
 
     if ($cpu) $cpu.textContent = d.cpu.percent + '%'
     if ($cpuBar) $cpuBar.style.width = d.cpu.percent + '%'
@@ -324,6 +353,13 @@ async function refreshSysWidget() {
         $volt.textContent = (d.battery.voltageMv / 1000).toFixed(2) + 'V'
       }
     }
+    if ($temp) {
+      const value = d.temperature?.celsius
+      $temp.textContent = Number.isFinite(value) ? `${value.toFixed(1)}°` : 'n/a'
+      $temp.title = `${d.temperature?.sensor || 'sensor unavailable'} · thermal ${d.temperature?.thermalState || 'unknown'}`
+      $temp.style.color = value >= 45 ? 'var(--red)' : value >= 38 ? 'var(--amber)' : 'var(--text-2)'
+    }
+    await refreshTemperatureHistory(headers)
   } catch {}
 }
 

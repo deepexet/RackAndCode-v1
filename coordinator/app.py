@@ -115,6 +115,7 @@ class AutonomousShiftRequest(BaseModel):
 class CoordinatorChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     history: list[dict[str, str]] = Field(default_factory=list, max_length=30)
+    machineContext: dict[str, Any] = Field(default_factory=dict)
 
 
 def _validate_job_workspace(job: dict[str, Any]) -> Path:
@@ -585,6 +586,7 @@ async def coordinator_chat(
             {"role": str(row.get("role", ""))[:20], "content": str(row.get("content", ""))[:2000]}
             for row in body.history[-20:]
         ],
+        "machine": body.machineContext,
     }
     try:
         answer = await __import__("asyncio").to_thread(local_chat, body.message, context)

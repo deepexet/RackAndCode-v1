@@ -160,6 +160,8 @@ Administrators have a global Coordinator Chat launcher on every platform page. I
 
 Local AI is the default route and therefore consumes no Codex or Claude subscription allowance. `/local TASK` makes that choice explicit. `/codex REQUEST` and `/claude REQUEST` are the only conversational routes that create paid-agent jobs; they run asynchronously in isolated worktrees and their final answers are written back into the same database-backed conversation. The browser refreshes an open conversation periodically, so delegated answers appear without navigating to the Agents page.
 
+The local assistant receives a fresh bounded machine snapshot with CPU, memory, disk, battery, available temperature sensor and macOS thermal state. This context is distinct from agent scheduler load, allowing follow-up questions such as “what is the load on the local Mac?” to return measured values rather than queue activity. System samples are retained for 24 hours at one-minute resolution; the sidebar displays a six-hour temperature sparkline. On Apple Silicon without a privileged SMC helper, the temperature is explicitly labelled as the available virtual/battery sensor rather than misrepresented as CPU die temperature.
+
 ## Live activity
 
 Coordinator stores bounded, line-oriented agent output while a process is running. Admin → Agents → Live polls incrementally and presents elapsed time, status transitions, commands, file changes, agent messages, errors and the retained console stream. Each job keeps its latest 2,000 log records; older runs created before this capability retain only their final result summary.

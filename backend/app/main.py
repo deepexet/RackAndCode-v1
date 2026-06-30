@@ -33,13 +33,21 @@ async def lifespan(app: FastAPI):
     log.info(f"Database ready: {settings.db_path}")
     async def utilization_loop() -> None:
         from app.middleware.auth import SessionContext, get_store
-        from app.routes.admin import autonomous_maintenance_cycle
+        from app.routes.admin import autonomous_maintenance_cycle, _collect_system_stats
         ctx = SessionContext(
             org=settings.default_org, user_id="local-admin", role="Administrator",
             token=None, store=get_store(),
         )
         while True:
             try:
+                snapshot = await asyncio.to_thread(_collect_system_stats)
+                temperature = snapshot.get("temperature", {})
+                ctx.store.record_system_metric_sample(ctx.org, {
+                    "cpuPercent": snapshot["cpu"]["percent"],
+                    "memoryPercent": snapshot["memory"]["percent"],
+                    "temperatureC": temperature.get("celsius"),
+                    "thermalState": temperature.get("thermalState", "unknown"),
+                })
                 await autonomous_maintenance_cycle(ctx)
             except asyncio.CancelledError:
                 raise

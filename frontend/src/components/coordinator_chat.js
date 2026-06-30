@@ -7,11 +7,16 @@ function esc(value) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+function formatMessage(value) {
+  return esc(value).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>')
+}
+
 async function loadHistory() {
   const data = await apiJSON('/api/v1/admin/coordinator/chat?limit=100')
   history = (data.messages || []).map(row => ({
     role: row.role === 'user' ? 'You' : row.role === 'assistant' ? 'Coordinator' : 'System',
     text: row.content,
+    createdAt: row.createdAt,
   }))
   renderMessages()
 }
@@ -21,7 +26,8 @@ function renderMessages() {
   if (!target) return
   target.innerHTML = history.length
     ? history.map(row => `<div class="coord-msg coord-msg--${row.role === 'You' ? 'user' : 'assistant'}">
-        <span class="coord-msg-role">${esc(row.role)}</span><div>${esc(row.text)}</div></div>`).join('')
+        <span class="coord-msg-role">${row.role === 'You' ? '<i class="ti ti-user"></i>' : '<i class="ti ti-sparkles"></i>'} ${esc(row.role)}</span>
+        <div>${formatMessage(row.text)}</div>${row.createdAt ? `<time>${new Date(row.createdAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time>` : ''}</div>`).join('')
     : `<div class="coord-chat-welcome"><strong>Your development coordinator</strong>
         <span>Ask about agent activity, progress, limits and priorities. Explicit changes use slash commands.</span></div>`
   target.scrollTop = target.scrollHeight
@@ -85,6 +91,14 @@ export function initCoordinatorChat() {
     if (panel.classList.contains('open')) loadHistory().catch(() => {})
   }, 15000)
 
+  const input = document.querySelector('#coordinatorChatForm textarea')
+  input?.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault()
+      event.currentTarget.form?.requestSubmit()
+    }
+  })
+
   document.getElementById('coordinatorChatForm')?.addEventListener('submit', async event => {
     event.preventDefault()
     const form = event.currentTarget
@@ -92,21 +106,23 @@ export function initCoordinatorChat() {
     const message = String(input.value || '').trim()
     if (!message) return
     const button = form.querySelector('button[type="submit"]')
-    history.push({ role: 'You', text: message })
+    history.push({ role: 'You', text: message, createdAt: new Date().toISOString() })
     input.value = ''
     button.disabled = true
+    panel.classList.add('thinking')
     renderMessages()
     try {
       const result = await apiJSON('/api/v1/admin/coordinator/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }),
       })
-      history.push({ role: 'Coordinator', text: result.answer || 'No response' })
+      history.push({ role: 'Coordinator', text: result.answer || 'No response', createdAt: new Date().toISOString() })
       await refreshStatus()
     } catch (err) {
       history.push({ role: 'System', text: err.message === 'Method Not Allowed'
-        ? 'Coordinator backend is updating. Try again in a few seconds.' : err.message })
+        ? 'Coordinator backend is updating. Try again in a few seconds.' : err.message, createdAt: new Date().toISOString() })
     } finally {
       button.disabled = false
+      panel.classList.remove('thinking')
       renderMessages()
       input.focus()
     }

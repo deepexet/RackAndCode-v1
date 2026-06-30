@@ -201,10 +201,13 @@ class FastApiPreviewTests(unittest.TestCase):
                     self.assertEqual(client.post("/api/v1/auth/dev-login").status_code, 200)
                     with patch("app.routes.admin._coordinator", new=AsyncMock(return_value={
                         "answer": "Codex is waiting; Claude is available.", "context": {},
-                    })):
+                    })) as coordinator:
                         sent = client.post("/api/v1/admin/coordinator/chat", json={"message": "/status"})
+                        history = client.get("/api/v1/admin/coordinator/chat")
                     self.assertEqual(sent.status_code, 200, sent.text)
-                    history = client.get("/api/v1/admin/coordinator/chat")
+                    local_payload = coordinator.await_args_list[0].kwargs["body"]
+                    self.assertIn("machineContext", local_payload)
+                    self.assertIn("cpu", local_payload["machineContext"])
                     self.assertEqual(history.status_code, 200)
                     self.assertEqual(
                         [(row["role"], row["content"]) for row in history.json()["messages"]],

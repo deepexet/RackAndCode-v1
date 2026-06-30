@@ -178,6 +178,7 @@ function renderMetrics(d) {
 function renderSystem(d) {
   if (d.error) return `<div class="ui-empty"><i class="ti ti-alert-circle"></i><span>Ошибка: ${esc(d.error)}</span></div>`
   const bat = d.battery || {}
+  const temp = d.temperature || {}
   const fmtB = b => b >= 1073741824 ? (b/1073741824).toFixed(1)+'GB' : b >= 1048576 ? (b/1048576).toFixed(0)+'MB' : (b/1024).toFixed(0)+'KB'
   const fmtTime = s => { if (s < 0) return '—'; const h = Math.floor(s/3600), m = Math.floor((s%3600)/60); return `${h}h ${m}m` }
   const pctBar = (pct, color='var(--blue)') =>
@@ -225,6 +226,12 @@ function renderSystem(d) {
             ${bat.currentMa ? `· ${Math.abs(bat.currentMa)}mA` : ''}
           </div>
           ${pctBar(bat.percent ?? 0, batColor)}
+        </div>
+
+        <div class="adm-sys-card">
+          <div class="adm-sys-label"><i class="ti ti-temperature"></i> Температура</div>
+          <div class="adm-sys-val">${temp.celsius != null ? `${Number(temp.celsius).toFixed(1)}°C` : '—'}</div>
+          <div class="adm-sys-sub">${esc(temp.sensor || 'unavailable')} · thermal ${esc(temp.thermalState || 'unknown')}</div>
         </div>
       </div>
 

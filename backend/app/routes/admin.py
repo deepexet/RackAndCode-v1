@@ -500,49 +500,71 @@ def _get_battery_ioreg() -> dict:
             "cycleCount": _find("CycleCount"),
             "designCapacity": _find("DesignCapacity"),
             "maxCapacity": _find("MaxCapacity"),
+            "temperatureC": round(_find("Temperature") / 100, 1) if _find("Temperature") is not None else None,
+            "virtualTemperatureC": round(_find("VirtualTemperature") / 100, 1) if _find("VirtualTemperature") is not None else None,
         }
     except Exception:
         return {}
 
 
-@router.get("/system-stats")
-async def system_stats(ctx: Auth):
-    import asyncio, time, platform
+def _get_thermal_state() -> str:
+    import subprocess
+    try:
+        output = subprocess.check_output(["pmset", "-g", "therm"], text=True, timeout=2).lower()
+        if "critical" in output or "danger" in output:
+            return "critical"
+        if "warning level" in output and "no thermal warning" not in output:
+            return "warning"
+        return "normal"
+    except Exception:
+        return "unknown"
+
+
+def _collect_system_stats() -> dict[str, Any]:
+    import time, platform
     import psutil
 
     cpu = psutil.cpu_percent(interval=0.25)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     bat = psutil.sensors_battery()
-    boot_ts = psutil.boot_time()
-    uptime_s = int(time.time() - boot_ts)
-
-    battery: dict = {}
+    uptime_s = int(time.time() - psutil.boot_time())
+    battery: dict[str, Any] = {}
     if bat is not None:
         battery = {
-            "percent": round(bat.percent, 1),
-            "plugged": bat.power_plugged,
+            "percent": round(bat.percent, 1), "plugged": bat.power_plugged,
             "secsleft": bat.secsleft if bat.secsleft != psutil.POWER_TIME_UNLIMITED else -1,
         }
         battery.update(_get_battery_ioreg())
-
+    temperature = battery.get("virtualTemperatureC") or battery.get("temperatureC")
     return {
         "cpu": {"percent": round(cpu, 1), "count": psutil.cpu_count()},
-        "memory": {
-            "percent": round(mem.percent, 1),
-            "usedBytes": mem.used,
-            "totalBytes": mem.total,
-        },
-        "disk": {
-            "percent": round(disk.percent, 1),
-            "usedBytes": disk.used,
-            "totalBytes": disk.total,
-        },
+        "memory": {"percent": round(mem.percent, 1), "usedBytes": mem.used, "totalBytes": mem.total},
+        "disk": {"percent": round(disk.percent, 1), "usedBytes": disk.used, "totalBytes": disk.total},
         "battery": battery,
-        "uptimeSeconds": uptime_s,
-        "platform": platform.system(),
-        "hostname": platform.node(),
+        "temperature": {
+            "celsius": temperature, "sensor": "virtual/battery" if temperature is not None else "unavailable",
+            "thermalState": _get_thermal_state(),
+        },
+        "uptimeSeconds": uptime_s, "platform": platform.system(), "hostname": platform.node(),
     }
+
+
+@router.get("/system-stats")
+async def system_stats(ctx: Auth):
+    snapshot = await asyncio.to_thread(_collect_system_stats)
+    temp = snapshot.get("temperature", {})
+    ctx.store.record_system_metric_sample(ctx.org, {
+        "cpuPercent": snapshot["cpu"]["percent"], "memoryPercent": snapshot["memory"]["percent"],
+        "temperatureC": temp.get("celsius"), "thermalState": temp.get("thermalState", "unknown"),
+    })
+    return snapshot
+
+
+@router.get("/system-stats/history")
+async def system_stats_history(ctx: Auth, hours: int = 6):
+    _require_authenticated_admin(ctx)
+    return {"hours": max(1, min(hours, 24)), "samples": ctx.store.list_system_metric_samples(ctx.org, hours)}
 
 
 # ── Local Agent Coordinator ───────────────────────────────────────────────
@@ -735,8 +757,11 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
         local_message = message[len("/local"):].strip() if command and command[0].lower() == "/local" else message
         if not local_message:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Use /local followed by a question or simple task")
+        machine = await asyncio.to_thread(_collect_system_stats)
         result = await _coordinator(
-            "/api/v1/chat", method="POST", body={"message": local_message, "history": history}, timeout_seconds=150
+            "/api/v1/chat", method="POST",
+            body={"message": local_message, "history": history, "machineContext": machine},
+            timeout_seconds=150,
         )
         answer = result.get("answer", "Coordinator Assistant did not return an answer.")
         action = {"context": result.get("context", {})}

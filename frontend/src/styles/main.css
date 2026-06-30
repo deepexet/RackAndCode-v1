@@ -198,6 +198,8 @@ body {
   flex-shrink: 0;
 }
 .sys-row--bat .sys-label { color: var(--green); }
+.sys-row--temp .sys-label { color: var(--amber); }
+.sys-spark { flex:1; min-width:0; height:16px; color:var(--amber); overflow:visible; }
 
 .sidebar-footer {
   border-top: 1px solid var(--border);
@@ -750,6 +752,9 @@ body {
 .coord-msg--user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
 .coord-msg--assistant { align-self:flex-start; background:var(--bg-3); border:1px solid var(--border); border-bottom-left-radius:4px; }
 .coord-msg-role { display:block; margin-bottom:4px; font-size:11px; font-weight:700; opacity:.72; text-transform:uppercase; letter-spacing:.04em; }
+.coord-msg time { display:block; margin-top:6px; font-size:10px; opacity:.55; text-align:right; }
+.coord-chat-panel.thinking .coord-chat-header small::after { content:' · thinking…'; color:var(--accent); animation:coord-pulse 1.1s ease-in-out infinite; }
+@keyframes coord-pulse { 50% { opacity:.35; } }
 .coord-chat-form { padding:10px; border-top:1px solid var(--border); display:flex; gap:8px; background:var(--bg-3); }
 .coord-chat-form textarea { flex:1; min-width:0; resize:none; border:1px solid var(--border); border-radius:10px; background:var(--bg-1); color:var(--text-1); padding:10px 12px; font:14px/1.4 var(--font); }
 .coord-chat-form button { width:44px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:19px; cursor:pointer; }

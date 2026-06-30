@@ -9054,6 +9054,37 @@ Rules:
             ).fetchone()
         return row is not None
 
+    def record_system_metric_sample(self, org: str, sample: dict[str, Any]) -> None:
+        sampled = datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO system_metric_samples
+                   (organization_id,sampled_at,cpu_percent,memory_percent,temperature_c,thermal_state)
+                   VALUES(?,?,?,?,?,?)""",
+                (org, sampled, float(sample["cpuPercent"]), float(sample["memoryPercent"]),
+                 sample.get("temperatureC"), str(sample.get("thermalState", "unknown"))),
+            )
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            connection.execute(
+                "DELETE FROM system_metric_samples WHERE organization_id=? AND sampled_at<?", (org, cutoff)
+            )
+
+    def list_system_metric_samples(self, org: str, hours: int = 6) -> list[dict[str, Any]]:
+        hours = max(1, min(int(hours), 24))
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT sampled_at,cpu_percent,memory_percent,temperature_c,thermal_state
+                   FROM system_metric_samples WHERE organization_id=? AND sampled_at>=?
+                   ORDER BY sampled_at""",
+                (org, cutoff),
+            ).fetchall()
+        return [{
+            "sampledAt": row["sampled_at"], "cpuPercent": row["cpu_percent"],
+            "memoryPercent": row["memory_percent"], "temperatureC": row["temperature_c"],
+            "thermalState": row["thermal_state"],
+        } for row in rows]
+
     def list_coordinator_chat_messages(
         self, org: str, user_id: str, limit: int = 100,
     ) -> list[dict[str, Any]]:
