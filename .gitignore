@@ -23,6 +23,7 @@ frontend/node_modules/
 backend/.venv/
 .venv/
 .venv-*/
+.venv-*
 
 # Test artifacts
 .pytest_cache/
