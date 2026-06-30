@@ -249,6 +249,9 @@ function renderAgents(d) {
   const jobs = d.jobs || []
   const worktrees = d.worktrees || []
   const scheduler = health.scheduler || {}
+  const autonomous = d.autonomous || {}
+  const shift = autonomous.shift || health.autonomousShift || {}
+  const shiftReport = autonomous.report || {}
   const running = jobs.filter(j => ['running', 'integrating'].includes(j.status)).length
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
   const controlsReady = Boolean(health.controlConfigured)
@@ -303,6 +306,9 @@ function renderAgents(d) {
         <h3><i class="ti ti-robot"></i> Agent Coordinator</h3>
         <span class="ui-dim" style="font-size:12px">Local control plane · ${esc(health.version || '—')}</span>
         <div class="adm-agent-toolbar">
+          ${shift.enabled
+            ? `<button class="ui-btn ui-btn--sm ui-btn--danger" id="adm-shift-stop"><i class="ti ti-player-stop"></i> Stop autonomous shift</button>`
+            : `<button class="ui-btn ui-btn--sm ui-btn--primary" id="adm-shift-start"><i class="ti ti-sun"></i> Start autonomous shift</button>`}
           <button class="ui-btn ui-btn--sm" id="adm-agent-local-new" ${!localAgent?.available ? 'disabled title="Local model is not ready"' : ''}>
             <i class="ti ti-device-desktop-analytics"></i> Local quick task</button>
           <button class="ui-btn ui-btn--sm ui-btn--primary" id="adm-agent-new"><i class="ti ti-plus"></i> New job</button>
@@ -316,6 +322,20 @@ function renderAgents(d) {
         { icon: 'ti-eye-check', label: 'Needs review', value: review, color: 'var(--amber)' },
         { icon: 'ti-device-desktop-analytics', label: 'Local AI', value: localAgent?.available ? 'Ready' : 'Offline', color: localAgent?.available ? 'var(--green)' : 'var(--red)' },
       ])}
+      <div class="adm-section" style="margin-top:18px">
+        <div class="adm-section-header"><h3><i class="ti ti-clock-play"></i> Autonomous Shift</h3>${badge(shift.enabled ? 'running' : 'stopped')}</div>
+        <p class="ui-dim">
+          ${shift.enabled
+            ? `Runs until ${esc(shift.endsAt ? new Date(shift.endsAt).toLocaleString() : 'manually stopped')}. Usage-limit jobs wait ${esc(shift.retryMinutes || 60)} minutes and continue automatically.`
+            : 'Queue Ready tasks, run agents, retry after subscription limits, pass safe results through the integration gate, and produce a shift report.'}
+        </p>
+        <div class="adm-agent-actions" style="margin-top:10px">
+          <span>${esc(shiftReport.jobs || 0)} jobs this shift</span>
+          <span>${esc((shiftReport.counts || {}).completed || 0)} completed</span>
+          <span>${esc((shiftReport.counts || {}).rate_limited || 0)} waiting for limit</span>
+          <span>${esc((shiftReport.counts || {}).failed || 0)} need attention</span>
+        </div>
+      </div>
       <div class="adm-section-header" style="margin-top:18px"><h3>Installed agents</h3></div>
       ${table({
         columns: [
@@ -663,6 +683,49 @@ function openAgentFeedback(jobId) {
   })
 }
 
+function openAutonomousShift() {
+  const { close } = openModal({
+    title: 'Start autonomous development shift',
+    width: 560,
+    body: `<form class="ui-form" id="adm-shift-form">
+      <div class="ui-form-grid">
+        <div class="ui-form-row"><label>Shift duration (hours)</label>
+          <input class="ui-input" name="durationHours" type="number" min="1" max="24" value="10" required></div>
+        <div class="ui-form-row"><label>Maximum queued tasks</label>
+          <input class="ui-input" name="maxTasks" type="number" min="1" max="24" value="8" required></div>
+      </div>
+      <div class="ui-form-row"><label>Retry subscription limits after (minutes)</label>
+        <input class="ui-input" name="retryMinutes" type="number" min="5" max="1440" value="60" required></div>
+      <p class="ui-dim">Ready tasks are selected by priority and dependencies. Reviews pass automatically through scope, syntax, migration and Git integration checks. Conflicts remain stopped for your attention.</p>
+    </form>`,
+    footer: `<button class="ui-btn ui-btn--primary" id="adm-shift-confirm"><i class="ti ti-player-play"></i> Start shift</button>
+             <button class="ui-btn" id="adm-shift-cancel">Cancel</button>`,
+  })
+  document.getElementById('adm-shift-cancel')?.addEventListener('click', close)
+  document.getElementById('adm-shift-confirm')?.addEventListener('click', async event => {
+    const form = document.getElementById('adm-shift-form')
+    if (!form?.reportValidity()) return
+    const fields = Object.fromEntries(new FormData(form))
+    event.currentTarget.disabled = true
+    try {
+      const result = await apiJSON('/api/v1/admin/coordinator/autonomous-shift/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          durationHours: Number(fields.durationHours), maxTasks: Number(fields.maxTasks),
+          retryMinutes: Number(fields.retryMinutes),
+        }),
+      })
+      close()
+      delete _data.agents
+      window.toast?.(`Autonomous shift started · ${result.delegated?.length || 0} tasks queued`, 'success')
+      switchTab()
+    } catch (err) {
+      event.currentTarget.disabled = false
+      window.toast?.(`Autonomous shift: ${err.message}`, 'error')
+    }
+  })
+}
+
 // ── Render & navigation ───────────────────────────────────────────────────
 
 function render() {
@@ -712,6 +775,22 @@ function bindSystemRefresh() {
 function bindTabEvents() {
   if (_tab === 'system') { bindSystemRefresh(); return }
   if (_tab === 'agents') {
+    document.getElementById('adm-shift-start')?.addEventListener('click', openAutonomousShift)
+    document.getElementById('adm-shift-stop')?.addEventListener('click', async event => {
+      if (!window.confirm('Stop autonomous dispatch and limit retries? Running jobs will finish safely.')) return
+      event.currentTarget.disabled = true
+      try {
+        await apiJSON('/api/v1/admin/coordinator/autonomous-shift/stop', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        })
+        delete _data.agents
+        window.toast?.('Autonomous shift stopped', 'success')
+        switchTab()
+      } catch (err) {
+        event.currentTarget.disabled = false
+        window.toast?.(`Autonomous shift: ${err.message}`, 'error')
+      }
+    })
     document.getElementById('adm-agent-new')?.addEventListener('click', () => openAgentJobCreate())
     document.getElementById('adm-agent-local-new')?.addEventListener('click', () => openAgentJobCreate('local'))
     document.getElementById('adm-agents-refresh')?.addEventListener('click', () => {

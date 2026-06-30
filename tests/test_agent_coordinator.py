@@ -54,6 +54,21 @@ class CoordinatorStoreTests(unittest.TestCase):
         events = self.store.list_events(job["id"])
         self.assertEqual(events[0]["eventType"], "job.created")
 
+    def test_autonomous_shift_settings_are_persistent_and_bounded(self):
+        initial = self.store.get_autonomous_shift()
+        self.assertFalse(initial["enabled"])
+        shift = self.store.save_autonomous_shift(
+            enabled=True,
+            started_at="2026-06-30T08:00:00+00:00",
+            ends_at="2026-06-30T18:00:00+00:00",
+            retry_minutes=1,
+            auto_approve=True,
+        )
+        self.assertTrue(shift["enabled"])
+        self.assertEqual(shift["retryMinutes"], 5)
+        reopened = CoordinatorStore(self.store.db_path).get_autonomous_shift()
+        self.assertEqual(reopened["endsAt"], "2026-06-30T18:00:00+00:00")
+
     def test_job_keeps_kanban_source_and_can_be_filtered(self):
         linked = self.store.create_job(self.payload(
             source_organization_id="local-dev",

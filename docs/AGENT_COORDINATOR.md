@@ -137,6 +137,19 @@ Administrator task cards expose the live agent recommendation, available agents,
 
 `Start AI team` dispatches up to the currently free scheduler capacity from the highest-priority unblocked Ready tasks. Agent selection follows the team contract: Claude for architecture and data contracts, Codex for implementation/integration, and Local AI for bounded text analysis. The scheduler still enforces per-agent, worktree and path-scope locks.
 
+## Autonomous Shift
+
+An Administrator can start a bounded autonomous development shift from **Admin → Agent Coordinator**. The platform selects dependency-ready Kanban items in priority order, creates isolated worktrees, and queues up to the configured daily task budget.
+
+- Reviews pass through the normal scope, syntax, migration, and Git integration gate.
+- Overlapping repository scopes remain serialized.
+- A subscription limit moves a job to `rate_limited`; the shift waits for the configured cooldown and resumes it automatically.
+- Integration conflicts and quality failures stop only the affected job and remain visible in the report.
+- The shift stops at its configured end time or when an Administrator presses Stop. Running jobs finish safely.
+- The report records completed commits, checks, limit waits, and jobs requiring attention.
+
+The host Mac must remain powered on, awake, online, and signed in to the agent CLIs. Autonomous Shift does not bypass provider limits or operating-system sleep.
+
 ## Live activity
 
 Coordinator stores bounded, line-oriented agent output while a process is running. Admin → Agents → Live polls incrementally and presents elapsed time, status transitions, commands, file changes, agent messages, errors and the retained console stream. Each job keeps its latest 2,000 log records; older runs created before this capability retain only their final result summary.

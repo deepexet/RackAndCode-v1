@@ -151,6 +151,44 @@ class FastApiPreviewTests(unittest.TestCase):
                 settings.db_path = original_db_path
                 settings.lan_mode = original_lan_mode
 
+    def test_autonomous_shift_queues_ready_work_and_starts_limit_recovery(self) -> None:
+        original_db_path = settings.db_path
+        original_lan_mode = settings.lan_mode
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings.db_path = Path(temporary_directory) / "rackpilot.db"
+            settings.lan_mode = True
+            auth._store = None
+            try:
+                with TestClient(app) as client:
+                    self.assertEqual(client.post("/api/v1/auth/dev-login").status_code, 200)
+                    store = auth.get_store()
+                    project = store.create_project("local-dev", {"code": "AUTO", "name": "Autonomous"})
+                    item = store.create_work_item("local-dev", project["id"], {
+                        "title": "Implement FastAPI health endpoint", "status": "ready", "priority": "high",
+                    })
+                    linked_job = {
+                        "id": "job-auto", "status": "queued", "assignedAgent": "codex",
+                        "sourceOrganizationId": "local-dev", "sourceProjectId": project["id"],
+                        "sourceWorkItemId": item["id"],
+                    }
+                    responses = [
+                        {"shift": {"enabled": True}}, {"jobs": []}, {"job": linked_job},
+                    ]
+                    with patch("app.routes.admin._coordinator", new=AsyncMock(side_effect=responses)) as coordinator:
+                        response = client.post("/api/v1/admin/coordinator/autonomous-shift/start", json={
+                            "durationHours": 10, "maxTasks": 4, "retryMinutes": 30,
+                        })
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()["delegated"][0]["workItemId"], item["id"])
+                    self.assertEqual(coordinator.await_args_list[0].args[0], "/api/v1/autonomous-shift/start")
+                    refreshed = store.get_project("local-dev", project["id"])
+                    updated = next(row for row in refreshed["workItems"] if row["id"] == item["id"])
+                    self.assertEqual(updated["status"], "progress")
+            finally:
+                auth._store = None
+                settings.db_path = original_db_path
+                settings.lan_mode = original_lan_mode
+
 
 if __name__ == "__main__":
     unittest.main()

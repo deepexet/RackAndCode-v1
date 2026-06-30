@@ -540,20 +540,86 @@ async def system_stats(ctx: Auth):
 @router.get("/coordinator")
 async def coordinator_overview(ctx: Auth):
     _require_authenticated_admin(ctx)
-    health, agents, worktrees, jobs, events = await asyncio.gather(
+    health, agents, worktrees, jobs, events, autonomous = await asyncio.gather(
         _coordinator("/health"),
         _coordinator("/api/v1/agents"),
         _coordinator("/api/v1/worktrees"),
         _coordinator("/api/v1/jobs?limit=50"),
         _coordinator("/api/v1/events?limit=100"),
+        _coordinator("/api/v1/autonomous-shift"),
     )
+    coordinator_jobs = jobs.get("jobs", [])
+    for job in coordinator_jobs:
+        if (job.get("status") == "completed" and job.get("sourceOrganizationId") == ctx.org
+                and job.get("sourceProjectId") and job.get("sourceWorkItemId")):
+            try:
+                _, work_item = _find_work_item(ctx, job["sourceProjectId"], job["sourceWorkItemId"])
+                if work_item.get("status") in {"progress", "review"}:
+                    _advance_work_item(ctx, job["sourceProjectId"], work_item, "testing")
+            except (HTTPException, LookupError, ValueError):
+                pass
     return {
         "health": health,
         "agents": agents.get("agents", []),
         "worktrees": worktrees.get("worktrees", []),
-        "jobs": jobs.get("jobs", []),
+        "jobs": coordinator_jobs,
         "events": events.get("events", []),
+        "autonomous": autonomous,
     }
+
+
+@router.post("/coordinator/autonomous-shift/start")
+async def coordinator_start_autonomous_shift(body: dict[str, Any], ctx: Auth):
+    _require_authenticated_admin(ctx)
+    max_tasks = max(1, min(int(body.get("maxTasks", 8)), 24))
+    duration_hours = max(1, min(int(body.get("durationHours", 10)), 24))
+    retry_minutes = max(5, min(int(body.get("retryMinutes", 60)), 1440))
+    shift = await _coordinator(
+        "/api/v1/autonomous-shift/start", method="POST",
+        body={"durationHours": duration_hours, "retryMinutes": retry_minutes, "autoApprove": True},
+    )
+    jobs = await _coordinator("/api/v1/jobs?limit=500")
+    active_ids = {
+        job.get("sourceWorkItemId") for job in jobs.get("jobs", [])
+        if job.get("status") in {"queued", "running", "review", "waiting_approval", "integrating", "rate_limited"}
+    }
+    priority = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for project in ctx.store.list_projects(ctx.org):
+        if project.get("status") not in {"active", "planned"}:
+            continue
+        for item in project.get("workItems", []):
+            if (item.get("status") == "ready" and item.get("effectiveStatus") == "ready"
+                    and item.get("id") not in active_ids and item.get("title") != "Test task"):
+                candidates.append((project, item))
+    candidates.sort(key=lambda pair: (
+        priority.get(pair[1].get("priority"), 9), pair[1].get("dueDate") or "9999-12-31",
+        pair[1].get("title", ""),
+    ))
+    delegated: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for project, item in candidates[:max_tasks]:
+        recommendation = _recommend_work_item_agent(item)
+        try:
+            result = await _create_work_item_job(
+                ctx, project, item, assigned_agent=recommendation["agent"]
+            )
+            delegated.append({
+                "workItemId": item["id"], "title": item["title"],
+                "agent": recommendation["agent"], "jobId": result["job"].get("id"),
+            })
+        except HTTPException as exc:
+            errors.append({"workItemId": item["id"], "error": str(exc.detail)})
+    ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.autonomous_shift.start", "agent_shift", None)
+    return {**shift, "delegated": delegated, "errors": errors}
+
+
+@router.post("/coordinator/autonomous-shift/stop")
+async def coordinator_stop_autonomous_shift(ctx: Auth):
+    _require_authenticated_admin(ctx)
+    result = await _coordinator("/api/v1/autonomous-shift/stop", method="POST", body={})
+    ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.autonomous_shift.stop", "agent_shift", None)
+    return result
 
 
 @router.post("/coordinator/jobs")

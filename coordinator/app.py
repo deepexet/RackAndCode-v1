@@ -9,6 +9,7 @@ import subprocess
 import threading
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -48,21 +49,32 @@ store = CoordinatorStore(DB_PATH)
 processes: dict[str, subprocess.Popen[str]] = {}
 process_lock = threading.RLock()
 integration_lock = threading.RLock()
+autonomous_stop = threading.Event()
+autonomous_thread: threading.Thread | None = None
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global autonomous_thread
     store.recover_interrupted_jobs()
     scheduler.start()
+    autonomous_stop.clear()
+    autonomous_thread = threading.Thread(
+        target=_autonomous_loop, daemon=True, name="coordinator-autonomous-shift"
+    )
+    autonomous_thread.start()
     try:
         yield
     finally:
+        autonomous_stop.set()
+        if autonomous_thread.is_alive():
+            autonomous_thread.join(timeout=3)
         scheduler.stop()
 
 
 app = FastAPI(
     title="RackPilot Agent Coordinator",
-    version="1.2.0",
+    version="1.3.0",
     docs_url="/docs",
     redoc_url=None,
     lifespan=lifespan,
@@ -88,6 +100,12 @@ class JobRequest(BaseModel):
 
 class ReviewFeedbackRequest(BaseModel):
     feedback: str = Field(min_length=3, max_length=10000)
+
+
+class AutonomousShiftRequest(BaseModel):
+    durationHours: int = Field(default=10, ge=1, le=24)
+    retryMinutes: int = Field(default=60, ge=5, le=1440)
+    autoApprove: bool = True
 
 
 def _validate_job_workspace(job: dict[str, Any]) -> Path:
@@ -183,6 +201,7 @@ async def health() -> dict[str, Any]:
         "executionEnabled": EXECUTION_ENABLED,
         "controlConfigured": bool(CONTROL_TOKEN),
         "scheduler": scheduler.snapshot(),
+        "autonomousShift": store.get_autonomous_shift(),
     }
 
 
@@ -409,6 +428,85 @@ def _integrate_job(job_id: str) -> None:
             scheduler.wake()
 
 
+def _parse_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _autonomous_report(shift: dict[str, Any]) -> dict[str, Any]:
+    started = _parse_utc(shift.get("startedAt"))
+    jobs = store.list_jobs(limit=500)
+    if started:
+        jobs = [job for job in jobs if (_parse_utc(job.get("createdAt")) or started) >= started]
+    counts: dict[str, int] = {}
+    for job in jobs:
+        counts[job["status"]] = counts.get(job["status"], 0) + 1
+    return {
+        "jobs": len(jobs),
+        "counts": counts,
+        "completed": [
+            {"id": job["id"], "title": job["title"], "agent": job["assignedAgent"],
+             "commit": job.get("integratedCommit", ""), "quality": job.get("qualitySummary", "")}
+            for job in jobs if job["status"] == "completed"
+        ],
+        "attention": [
+            {"id": job["id"], "title": job["title"], "status": job["status"], "error": job.get("error", "")}
+            for job in jobs if job["status"] in {"failed", "rate_limited"}
+        ],
+    }
+
+
+def _autonomous_tick() -> None:
+    shift = store.get_autonomous_shift()
+    if not shift["enabled"]:
+        return
+    now = datetime.now(timezone.utc)
+    ends_at = _parse_utc(shift.get("endsAt"))
+    if ends_at and now >= ends_at:
+        store.save_autonomous_shift(
+            enabled=False, started_at=shift.get("startedAt"), ends_at=shift.get("endsAt"),
+            retry_minutes=shift["retryMinutes"], auto_approve=shift["autoApprove"],
+        )
+        store.append_event("autonomous_shift.completed", actor="autonomous-shift", payload=_autonomous_report(shift))
+        return
+    if shift["autoApprove"]:
+        for job in store.list_jobs("review", limit=100):
+            if job["assignedAgent"] == "local":
+                store.transition_job(job["id"], "completed", actor="autonomous-shift", error="")
+                continue
+            store.transition_job(job["id"], "integrating", actor="autonomous-shift")
+            threading.Thread(
+                target=_integrate_job, args=(job["id"],), daemon=True,
+                name=f"auto-integrate-{job['id'][:8]}",
+            ).start()
+    retry_after = timedelta(minutes=shift["retryMinutes"])
+    for job in store.list_jobs("rate_limited", limit=100):
+        updated_at = _parse_utc(job.get("updatedAt")) or now
+        if now - updated_at < retry_after:
+            continue
+        store.append_job_log(
+            job["id"], f"Autonomous shift: retrying after {shift['retryMinutes']} minute limit cooldown", "system"
+        )
+        store.transition_job(job["id"], "queued", actor="autonomous-shift")
+    scheduler.wake()
+
+
+def _autonomous_loop() -> None:
+    while not autonomous_stop.is_set():
+        try:
+            _autonomous_tick()
+        except Exception as exc:
+            store.append_event(
+                "autonomous_shift.error", actor="autonomous-shift", payload={"error": str(exc)[:1000]}
+            )
+        autonomous_stop.wait(15)
+
+
 scheduler = CoordinatorScheduler(
     store,
     _launch_job,
@@ -421,6 +519,45 @@ scheduler = CoordinatorScheduler(
 @app.get("/api/v1/scheduler")
 async def scheduler_status() -> dict[str, Any]:
     return {"scheduler": scheduler.snapshot()}
+
+
+@app.get("/api/v1/autonomous-shift")
+async def autonomous_shift_status() -> dict[str, Any]:
+    shift = store.get_autonomous_shift()
+    return {"shift": shift, "report": _autonomous_report(shift)}
+
+
+@app.post("/api/v1/autonomous-shift/start")
+async def start_autonomous_shift(
+    body: AutonomousShiftRequest, x_coordinator_token: str | None = Header(default=None),
+):
+    require_control_token(x_coordinator_token)
+    if not EXECUTION_ENABLED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Agent execution is disabled")
+    now = datetime.now(timezone.utc)
+    shift = store.save_autonomous_shift(
+        enabled=True,
+        started_at=now.isoformat(),
+        ends_at=(now + timedelta(hours=body.durationHours)).isoformat(),
+        retry_minutes=body.retryMinutes,
+        auto_approve=body.autoApprove,
+    )
+    store.append_event("autonomous_shift.started", actor="owner", payload=shift)
+    scheduler.wake()
+    return {"shift": shift, "report": _autonomous_report(shift)}
+
+
+@app.post("/api/v1/autonomous-shift/stop")
+async def stop_autonomous_shift(x_coordinator_token: str | None = Header(default=None)):
+    require_control_token(x_coordinator_token)
+    current = store.get_autonomous_shift()
+    shift = store.save_autonomous_shift(
+        enabled=False, started_at=current.get("startedAt"), ends_at=datetime.now(timezone.utc).isoformat(),
+        retry_minutes=current["retryMinutes"], auto_approve=current["autoApprove"],
+    )
+    report = _autonomous_report(shift)
+    store.append_event("autonomous_shift.stopped", actor="owner", payload=report)
+    return {"shift": shift, "report": report}
 
 
 @app.post("/api/v1/jobs/{job_id}/start", status_code=status.HTTP_202_ACCEPTED)

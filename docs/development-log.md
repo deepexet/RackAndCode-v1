@@ -2,6 +2,14 @@
 
 Append-only summary of material product development. Git commits are the detailed change record; this log explains intent, scope and verification at release level.
 
+## 2026-06-30 — Autonomous development shifts
+
+- Added a persistent Autonomous Shift controller to the local agent coordinator.
+- Added priority/dependency-aware queuing of Ready Kanban work across active projects.
+- Added automatic integration-gate approval and cooldown-based continuation after subscription limits.
+- Added Administrator start/stop controls, task budget, duration, cooldown and a live shift report.
+- Added persistence and FastAPI coverage; coordinator and preview tests pass.
+
 ## 2026-06-28 — Agent Coordinator v0.1 foundation
 
 - Added an isolated local FastAPI control plane for Codex and Claude Code collaboration.

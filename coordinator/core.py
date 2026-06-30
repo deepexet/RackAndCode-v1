@@ -538,7 +538,22 @@ class CoordinatorStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_coordinator_job_logs_job
                     ON coordinator_job_logs(job_id, id);
+                CREATE TABLE IF NOT EXISTS coordinator_autonomous_shift (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    started_at TEXT,
+                    ends_at TEXT,
+                    retry_minutes INTEGER NOT NULL DEFAULT 60,
+                    auto_approve INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                );
                 """
+            )
+            connection.execute(
+                """INSERT OR IGNORE INTO coordinator_autonomous_shift
+                   (singleton,enabled,retry_minutes,auto_approve,updated_at)
+                   VALUES(1,0,60,1,?)""",
+                (utc_now(),),
             )
             job_columns = {row["name"] for row in connection.execute("PRAGMA table_info(coordinator_jobs)")}
             if "attempt" not in job_columns:
@@ -643,6 +658,35 @@ class CoordinatorStore:
             with self._lock, self._connect() as conn:
                 insert(conn)
         return event
+
+    def get_autonomous_shift(self) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM coordinator_autonomous_shift WHERE singleton=1"
+            ).fetchone()
+        return {
+            "enabled": bool(row["enabled"]),
+            "startedAt": row["started_at"],
+            "endsAt": row["ends_at"],
+            "retryMinutes": row["retry_minutes"],
+            "autoApprove": bool(row["auto_approve"]),
+            "updatedAt": row["updated_at"],
+        }
+
+    def save_autonomous_shift(
+        self, *, enabled: bool, started_at: str | None, ends_at: str | None,
+        retry_minutes: int = 60, auto_approve: bool = True,
+    ) -> dict[str, Any]:
+        retry_minutes = max(5, min(int(retry_minutes), 1440))
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """UPDATE coordinator_autonomous_shift
+                   SET enabled=?,started_at=?,ends_at=?,retry_minutes=?,auto_approve=?,updated_at=?
+                   WHERE singleton=1""",
+                (1 if enabled else 0, started_at, ends_at, retry_minutes,
+                 1 if auto_approve else 0, utc_now()),
+            )
+        return self.get_autonomous_shift()
 
     def create_job(self, payload: JobCreate) -> dict[str, Any]:
         payload.validate()
