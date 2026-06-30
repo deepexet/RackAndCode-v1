@@ -490,6 +490,21 @@ function renderDetail(wo) {
             </div>
           </div>
 
+          <div class="wo-section" id="wd-materials-section">
+            <div class="wo-section-head">
+              <h3 class="wo-section-title"><i class="ti ti-package"></i> Материалы</h3>
+            </div>
+            <ul class="wo-tasklist" id="wd-materials">
+              ${(wo.materials || []).map(m => renderMaterialItem(m, wo.id)).join('')}
+            </ul>
+            <div class="wo-task-add" style="gap:6px">
+              <input class="wo-task-input" id="wd-mat-sku" placeholder="SKU (ACC-RDR-01…)" list="wd-mat-dl" style="flex:2">
+              <datalist id="wd-mat-dl"></datalist>
+              <input class="wo-task-input" id="wd-mat-qty" type="number" min="0.001" step="1" placeholder="Кол-во" style="flex:0 0 80px">
+              <button class="wo-task-add-btn" id="wd-mat-add" title="Добавить материал"><i class="ti ti-plus"></i></button>
+            </div>
+          </div>
+
           ${wo.notes ? `
           <div class="wo-section">
             <div class="wo-section-head">
