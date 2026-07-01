@@ -328,7 +328,8 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.store.update_execution_context(job["id"], agent_session_id="claude-session")
         self.store.transition_job(job["id"], "rate_limited", error="usage limit")
 
-        handed_off = self.store.reassign_job(job["id"], "codex")
+        with patch("coordinator.core._changed_paths", return_value=["backend/app/routes/wiki.py"]):
+            handed_off = self.store.reassign_job(job["id"], "codex")
         queued = self.store.transition_job(job["id"], "queued", actor="owner-handoff")
 
         self.assertEqual(handed_off["assignedAgent"], "codex")
@@ -336,6 +337,7 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(handed_off["branchName"], job["branchName"])
         self.assertEqual(handed_off["agentSessionId"], "")
         self.assertIn("AGENT HANDOFF", handed_off["instructions"])
+        self.assertIn("backend/app/routes/wiki.py", handed_off["scopePaths"])
         self.assertEqual(queued["status"], "queued")
         events = self.store.list_events(job["id"])
         self.assertTrue(any(event["eventType"] == "job.reassigned" for event in events))
@@ -386,11 +388,12 @@ class IntegrationGateTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def job(self, scope_paths=("docs",)):
+    def job(self, scope_paths=("docs",), created_by="owner"):
         return {
             "title": "Document architecture", "assignedAgent": "claude",
             "worktreePath": self.managed["worktreePath"], "branchName": self.managed["branchName"],
             "baseCommit": self.managed["baseCommit"], "scopePaths": list(scope_paths),
+            "createdBy": created_by,
         }
 
     def test_scoped_changes_are_committed_and_cherry_picked(self):
@@ -410,6 +413,11 @@ class IntegrationGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside declared scope"):
             integrate_job_worktree(self.root, self.job())
         self.assertFalse((self.root / "server.py").exists())
+
+    def test_handoff_review_without_corrections_is_successful(self):
+        result = integrate_job_worktree(self.root, self.job(created_by="handoff-review:source-job"))
+        self.assertEqual(result["resultCommit"], result["integratedCommit"])
+        self.assertIn("approved without corrective changes", result["qualitySummary"])
 
 
 if __name__ == "__main__":

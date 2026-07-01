@@ -439,7 +439,17 @@ def integrate_job_worktree(repo_root: Path, job: dict[str, Any]) -> dict[str, st
         base_commit = merge_base.stdout.strip()
     commits = _git(repo_root, "rev-list", "--reverse", f"{base_commit}..{job['branchName']}")
     commit_ids = [value for value in commits.stdout.splitlines() if value]
-    if commits.returncode != 0 or not commit_ids:
+    if commits.returncode != 0:
+        raise ValueError("Unable to inspect agent branch commits")
+    if not commit_ids and str(job.get("createdBy", "")).startswith("handoff-review:"):
+        current = _git(repo_root, "rev-parse", "HEAD")
+        commit_id = current.stdout.strip()
+        return {
+            "resultCommit": commit_id,
+            "integratedCommit": commit_id,
+            "qualitySummary": f"{quality}; handoff review approved without corrective changes",
+        }
+    if not commit_ids:
         raise ValueError("Agent worktree contains no commits to integrate")
     cherry_pick = _git(repo_root, "cherry-pick", *commit_ids, timeout=180)
     if cherry_pick.returncode != 0:
@@ -825,6 +835,8 @@ class CoordinatorStore:
             raise ValueError("only queued or stopped jobs can be reassigned")
         if current["assignedAgent"] == assigned_agent:
             raise ValueError("job is already assigned to this agent")
+        inherited_paths = _changed_paths(Path(current["worktreePath"]))
+        expanded_scope = list(dict.fromkeys([*current.get("scopePaths", []), *inherited_paths]))
         handoff = (
             f"\n\nAGENT HANDOFF\nContinue the preserved work from {current['assignedAgent']} in the existing "
             "worktree. Inspect current changes before editing, keep valid work, complete the original task, "
@@ -834,14 +846,33 @@ class CoordinatorStore:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """UPDATE coordinator_jobs
-                   SET assigned_agent=?,instructions=?,agent_session_id='',review_feedback='',updated_at=?
+                   SET assigned_agent=?,instructions=?,scope_paths_json=?,agent_session_id='',review_feedback='',updated_at=?
                    WHERE id=?""",
-                (assigned_agent, (current["instructions"] + handoff)[:50000], now, job_id),
+                (assigned_agent, (current["instructions"] + handoff)[:50000],
+                 json.dumps(expanded_scope), now, job_id),
             )
             self.append_event(
                 "job.reassigned", job_id=job_id, actor=actor,
                 payload={"from": current["assignedAgent"], "to": assigned_agent, "status": current["status"]},
                 connection=connection,
+            )
+        return self.get_job(job_id)
+
+    def expand_job_scope_with_existing_changes(self, job_id: str, *, actor: str = "owner") -> dict[str, Any]:
+        current = self.get_job(job_id)
+        changed_paths = _changed_paths(Path(current["worktreePath"]))
+        expanded = list(dict.fromkeys([*current.get("scopePaths", []), *changed_paths]))
+        added = [path for path in expanded if path not in current.get("scopePaths", [])]
+        if not added:
+            return current
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE coordinator_jobs SET scope_paths_json=?,updated_at=? WHERE id=?",
+                (json.dumps(expanded), utc_now(), job_id),
+            )
+            self.append_event(
+                "job.scope_inherited", job_id=job_id, actor=actor,
+                payload={"addedPaths": added}, connection=connection,
             )
         return self.get_job(job_id)
 

@@ -166,6 +166,8 @@ Numbered or bulleted next actions in an advice response are persisted as task pr
 
 Stopped coding jobs (`rate_limited`, `failed`, or `cancelled`) can be transferred manually to another available coding agent from Admin → Agents. The handoff preserves the existing worktree, branch, logs, scope and partial edits, clears the provider-specific session, appends handoff instructions, and returns the same job to the queue.
 
+At handoff time, existing changed files are inherited into the receiving agent's declared scope so valid partial work is not rejected merely because another agent created it. After the fallback agent's result passes the integration gate, the coordinator queues an independent verification job for the original agent. Rate-limited handoff reviews retry on a conservative cooldown even outside an autonomous shift; a review that requires no corrective commit is treated as a successful approval.
+
 The local assistant receives a fresh bounded machine snapshot with CPU, memory, disk, battery, available temperature sensor and macOS thermal state. This context is distinct from agent scheduler load, allowing follow-up questions such as “what is the load on the local Mac?” to return measured values rather than queue activity. System samples are retained for 24 hours at one-minute resolution; the sidebar displays a six-hour temperature sparkline. On Apple Silicon without a privileged SMC helper, the temperature is explicitly labelled as the available virtual/battery sensor rather than misrepresented as CPU die temperature.
 
 ## Live activity

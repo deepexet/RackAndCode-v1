@@ -413,6 +413,50 @@ def _launch_job(job_id: str) -> None:
     threading.Thread(target=_run_job, args=(job_id,), daemon=True, name=f"agent-{job_id[:8]}").start()
 
 
+def _queue_original_agent_review(job: dict[str, Any], integrated_commit: str) -> dict[str, Any] | None:
+    if str(job.get("createdBy", "")).startswith("handoff-review:"):
+        return None
+    reassignment_events = [
+        event for event in reversed(store.list_events(job["id"], limit=200))
+        if event["eventType"] == "job.reassigned"
+    ]
+    if not reassignment_events:
+        return None
+    original_agent = str(reassignment_events[0]["payload"].get("from", ""))
+    if original_agent not in {"codex", "claude"} or original_agent == job["assignedAgent"]:
+        return None
+    marker = f"handoff-review:{job['id']}"
+    if any(candidate.get("createdBy") == marker for candidate in store.list_jobs(limit=500)):
+        return None
+    managed = create_managed_worktree(
+        REPO_ROOT, WORKTREE_ROOT, agent=original_agent,
+        title=f"Review handoff {job['title']}", base_ref="HEAD",
+    )
+    review = store.create_job(JobCreate(
+        title=f"Handoff review: {job['title']}",
+        instructions=(
+            f"Review the completed handoff for the original task: {job['title']}\n\n"
+            f"Integrated commit: {integrated_commit}\n"
+            f"Fallback agent: {job['assignedAgent']}\n\n"
+            "Inspect the integrated diff, architecture, tests, and original requirements. Preserve correct work. "
+            "If corrections are needed, implement them within scope and run focused tests. If no correction is "
+            "needed, make no edits and explicitly approve the result. Stop for integration review."
+        ),
+        assigned_agent=original_agent,
+        worktree_path=managed["worktreePath"], branch_name=managed["branchName"],
+        created_by=marker, requires_review=True, max_turns=10, managed_worktree=True,
+        base_ref="HEAD", scope_paths=tuple(job.get("scopePaths", [])),
+        source_organization_id=job.get("sourceOrganizationId", ""),
+        source_project_id=job.get("sourceProjectId", ""),
+        source_work_item_id=job.get("sourceWorkItemId", ""),
+        base_commit=managed.get("baseCommit", ""),
+    ))
+    store.append_job_log(
+        review["id"], f"Queued automatically to verify work completed by {job['assignedAgent']}", "system"
+    )
+    return review
+
+
 def _integrate_job(job_id: str) -> None:
     with integration_lock:
         try:
@@ -429,7 +473,18 @@ def _integrate_job(job_id: str) -> None:
                 f"Integrated {result['resultCommit'][:12]} as {result['integratedCommit'][:12]} — {result['qualitySummary']}",
                 "system",
             )
-            store.transition_job(job_id, "completed", actor="integration-gate", error="")
+            completed = store.transition_job(job_id, "completed", actor="integration-gate", error="")
+            try:
+                review = _queue_original_agent_review(completed, result["integratedCommit"])
+                if review:
+                    store.append_job_log(
+                        job_id, f"Original-agent verification queued as {review['id']}", "system"
+                    )
+            except Exception as review_exc:
+                store.append_event(
+                    "handoff_review.queue_failed", job_id=job_id, actor="coordinator",
+                    payload={"error": str(review_exc)[:1000]},
+                )
         except Exception as exc:
             message = str(exc)[:4000]
             store.update_integration_result(job_id, integration_error=message)
@@ -500,12 +555,23 @@ def _autonomous_report(shift: dict[str, Any]) -> dict[str, Any]:
 
 
 def _autonomous_tick() -> None:
+    now = datetime.now(timezone.utc)
+    # Original-agent verification is part of handoff safety, not only an
+    # autonomous shift. Retry it conservatively while a subscription is limited.
+    for job in store.list_jobs("rate_limited", limit=100):
+        if not str(job.get("createdBy", "")).startswith("handoff-review:"):
+            continue
+        updated_at = _parse_utc(job.get("updatedAt")) or now
+        if now - updated_at < timedelta(minutes=60):
+            continue
+        store.append_job_log(job["id"], "Retrying original-agent handoff verification", "system")
+        store.transition_job(job["id"], "queued", actor="handoff-review-monitor")
+    scheduler.wake()
     shift = store.get_autonomous_shift()
     if not shift["enabled"]:
         _ensure_awake(False)
         return
     _ensure_awake(True)
-    now = datetime.now(timezone.utc)
     ends_at = _parse_utc(shift.get("endsAt"))
     if ends_at and now >= ends_at:
         store.save_autonomous_shift(
@@ -663,6 +729,11 @@ async def retry_job(job_id: str, x_coordinator_token: str | None = Header(defaul
         _validate_job_workspace(job)
         if job["status"] not in {"failed", "cancelled", "rate_limited"}:
             raise ValueError("Only a failed, cancelled or rate-limited job can be retried")
+        if "outside declared scope" in str(job.get("error", "")).lower():
+            job = store.expand_job_scope_with_existing_changes(job_id, actor="owner-retry")
+            store.append_job_log(
+                job_id, "Retry inherited the existing worktree changes into the declared scope", "system"
+            )
         session_id = job["agentSessionId"] or _latest_logged_session_id(job_id)
         hit_turn_limit = "max_turns" in job["error"].lower() or "maximum number of turns" in job["error"].lower()
         next_max_turns = min(20, job["maxTurns"] + 4) if hit_turn_limit else job["maxTurns"]
