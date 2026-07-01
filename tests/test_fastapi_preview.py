@@ -36,6 +36,7 @@ class FastApiPreviewTests(unittest.TestCase):
                     self.assertEqual(session.status_code, 200)
                     self.assertEqual(session.json()["userId"], "local-admin")
                     self.assertEqual(session.json()["org"], "local-dev")
+                    self.assertEqual(auth.get_store().resolve_organization_id("default"), "local-dev")
             finally:
                 auth._store = None
                 settings.db_path = original_db_path

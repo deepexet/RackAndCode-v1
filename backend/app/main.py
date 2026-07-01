@@ -34,9 +34,10 @@ async def lifespan(app: FastAPI):
     async def utilization_loop() -> None:
         from app.middleware.auth import SessionContext, get_store
         from app.routes.admin import autonomous_maintenance_cycle, _collect_system_stats
+        store = get_store()
         ctx = SessionContext(
-            org=settings.default_org, user_id="local-admin", role="Administrator",
-            token=None, store=get_store(),
+            org=store.resolve_organization_id(settings.default_org),
+            user_id="local-admin", role="Administrator", token=None, store=store,
         )
         while True:
             try:

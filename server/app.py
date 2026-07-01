@@ -771,6 +771,19 @@ class WorkspaceStore:
             return {"defaultLanguage":"en","timezone":"America/Halifax","roleMode":"planned","telemetryMode":"standard","logRetentionDays":365,"updatedAt":None}
         return {"defaultLanguage":row["default_language"],"timezone":row["timezone"],"roleMode":row["role_mode"],"telemetryMode":row["telemetry_mode"],"logRetentionDays":row["log_retention_days"],"updatedAt":row["updated_at"]}
 
+    def resolve_organization_id(self, preferred: str) -> str:
+        """Resolve a configured org without inventing a tenant that is absent from the database."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT id FROM organizations
+                   ORDER BY CASE WHEN id=? THEN 0 WHEN status='active' THEN 1 ELSE 2 END,created_at
+                   LIMIT 1""",
+                (preferred,),
+            ).fetchone()
+        if row is None:
+            raise LookupError("No organization is configured")
+        return str(row["id"])
+
     def save_platform_settings(self,organization_id: str,payload: dict[str,Any]) -> dict[str,Any]:
         language=payload.get("defaultLanguage","en")
         timezone_name=str(payload.get("timezone","America/Halifax")).strip() or "America/Halifax"
