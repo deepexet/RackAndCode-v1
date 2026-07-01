@@ -85,15 +85,16 @@ def _recommend_work_item_agent(work_item: dict[str, Any]) -> dict[str, Any]:
     }
     local_terms = {
         "classify", "summarize", "summary", "extract", "label", "triage",
-        "классифиц", "суммар", "извлеч", "размет",
+        "inspect", "check status", "verify status", "monitor", "analyse", "analyze",
+        "классифиц", "суммар", "извлеч", "размет", "провер", "статус", "монитор", "проанализ",
     }
-    implementation_terms = {
-        "implement", "fix", "route", "fastapi", "frontend", "backend", "migration",
-        "test", "ui", "api", "bug", "реализ", "исправ", "перенест", "тест",
+    mutation_terms = {
+        "implement", "fix", "add", "create", "update", "remove", "migrate",
+        "реализ", "исправ", "добав", "созда", "обнов", "удал", "перенест",
     }
     if any(term in text for term in architecture_terms):
         return {"agent": "claude", "reason": "Architecture or system-contract work is assigned to Claude Architecture Lead."}
-    if any(term in text for term in local_terms) and not any(term in text for term in implementation_terms):
+    if any(term in text for term in local_terms) and not any(term in text for term in mutation_terms):
         return {"agent": "local", "reason": "This is a bounded text-analysis task suitable for the local model."}
     return {"agent": "codex", "reason": "Implementation, integration and verification are assigned to Codex."}
 
@@ -105,13 +106,16 @@ def _work_item_scope(work_item: dict[str, Any]) -> list[str]:
     ]).lower()
     scopes: list[str] = []
     mappings = (
-        (("coordinator", "agent"), ("coordinator", "backend/app/routes/admin.py", "frontend/src/modules/admin.js")),
+        (("coordinator", "agent", "координатор", "агент", "очеред"),
+         ("coordinator", "backend/app/routes/admin.py", "frontend/src/modules/admin.js")),
         (("wiki", "knowledge", "vault"), ("backend/app/routes/wiki.py", "frontend/src/modules/wiki.js", "server/migrations")),
         (("diagram", "схем"), ("frontend/src/modules/diagrams.js", "backend/app/routes", "server/migrations")),
         (("inventory", "склад"), ("backend/app/routes/inventory.py", "frontend/src/modules/inventory.js", "server/app.py")),
         (("work order", "наряд"), ("backend/app/routes/work_orders.py", "frontend/src/modules/work_orders.js", "server/app.py")),
         (("project", "kanban", "work item"), ("backend/app/routes/projects.py", "frontend/src/modules/projects.js", "server/app.py")),
-        (("frontend", "mobile", "ui", "style"), ("frontend",)),
+        (("frontend", "mobile", "ui", "style", "интерфейс", "стил"), ("frontend",)),
+        (("monitor", "монитор", "статистик"),
+         ("frontend/src/modules/api_metrics.js", "frontend/src/styles/main.css", "backend/app/routes/admin.py")),
         (("fastapi", "backend", "api", "route"), ("backend", "server/app.py")),
         (("test", "quality"), ("tests",)),
         (("doc", "adr", "architecture"), ("docs",)),
@@ -119,6 +123,8 @@ def _work_item_scope(work_item: dict[str, Any]) -> list[str]:
     for terms, paths in mappings:
         if any(term in text for term in terms):
             scopes.extend(paths)
+    if scopes:
+        scopes.append("tests")
     return list(dict.fromkeys(scopes or ["docs", "tests"]))[:12]
 
 
@@ -765,27 +771,31 @@ def _extract_task_proposals(answer: str, user_message: str) -> list[dict[str, An
     lowered = answer.lower()
     if not any(term in lowered for term in ("next action", "следующ", "задач", "действ", "рекоменду")):
         return []
-    titles: list[str] = []
+    numbered: list[str] = []
+    bullets: list[str] = []
     for raw_line in answer.splitlines():
         line = raw_line.strip()
-        match = re.match(r"^(?:#{1,4}\s*)?(?:\d+[.)]\s*|[-*]\s+)(.+)$", line)
+        match = re.match(r"^(?:#{1,4}\s*)?(\d+[.)]\s*|[-*]\s+)(.+)$", line)
         if not match:
             continue
-        title = re.sub(r"[*_`#]", "", match.group(1)).strip().rstrip(":")
+        title = re.sub(r"[*_`#]", "", match.group(2)).strip().rstrip(":")
         title = re.sub(r"^(?:цель|действие|action|goal)\s*:\s*", "", title, flags=re.I)
-        if 5 <= len(title) <= 180 and title.lower() not in {value.lower() for value in titles}:
-            titles.append(title)
-        if len(titles) >= 8:
-            break
+        target = numbered if match.group(1)[0].isdigit() else bullets
+        if 5 <= len(title) <= 180 and title.lower() not in {value.lower() for value in target}:
+            target.append(title)
+    # Numbered items are top-level tasks in the coordinator's response. Bullets
+    # are usually goal/action details and must not become duplicate agent jobs.
+    titles = (numbered or bullets)[:8]
     proposals: list[dict[str, Any]] = []
     for title in titles:
         recommendation = _recommend_work_item_agent({
             "title": title, "description": f"{user_message}\n{title}", "labels": [],
         })
+        is_local = recommendation["agent"] == "local"
         proposals.append({
             "title": title,
             "instructions": (
-                f"Implement the approved Coordinator Chat proposal: {title}\n\n"
+                f"{'Inspect and report on' if is_local else 'Implement'} the approved Coordinator Chat proposal: {title}\n\n"
                 f"OWNER CONTEXT:\n{user_message}\n\nRun focused verification and stop for review."
             ),
             "assignedAgent": recommendation["agent"],

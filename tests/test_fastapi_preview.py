@@ -16,9 +16,27 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.main import app
 from app.middleware import auth
+from app.routes.admin import _extract_task_proposals
 
 
 class FastApiPreviewTests(unittest.TestCase):
+    def test_chat_proposals_keep_top_level_tasks_and_route_read_only_checks_locally(self) -> None:
+        answer = """Next Actions:
+1. Проверить статус очереди агентов
+   - Цель: убедиться, что очередь работает
+   - Действие: посмотреть последние задания
+2. Исправить API monitor
+   - Добавить тесты
+"""
+        proposals = _extract_task_proposals(answer, "Что делать дальше?")
+        self.assertEqual([row["title"] for row in proposals], [
+            "Проверить статус очереди агентов", "Исправить API monitor",
+        ])
+        self.assertEqual(proposals[0]["assignedAgent"], "local")
+        self.assertEqual(proposals[1]["assignedAgent"], "codex")
+        self.assertIn("coordinator", proposals[0]["scopePaths"])
+        self.assertIn("tests", proposals[1]["scopePaths"])
+
     def test_dev_login_creates_an_authenticated_admin_session(self) -> None:
         original_db_path = settings.db_path
         original_lan_mode = settings.lan_mode

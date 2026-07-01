@@ -264,7 +264,9 @@ function renderAgents(d) {
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
   const activeJobs = jobs.filter(j => ['queued', 'running', 'review', 'waiting_approval', 'integrating'].includes(j.status))
   const waitingJobs = jobs.filter(j => j.status === 'rate_limited')
-  const orderedJobs = [...activeJobs, ...waitingJobs, ...jobs.filter(j => !activeJobs.includes(j) && !waitingJobs.includes(j))]
+  const orderedJobs = [...jobs].sort((left, right) =>
+    new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime()
+  )
   const controlsReady = Boolean(health.controlConfigured)
   const localAgent = agents.find(agent => agent.agent === 'local')
   const agentRole = agent => ({

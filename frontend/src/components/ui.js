@@ -49,6 +49,9 @@ const STATUS_COLORS = {
   progress: 'blue', ready: 'purple', backlog: 'dim', blocked: 'red',
   review: 'amber', testing: 'amber', ideas: 'dim',
   ok: 'green', error: 'red', warning: 'amber', info: 'blue',
+  queued: 'purple', running: 'blue', integrating: 'amber',
+  completed: 'green', failed: 'red', cancelled: 'dim', rate_limited: 'amber',
+  waiting_approval: 'amber',
   Administrator: 'purple', Manager: 'blue', Technician: 'green',
   Viewer: 'dim', critical: 'red', high: 'amber', medium: 'blue', low: 'dim',
 }
