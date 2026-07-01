@@ -1164,7 +1164,7 @@ class WorkspaceStore:
             development_tasks = [
                 task for task in all_tasks
                 if task.get("projectId") == project_id
-                or (project_id == "rackpilot" and not task.get("projectId"))
+                or (project["kind"] == "internal" and not task.get("projectId"))
             ]
             project_items = [dict(item) for item in work_items if item["project_id"] == project_id]
             project_buildings = [dict(building) for building in buildings if building["project_id"] == project_id]

@@ -203,13 +203,15 @@ class WorkspaceStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.create_work_item(DEFAULT_ORGANIZATION_ID, second["id"], {"title": "Wrong link", "buildingId": building["id"]})
 
-    def test_internal_project_rejects_field_operations(self):
+    def test_internal_project_rejects_buildings_but_accepts_development_work(self):
         project = self.store.get_project(DEFAULT_ORGANIZATION_ID, "fieldos-platform")
         self.assertEqual(project["kind"], "internal")
         with self.assertRaises(ValueError):
             self.store.create_building(DEFAULT_ORGANIZATION_ID, project["id"], {"code": "WRONG", "name": "Wrong"})
-        with self.assertRaises(ValueError):
-            self.store.create_work_item(DEFAULT_ORGANIZATION_ID, project["id"], {"title": "Wrong"})
+        item = self.store.create_work_item(DEFAULT_ORGANIZATION_ID, project["id"], {"title": "Development task"})
+        self.assertEqual(item["title"], "Development task")
+        refreshed = self.store.get_project(DEFAULT_ORGANIZATION_ID, project["id"])
+        self.assertIn(item["id"], {value["id"] for value in refreshed["workItems"]})
 
     def test_work_item_update_is_versioned_and_audited(self):
         project = self.store.create_project(DEFAULT_ORGANIZATION_ID, {"code": "FLOW", "name": "Workflow"})

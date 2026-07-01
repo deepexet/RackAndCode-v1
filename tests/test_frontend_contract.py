@@ -38,7 +38,7 @@ class FrontendContractTests(unittest.TestCase):
     def test_desktop_typography_and_tabs_are_stable(self):
         self.assertIn("@media (min-width:681px)",self.css)
         # FS-085: topbar uses CSS grid so nav stays truly centered
-        self.assertIn("grid-template-columns:1fr auto 1fr",self.css)
+        self.assertIn("grid-template-columns:auto 1fr minmax(0,auto)",self.css)
         self.assertIn("justify-self:center",self.css)
         self.assertIn(".header-right { justify-self:end;",self.css)
         self.assertIn(".project-card>p { font-size:15px; line-height:1.6; }",self.css)
