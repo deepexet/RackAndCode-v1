@@ -60,6 +60,38 @@ class FastApiPreviewTests(unittest.TestCase):
                 settings.db_path = original_db_path
                 settings.lan_mode = original_lan_mode
 
+    def test_ai_action_requires_human_approval_and_keeps_coordinator_link(self) -> None:
+        original_db_path = settings.db_path
+        original_lan_mode = settings.lan_mode
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings.db_path = Path(temporary_directory) / "rackpilot.db"
+            settings.lan_mode = True
+            auth._store = None
+            try:
+                with TestClient(app) as client:
+                    login = client.post("/api/v1/auth/dev-login")
+                    self.assertEqual(login.status_code, 200)
+                    proposed = client.post("/api/v1/ai/approvals", json={
+                        "actionType": "task.update",
+                        "actionPayload": {"taskId": "task-1", "status": "done"},
+                        "coordinatorJobId": "job-1",
+                    })
+                    self.assertEqual(proposed.status_code, 201, proposed.text)
+                    approval = proposed.json()["approval"]
+                    self.assertEqual(approval["status"], "pending")
+                    self.assertEqual(approval["coordinator_job_id"], "job-1")
+
+                    reviewed = client.post(
+                        f"/api/v1/ai/approvals/{approval['id']}/review",
+                        json={"decision": "approved", "note": "Verified"},
+                    )
+                    self.assertEqual(reviewed.status_code, 200, reviewed.text)
+                    self.assertEqual(reviewed.json()["approval"]["status"], "approved")
+            finally:
+                auth._store = None
+                settings.db_path = original_db_path
+                settings.lan_mode = original_lan_mode
+
     def test_admin_can_control_coordinator_without_exposing_its_token(self) -> None:
         original_db_path = settings.db_path
         original_lan_mode = settings.lan_mode

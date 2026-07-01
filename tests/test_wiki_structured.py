@@ -58,7 +58,7 @@ class StructuredWikiTests(unittest.TestCase):
         result = MigrationRunner(
             self.store.db_path, Path(__file__).resolve().parents[1] / "server" / "migrations"
         ).apply()
-        self.assertEqual(result.current_version, "106")
+        self.assertEqual(result.current_version, "107")
         self.assertEqual(result.applied, ())
 
     def test_ensure_column_repairs_missing_column_and_accepts_existing_column(self):

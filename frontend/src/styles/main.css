@@ -3083,3 +3083,4 @@ body {
 .wiki-diagram-history div { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--border); }
 .wiki-diagram-history small { white-space:nowrap; }
 .dg-diagram-backlinks { border:0; background:transparent; color:var(--accent); padding:3px 0; cursor:pointer; font-size:.75rem; text-align:left; }
+.approval-list{display:grid;gap:12px;padding:16px}.approval-card{display:grid;gap:10px;padding:16px}.approval-card header,.approval-card footer{display:flex;align-items:center;gap:10px}.approval-card header{justify-content:space-between}.approval-card small{display:block;color:var(--text-dim)}.approval-card pre{max-height:220px;overflow:auto;padding:10px;border-radius:8px;background:var(--surface-raised);white-space:pre-wrap}.approval-card footer{justify-content:flex-end}

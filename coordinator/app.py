@@ -622,6 +622,29 @@ def _autonomous_tick() -> None:
         updated_at = _parse_utc(job.get("updatedAt")) or now
         if now - updated_at < retry_after:
             continue
+        # A subscription limit must not freeze autonomous development. Hand the
+        # preserved worktree to the other coding agent when it is available;
+        # integration will later queue a review for the original agent.
+        if not str(job.get("createdBy", "")).startswith("handoff-review:"):
+            fallback = "codex" if job["assignedAgent"] == "claude" else "claude"
+            fallback_busy = any(
+                candidate["assignedAgent"] == fallback
+                for state in ("queued", "running", "integrating", "review")
+                for candidate in store.list_jobs(state, limit=100)
+            )
+            if not fallback_busy:
+                availability = probe_agent(fallback)
+                if availability.available:
+                    store.reassign_job(job["id"], fallback, actor="autonomous-fallback")
+                    store.append_job_log(
+                        job["id"],
+                        f"Autonomous fallback: {job['assignedAgent']} is unavailable; continuing with {fallback}. "
+                        f"{job['assignedAgent']} review will be required after integration.",
+                        "system",
+                    )
+                    store.transition_job(job["id"], "queued", actor="autonomous-fallback")
+                    scheduler.wake()
+                    break
         store.append_job_log(
             job["id"], f"Autonomous shift: retrying after {shift['retryMinutes']} minute limit cooldown", "system"
         )

@@ -8604,7 +8604,7 @@ Rules:
                 ).fetchall()
         return [self._approval_row(r) for r in rows]
 
-    def review_ai_approval(self, org: str, approval_id: str, reviewer_id: str,
+    def review_ai_approval(self, org: str, approval_id: str, reviewer_id: str | None,
                            decision: str, note: str = "") -> dict[str, Any]:
         """decision must be 'approved' or 'rejected'."""
         if decision not in ("approved", "rejected"):
@@ -8623,7 +8623,7 @@ Rules:
                 (decision, reviewer_id, now, note, approval_id),
             )
             updated = conn.execute("SELECT * FROM ai_approvals WHERE id=?", (approval_id,)).fetchone()
-        self.audit(org, reviewer_id, None, f"ai_approval.{decision}", "ai_approval", approval_id)
+        self.audit(org, reviewer_id or "system", None, f"ai_approval.{decision}", "ai_approval", approval_id)
         return self._approval_row(updated)
 
     @staticmethod
@@ -8643,6 +8643,15 @@ Rules:
                 (org, now),
             )
         return cur.rowcount
+
+    def set_approval_coordinator_job(self, org: str, approval_id: str, job_id: str) -> None:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE ai_approvals SET coordinator_job_id=? WHERE id=? AND organization_id=?",
+                (job_id, approval_id, org),
+            )
+            if cursor.rowcount != 1:
+                raise LookupError("AI approval not found")
 
     # ── Comments & Activity ───────────────────────────────────────────────────
 

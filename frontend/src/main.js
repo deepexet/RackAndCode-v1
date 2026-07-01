@@ -134,6 +134,7 @@ function startApp() {
     .on('docs',         () => import('./modules/docs.js').then(m => m.mount()))
     .on('api',          () => import('./modules/api_metrics.js').then(m => m.mount()))
     .on('admin',        () => import('./modules/admin.js').then(m => m.mount()))
+    .on('ai-approvals', () => import('./modules/ai_approvals.js').then(m => m.mount()))
 
   // Update breadcrumb on route change
   window.addEventListener('rp:route', e => {
@@ -141,6 +142,7 @@ function startApp() {
       overview: 'Overview', projects: 'Projects', inventory: 'Inventory',
       'work-orders': 'Work orders', transport: 'Transport', tech: 'Field', logs: 'Logs',
       wiki: 'Wiki', diagrams: 'Схемы', docs: 'Platform Docs', admin: 'Admin',
+      'ai-approvals': 'AI Approvals',
     }
     const bc = document.getElementById('topbarBreadcrumb')
     if (bc) bc.innerHTML = `<span>${labels[e.detail.route] || e.detail.route}</span>`
