@@ -21,6 +21,7 @@ let _filterCat = 'all'
 let _searchQ = ''
 let _searchResults = null  // null = not searching
 let _searchDebounce = null
+let _diagramLinks = new Map()
 
 // ── Page types ───────────────────────────────────────────────────────────
 const PAGE_TYPES = {
@@ -244,6 +245,8 @@ function renderPageView(p, all) {
         ${p.content ? processSchemaEmbeds(renderMarkdown(p.content)) : emptyState({ icon: 'ti-file-off', title: 'Страница пустая', message: 'Нажмите редактировать' })}
       </div>
 
+      ${p.page_type !== 'schema' ? renderLinkedDiagrams(p.id) : ''}
+
       ${renderPageDocLinks(meta, p.id)}
 
       <!-- Rating -->
@@ -274,6 +277,88 @@ function renderPageView(p, all) {
         ${all[idx+1] ? `<button class="wiki-nav-btn" data-id="${esc(all[idx+1].id)}">${esc(all[idx+1].title)} <i class="ti ti-arrow-right"></i></button>` : '<span></span>'}
       </div>
     </div>`
+}
+
+function diagramPreview(link) {
+  if (link.state === 'deleted') return '<div class="wiki-linked-diagram-missing"><i class="ti ti-trash"></i></div>'
+  try {
+    const meta = typeof link.metadata === 'string' ? JSON.parse(link.metadata) : link.metadata
+    const diagram = typeof meta.diagramJson === 'string' ? JSON.parse(meta.diagramJson) : meta.diagramJson
+    const components = Array.isArray(diagram?.components) ? diagram.components : []
+    if (!components.length) throw new Error('empty diagram')
+    const coordinate = value => Number.isFinite(Number(value)) ? Number(value) : 0
+    const points = components.map(c => ({ x: coordinate(c.x), y: coordinate(c.y) }))
+    const minX = Math.min(...points.map(p => p.x)), minY = Math.min(...points.map(p => p.y))
+    const maxX = Math.max(...points.map(p => p.x + 160)), maxY = Math.max(...points.map(p => p.y + 120))
+    const scale = Math.min(96 / Math.max(maxX - minX, 1), 44 / Math.max(maxY - minY, 1))
+    const boxes = points.map(p => `<rect x="${4 + (p.x - minX) * scale}" y="${4 + (p.y - minY) * scale}" width="${Math.max(8, 160 * scale)}" height="${Math.max(6, 120 * scale)}" rx="2"/>`).join('')
+    return `<div class="wiki-linked-diagram-preview"><svg viewBox="0 0 104 52" aria-label="Предпросмотр схемы"><g>${boxes}</g></svg><span>${components.length} компонентов</span></div>`
+  } catch { return '<div class="wiki-linked-diagram-preview"><i class="ti ti-circuit-switchboard"></i></div>' }
+}
+
+function renderLinkedDiagrams(pageId) {
+  const links = _diagramLinks.get(pageId)
+  return `<section class="wiki-linked-diagrams">
+    <div class="wiki-linked-diagrams-head">
+      <h3><i class="ti ti-circuit-switchboard"></i> Связанные схемы</h3>
+      <button class="ui-btn ui-btn--sm" data-action="manage-diagrams" data-id="${esc(pageId)}"><i class="ti ti-link"></i> Управлять</button>
+    </div>
+    ${links === undefined ? '<div class="wiki-linked-loading">Загрузка…</div>' : links.length ? `
+      <div class="wiki-linked-diagram-grid">${links.map(link => `
+        <article class="wiki-linked-diagram ${link.state === 'deleted' ? 'is-deleted' : ''}">
+          ${diagramPreview(link)}
+          <div class="wiki-linked-diagram-info">
+            <strong>${esc(link.title || 'Без названия')}</strong>
+            <span>${link.state === 'deleted' ? 'Схема удалена · ссылка сохранена' : 'Связанная схема'}</span>
+          </div>
+          ${link.state === 'active' ? `<button class="wiki-schema-open-btn" data-diagram-id="${esc(link.diagram_id)}"><i class="ti ti-arrow-right"></i> Открыть</button>` : ''}
+        </article>`).join('')}</div>` : '<div class="wiki-linked-empty">Схемы ещё не связаны с этой страницей.</div>'}
+  </section>`
+}
+
+async function loadDiagramLinks(pageId) {
+  try {
+    const data = await apiJSON(`/api/v1/wiki/${pageId}/diagrams`)
+    _diagramLinks.set(pageId, data.links || [])
+    if (_selectedId === pageId) render()
+  } catch { _diagramLinks.set(pageId, []) }
+}
+
+async function openDiagramPicker(pageId) {
+  const [availableData, linkedData, historyData] = await Promise.all([
+    apiJSON('/api/v1/wiki/diagrams'),
+    apiJSON(`/api/v1/wiki/${pageId}/diagrams`),
+    apiJSON(`/api/v1/wiki/${pageId}/diagrams/history`),
+  ])
+  const linked = new Map((linkedData.links || []).map(l => [l.diagram_id, l]))
+  const diagrams = availableData.diagrams || []
+  const { el, close } = openModal({
+    title: 'Связать существующие схемы', maxWidth: '720px',
+    body: `<div class="wiki-diagram-picker-list">${diagrams.length ? diagrams.map(d => `
+      <label class="wiki-diagram-picker-item">
+        <input type="checkbox" value="${esc(d.id)}" ${linked.get(d.id)?.state === 'active' ? 'checked' : ''}>
+        <i class="ti ti-circuit-switchboard"></i>
+        <span><strong>${esc(d.title)}</strong><small>Обновлено ${timeAgo(d.updated_at)}</small></span>
+      </label>`).join('') : '<div class="wiki-linked-empty">Нет доступных схем.</div>'}</div>
+      ${(linkedData.links || []).some(l => l.state === 'deleted') ? '<p class="wiki-picker-note"><i class="ti ti-history"></i> Удалённые схемы остаются в карточке страницы как восстанавливаемые ссылки.</p>' : ''}
+      ${(historyData.events || []).length ? `<details class="wiki-diagram-history"><summary>История связей</summary>${historyData.events.slice(0, 20).map(event => `
+        <div><span>${esc({ linked: 'Связана', unlinked: 'Отвязана', diagram_deleted: 'Удалена', restored: 'Восстановлена' }[event.action] || event.action)}: ${esc(event.diagram_title_snapshot)}</span><small>${timeAgo(event.created_at)}${event.actor_id ? ` · ${esc(event.actor_id)}` : ''}</small></div>`).join('')}</details>` : ''}`,
+    footer: '<button class="ui-btn ui-btn--primary" id="wiki-diagram-save">Сохранить связи</button><button class="ui-btn" id="wiki-diagram-cancel">Отмена</button>',
+  })
+  document.getElementById('wiki-diagram-cancel')?.addEventListener('click', close)
+  document.getElementById('wiki-diagram-save')?.addEventListener('click', async () => {
+    const selected = new Set([...el.querySelectorAll('input:checked')].map(x => x.value))
+    const activeLinked = new Set([...linked.values()].filter(x => x.state === 'active').map(x => x.diagram_id))
+    await Promise.all([
+      ...[...selected].filter(id => !activeLinked.has(id)).map(diagramId => apiJSON(`/api/v1/wiki/${pageId}/diagrams`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ diagramId }),
+      })),
+      ...[...activeLinked].filter(id => !selected.has(id)).map(id => apiJSON(`/api/v1/wiki/${pageId}/diagrams/${id}/delete`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      })),
+    ])
+    close(); await loadDiagramLinks(pageId); window.toast?.('Связи схем обновлены', 'success')
+  })
 }
 
 function renderPageDocLinks(meta, pageId) {
@@ -836,6 +921,7 @@ function bindEvents() {
       // Track view
       apiPost(`/api/v1/wiki/${_selectedId}/view`, {}).catch(() => {})
       render()
+      if (!_diagramLinks.has(_selectedId)) loadDiagramLinks(_selectedId)
     })
   })
 
@@ -862,6 +948,10 @@ function bindEvents() {
       window.toast?.('Удалено', 'info')
       await loadPages(); render()
     })
+  )
+
+  _el.querySelectorAll('[data-action="manage-diagrams"]').forEach(btn =>
+    btn.addEventListener('click', () => openDiagramPicker(btn.dataset.id).catch(err => window.toast?.(err.message, 'error')))
   )
 
   // Rating
@@ -1093,10 +1183,16 @@ export async function mount() {
   _filterCat = 'all'
   _searchResults = null
   _analytics = null
+  _diagramLinks = new Map()
+  if (window._rpPendingWikiId) {
+    _selectedId = window._rpPendingWikiId
+    window._rpPendingWikiId = null
+  }
 
   try {
     await loadPages()
     render()
+    if (_selectedId) loadDiagramLinks(_selectedId)
   } catch (err) {
     _el.innerHTML = emptyState({ icon: 'ti-alert-circle', title: 'Ошибка', message: err.message })
   }

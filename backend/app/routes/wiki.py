@@ -5,7 +5,7 @@ import json as _json
 import re as _re
 from typing import Any
 from fastapi import APIRouter, HTTPException
-from app.middleware.auth import Auth
+from app.middleware.auth import Auth, require_permission
 
 router = APIRouter()
 
@@ -49,10 +49,17 @@ async def list_wiki(ctx: Auth, category: str | None = None):
 
 @router.post("")
 async def create_wiki_page(body: dict[str, Any], ctx: Auth):
+    require_permission(ctx, "projectManage")
     body.pop("projectId", None)
     body.pop("project_id", None)
     page = ctx.store.create_wiki_page(ctx.org, body, actor=ctx.user_id)
     return {"page": page}
+
+
+@router.get("/diagrams")
+async def list_diagrams(ctx: Auth):
+    require_permission(ctx, "projectRead")
+    return {"diagrams": ctx.store.list_wiki_diagrams(ctx.org)}
 
 
 # ── AI diagram generation (must be before /{page_id} to avoid route shadowing)
@@ -85,8 +92,54 @@ async def get_wiki_page(page_id: str, ctx: Auth):
     return {"page": page}
 
 
+@router.get("/{page_id}/diagrams")
+async def list_page_diagrams(page_id: str, ctx: Auth):
+    require_permission(ctx, "projectRead")
+    if not ctx.store.get_wiki_page(ctx.org, page_id):
+        raise HTTPException(404, "Page not found")
+    return {"links": ctx.store.list_wiki_page_diagram_links(ctx.org, page_id)}
+
+
+@router.post("/{page_id}/diagrams")
+async def link_page_diagram(page_id: str, body: dict[str, Any], ctx: Auth):
+    require_permission(ctx, "projectManage")
+    diagram_id = str(body.get("diagramId", "")).strip()
+    if not diagram_id:
+        raise HTTPException(400, "diagramId required")
+    link = ctx.store.link_wiki_diagram(ctx.org, page_id, diagram_id, actor=ctx.user_id or '')
+    if not link:
+        raise HTTPException(404, "Wiki page or diagram not found")
+    return {"link": link}
+
+
+@router.post("/{page_id}/diagrams/{diagram_id}/delete")
+async def unlink_page_diagram(page_id: str, diagram_id: str, ctx: Auth):
+    require_permission(ctx, "projectManage")
+    if not ctx.store.unlink_wiki_diagram(ctx.org, page_id, diagram_id, actor=ctx.user_id or ''):
+        raise HTTPException(404, "Diagram link not found")
+    return {"ok": True}
+
+
+@router.get("/{page_id}/diagrams/history")
+async def page_diagram_history(page_id: str, ctx: Auth):
+    require_permission(ctx, "projectRead")
+    if not ctx.store.get_wiki_page(ctx.org, page_id):
+        raise HTTPException(404, "Page not found")
+    return {"events": ctx.store.list_wiki_diagram_history(ctx.org, page_id)}
+
+
+@router.get("/diagrams/{diagram_id}/backlinks")
+async def diagram_backlinks(diagram_id: str, ctx: Auth):
+    require_permission(ctx, "projectRead")
+    diagram = ctx.store.get_wiki_page(ctx.org, diagram_id)
+    if not diagram or diagram.get("page_type") != "schema":
+        raise HTTPException(404, "Diagram not found")
+    return {"pages": ctx.store.list_diagram_wiki_backlinks(ctx.org, diagram_id)}
+
+
 @router.post("/{page_id}")
 async def update_wiki_page(page_id: str, body: dict[str, Any], ctx: Auth):
+    require_permission(ctx, "projectManage")
     page = ctx.store.update_wiki_page(ctx.org, page_id, body, actor=ctx.user_id)
     if not page:
         raise HTTPException(404, "Page not found")
@@ -95,6 +148,7 @@ async def update_wiki_page(page_id: str, body: dict[str, Any], ctx: Auth):
 
 @router.post("/{page_id}/delete")
 async def delete_wiki_page(page_id: str, ctx: Auth):
+    require_permission(ctx, "projectManage")
     ctx.store.delete_wiki_page(ctx.org, page_id, actor=ctx.user_id)
     return {"ok": True}
 
@@ -110,6 +164,7 @@ async def list_project_wiki(project_id: str, ctx: Auth, category: str | None = N
 
 @router.post("/projects/{project_id}")
 async def create_project_wiki_page(project_id: str, body: dict[str, Any], ctx: Auth):
+    require_permission(ctx, "projectManage")
     body["projectId"] = project_id
     page = ctx.store.create_wiki_page(ctx.org, body, actor=ctx.user_id)
     return {"page": page}

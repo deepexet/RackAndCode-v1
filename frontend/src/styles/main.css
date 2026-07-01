@@ -3061,3 +3061,25 @@ body {
   font-size: .9rem;
   justify-content: center;
 }
+
+/* Wiki ↔ diagram relations */
+.wiki-linked-diagrams { margin: 28px 0; border-top: 1px solid var(--border); padding-top: 20px; }
+.wiki-linked-diagrams-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.wiki-linked-diagrams-head h3 { margin:0; display:flex; align-items:center; gap:8px; }
+.wiki-linked-diagram-grid, .wiki-diagram-picker-list { display:grid; gap:10px; }
+.wiki-linked-diagram { display:flex; align-items:center; gap:12px; border:1px solid var(--border); border-radius:10px; padding:12px; background:var(--card-bg); }
+.wiki-linked-diagram.is-deleted { border-style:dashed; opacity:.75; }
+.wiki-linked-diagram-preview, .wiki-linked-diagram-missing { min-width:110px; height:58px; border-radius:7px; background:var(--bg-2); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; color:var(--text-muted); font-size:.72rem; }
+.wiki-linked-diagram-preview i, .wiki-linked-diagram-missing i { font-size:1.4rem; }
+.wiki-linked-diagram-preview svg { width:104px; height:38px; }
+.wiki-linked-diagram-preview svg rect { fill:var(--accent); opacity:.68; stroke:var(--text-primary); stroke-width:.5; }
+.wiki-linked-diagram-info { flex:1; display:flex; flex-direction:column; gap:3px; }
+.wiki-linked-diagram-info span, .wiki-diagram-picker-item small, .wiki-linked-empty, .wiki-linked-loading, .wiki-picker-note { color:var(--text-muted); font-size:.8rem; }
+.wiki-diagram-picker-item { display:flex; align-items:center; gap:12px; width:100%; border:1px solid var(--border); border-radius:9px; padding:12px; background:var(--surface); color:var(--text-primary); text-align:left; cursor:pointer; }
+.wiki-diagram-picker-item span { display:flex; flex-direction:column; gap:3px; }
+.wiki-picker-note { margin:14px 0 0; }
+.wiki-diagram-history { margin-top:14px; color:var(--text-muted); font-size:.82rem; }
+.wiki-diagram-history summary { cursor:pointer; color:var(--text-primary); }
+.wiki-diagram-history div { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--border); }
+.wiki-diagram-history small { white-space:nowrap; }
+.dg-diagram-backlinks { border:0; background:transparent; color:var(--accent); padding:3px 0; cursor:pointer; font-size:.75rem; text-align:left; }

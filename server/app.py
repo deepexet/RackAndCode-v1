@@ -7218,6 +7218,133 @@ Rules:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_wiki_diagrams(self, org: str) -> list[dict[str, Any]]:
+        """Return linkable diagram pages for a tenant."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT p.*, COUNT(l.id) AS backlink_count
+                   FROM wiki_pages p LEFT JOIN wiki_diagram_links l
+                     ON l.organization_id=p.organization_id AND l.diagram_id=p.id
+                    AND l.state='active'
+                   WHERE p.organization_id=? AND p.page_type='schema'
+                   GROUP BY p.id ORDER BY p.updated_at DESC""",
+                (org,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_wiki_page_diagram_links(self, org: str, page_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT l.*, p.title AS diagram_title, p.metadata AS diagram_metadata,
+                          p.updated_at AS diagram_updated_at
+                   FROM wiki_diagram_links l
+                   LEFT JOIN wiki_pages p ON p.id=l.diagram_id
+                     AND p.organization_id=l.organization_id AND p.page_type='schema'
+                   WHERE l.organization_id=? AND l.wiki_page_id=?
+                   ORDER BY l.created_at""",
+                (org, page_id),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            diagram_title = item.pop("diagram_title")
+            diagram_metadata = item.pop("diagram_metadata")
+            if item["state"] == "active" and item.get("diagram_updated_at"):
+                item["title"] = diagram_title
+                item["metadata"] = diagram_metadata
+            else:
+                item["title"] = item["diagram_title_snapshot"]
+                item["metadata"] = item["diagram_metadata_snapshot"]
+            result.append(item)
+        return result
+
+    def list_diagram_wiki_backlinks(self, org: str, diagram_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT l.*, p.title AS wiki_title, p.updated_at AS wiki_updated_at
+                   FROM wiki_diagram_links l
+                   JOIN wiki_pages p ON p.id=l.wiki_page_id AND p.organization_id=l.organization_id
+                   WHERE l.organization_id=? AND l.diagram_id=? AND l.state='active'
+                   ORDER BY p.title""",
+                (org, diagram_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def link_wiki_diagram(self, org: str, page_id: str, diagram_id: str,
+                          actor: str = '') -> dict[str, Any] | None:
+        import uuid
+        page = self.get_wiki_page(org, page_id)
+        diagram = self.get_wiki_page(org, diagram_id)
+        if not page or not diagram or diagram.get('page_type') != 'schema' or page_id == diagram_id:
+            return None
+        now = utc_now()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT * FROM wiki_diagram_links WHERE organization_id=? AND wiki_page_id=? AND diagram_id=?",
+                (org, page_id, diagram_id),
+            ).fetchone()
+            # Linking is idempotent so a replayed offline mutation does not
+            # manufacture duplicate audit events.
+            if existing and existing['state'] == 'active':
+                return next((x for x in self.list_wiki_page_diagram_links(org, page_id)
+                             if x['diagram_id'] == diagram_id), None)
+            link_id = existing['id'] if existing else str(uuid.uuid4())
+            action = 'restored' if existing and existing['state'] == 'deleted' else 'linked'
+            conn.execute(
+                """INSERT INTO wiki_diagram_links
+                   (id,organization_id,wiki_page_id,diagram_id,diagram_title_snapshot,
+                    diagram_metadata_snapshot,state,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,'active',?,?,?)
+                   ON CONFLICT(organization_id,wiki_page_id,diagram_id) DO UPDATE SET
+                     diagram_title_snapshot=excluded.diagram_title_snapshot,
+                     diagram_metadata_snapshot=excluded.diagram_metadata_snapshot,
+                     state='active',updated_at=excluded.updated_at""",
+                (link_id, org, page_id, diagram_id, diagram['title'], diagram.get('metadata') or '{}',
+                 actor, existing['created_at'] if existing else now, now),
+            )
+            conn.execute(
+                """INSERT INTO wiki_diagram_link_history
+                   (id,organization_id,link_id,wiki_page_id,diagram_id,action,
+                    diagram_title_snapshot,diagram_metadata_snapshot,actor_id,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), org, link_id, page_id, diagram_id, action,
+                 diagram['title'], diagram.get('metadata') or '{}', actor, now),
+            )
+        self.audit(org, actor, None, f'wiki.diagram_{action}', 'wiki_page', page_id)
+        return next((x for x in self.list_wiki_page_diagram_links(org, page_id)
+                     if x['diagram_id'] == diagram_id), None)
+
+    def unlink_wiki_diagram(self, org: str, page_id: str, diagram_id: str,
+                            actor: str = '') -> bool:
+        import uuid
+        now = utc_now()
+        with self._connect() as conn:
+            link = conn.execute(
+                "SELECT * FROM wiki_diagram_links WHERE organization_id=? AND wiki_page_id=? AND diagram_id=?",
+                (org, page_id, diagram_id),
+            ).fetchone()
+            if not link:
+                return False
+            conn.execute(
+                """INSERT INTO wiki_diagram_link_history
+                   (id,organization_id,link_id,wiki_page_id,diagram_id,action,
+                    diagram_title_snapshot,diagram_metadata_snapshot,actor_id,created_at)
+                   VALUES(?,?,?,?,?,'unlinked',?,?,?,?)""",
+                (str(uuid.uuid4()), org, link['id'], page_id, diagram_id,
+                 link['diagram_title_snapshot'], link['diagram_metadata_snapshot'], actor, now),
+            )
+            conn.execute("DELETE FROM wiki_diagram_links WHERE id=? AND organization_id=?", (link['id'], org))
+        self.audit(org, actor, None, 'wiki.diagram_unlinked', 'wiki_page', page_id)
+        return True
+
+    def list_wiki_diagram_history(self, org: str, page_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM wiki_diagram_link_history WHERE organization_id=? AND wiki_page_id=? ORDER BY created_at DESC",
+                (org, page_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def create_wiki_page(self, org: str, data: dict[str, Any], actor: str = '') -> dict[str, Any]:
         import uuid, json as _json
         from datetime import datetime, timezone
@@ -7291,7 +7418,30 @@ Rules:
         return self.get_wiki_page(org, page_id)
 
     def delete_wiki_page(self, org: str, page_id: str, actor: str = '') -> None:
+        import uuid
+        page = self.get_wiki_page(org, page_id)
         with self._connect() as conn:
+            if page and page.get('page_type') == 'schema':
+                now = utc_now()
+                links = conn.execute(
+                    "SELECT * FROM wiki_diagram_links WHERE organization_id=? AND diagram_id=?",
+                    (org, page_id),
+                ).fetchall()
+                for link in links:
+                    conn.execute(
+                        """INSERT INTO wiki_diagram_link_history
+                           (id,organization_id,link_id,wiki_page_id,diagram_id,action,
+                            diagram_title_snapshot,diagram_metadata_snapshot,actor_id,created_at)
+                           VALUES(?,?,?,?,?,'diagram_deleted',?,?,?,?)""",
+                        (str(uuid.uuid4()), org, link['id'], link['wiki_page_id'], page_id,
+                         page['title'], page.get('metadata') or '{}', actor, now),
+                    )
+                conn.execute(
+                    """UPDATE wiki_diagram_links SET state='deleted',diagram_title_snapshot=?,
+                       diagram_metadata_snapshot=?,updated_at=?
+                       WHERE organization_id=? AND diagram_id=?""",
+                    (page['title'], page.get('metadata') or '{}', now, org, page_id),
+                )
             conn.execute("DELETE FROM wiki_pages WHERE id=? AND organization_id=?", (page_id, org))
             conn.execute("DELETE FROM wiki_fts WHERE page_id=? AND organization_id=?", (page_id, org))
         self.audit(org, actor, None, 'wiki.delete', 'wiki_page', page_id)

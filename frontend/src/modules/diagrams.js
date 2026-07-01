@@ -7,7 +7,7 @@
  */
 
 import { apiJSON, apiPost, apiFetch } from '../core/api.js'
-import { esc, loadingSpinner, emptyState } from '../components/ui.js'
+import { esc, loadingSpinner, emptyState, openModal } from '../components/ui.js'
 
 // ── Grid & Layout ──────────────────────────────────────────────────────────
 const GRID      = 20    // snap size px
@@ -337,6 +337,7 @@ let _wireStart = null     // { compId, termId, x, y, side }
 let _wirePreview = null   // current mouse pos while drawing wire
 let _selected  = null     // { type:'comp'|'wire'|'label', id }
 let _diagrams  = []       // list from API
+let _diagramBacklinks = new Map()
 let _editId    = null     // currently open diagram id
 
 let _diagram = newDiagram()
@@ -2381,8 +2382,8 @@ async function saveDiagram() {
 
 async function loadDiagramList() {
   try {
-    const d = await apiJSON('/api/v1/wiki')
-    _diagrams = (d.pages || []).filter(p => p.page_type === 'schema')
+    const d = await apiJSON('/api/v1/wiki/diagrams')
+    _diagrams = d.diagrams || []
   } catch {}
 }
 
@@ -2460,7 +2461,8 @@ function renderDiagramList() {
         <p>Нет сохранённых схем. Создайте первую!</p>
        </div>`
     : _diagrams.map(d => {
-        const thumb = makeDiagramThumb(d)
+      const thumb = makeDiagramThumb(d)
+      const backlinkCount = d.backlink_count || 0
         return `
         <div class="dg-diagram-card" data-id="${esc(d.id)}">
           <div class="dg-diagram-card-thumb">
@@ -2469,6 +2471,7 @@ function renderDiagramList() {
           <div class="dg-diagram-card-info">
             <div class="dg-diagram-card-name">${esc(d.title)}</div>
             <div class="dg-diagram-card-meta">${esc(d.updated_by||'')} · ${d.updated_at?.slice(0,10)||''}</div>
+            ${backlinkCount ? `<button class="dg-diagram-backlinks" data-backlink-id="${esc(d.id)}"><i class="ti ti-notebook"></i> ${backlinkCount} Wiki</button>` : ''}
           </div>
           <button class="dg-diagram-open" data-id="${esc(d.id)}"><i class="ti ti-arrow-right"></i></button>
         </div>`}).join('')
@@ -2480,6 +2483,32 @@ function renderDiagramList() {
       if (page) openDiagram(page)
     })
   })
+  list.querySelectorAll('[data-backlink-id]').forEach(btn => btn.addEventListener('click', async e => {
+    e.stopPropagation()
+    let pages = _diagramBacklinks.get(btn.dataset.backlinkId)
+    if (!pages) {
+      try { pages = (await apiJSON(`/api/v1/wiki/diagrams/${btn.dataset.backlinkId}/backlinks`)).pages || [] }
+      catch { pages = [] }
+      _diagramBacklinks.set(btn.dataset.backlinkId, pages)
+    }
+    if (!pages.length) return
+    const { el, close } = openModal({
+      title: 'Страницы Wiki с этой схемой',
+      maxWidth: '560px',
+      body: `<div class="wiki-diagram-picker-list">${pages.map(page => `
+        <button class="wiki-diagram-picker-item" data-wiki-page-id="${esc(page.wiki_page_id)}">
+          <i class="ti ti-notebook"></i>
+          <span><strong>${esc(page.wiki_title || 'Без названия')}</strong><small>Открыть страницу</small></span>
+        </button>`).join('')}</div>`,
+      footer: '<button class="ui-btn" data-close-backlinks>Закрыть</button>',
+    })
+    el.querySelector('[data-close-backlinks]')?.addEventListener('click', close)
+    el.querySelectorAll('[data-wiki-page-id]').forEach(pageBtn => pageBtn.addEventListener('click', () => {
+      window._rpPendingWikiId = pageBtn.dataset.wikiPageId
+      close()
+      window.router?.go('wiki')
+    }))
+  }))
 }
 
 function renderLibraryCustomDefs() {
