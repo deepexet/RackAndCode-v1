@@ -37,7 +37,7 @@ async function render() {
 }
 
 export async function mount() {
-  root = document.getElementById('main-content')
+  root = document.getElementById('mainContent')
   root.innerHTML = `${toolbar({ title: 'AI Approvals', subtitle: 'Human control for AI-proposed platform changes' })}<div id="approvalTabs"></div><section id="approvalList" class="approval-list"></section>`
   root.onclick = async event => {
     const tab = event.target.closest('[data-tab]')
