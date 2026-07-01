@@ -11,6 +11,7 @@ import {
 let _el = null
 let _tab = 'settings'
 let _data = {}
+let _agentRefreshTimer = null
 
 const TABS = [
   { id: 'settings',  label: 'Настройки',  icon: 'ti-settings' },
@@ -261,6 +262,9 @@ function renderAgents(d) {
   const shiftReport = autonomous.report || {}
   const running = jobs.filter(j => ['running', 'integrating'].includes(j.status)).length
   const review = jobs.filter(j => ['review', 'waiting_approval'].includes(j.status)).length
+  const activeJobs = jobs.filter(j => ['queued', 'running', 'review', 'waiting_approval', 'integrating'].includes(j.status))
+  const waitingJobs = jobs.filter(j => j.status === 'rate_limited')
+  const orderedJobs = [...activeJobs, ...waitingJobs, ...jobs.filter(j => !activeJobs.includes(j) && !waitingJobs.includes(j))]
   const controlsReady = Boolean(health.controlConfigured)
   const localAgent = agents.find(agent => agent.agent === 'local')
   const agentRole = agent => ({
@@ -343,6 +347,21 @@ function renderAgents(d) {
           <span>${esc((shiftReport.counts || {}).failed || 0)} need attention</span>
         </div>
       </div>
+      <div class="adm-section" style="margin-top:18px">
+        <div class="adm-section-header"><h3><i class="ti ti-activity"></i> Active work <span class="ui-count">${activeJobs.length}</span></h3><span class="ui-dim">Live · refreshes every 5 seconds</span></div>
+        ${table({
+          columns: [
+            { label: 'Agent', render: r => `<strong>${esc(r.assignedAgent)}</strong>` },
+            { label: 'Task', render: r => `<strong>${esc(r.title)}</strong><br><span class="ui-mono ui-dim">${esc(r.branchName)}</span>` },
+            { label: 'Status', render: r => badge(r.status) },
+            { label: 'Attempt', render: r => `${esc(r.attempt || 0)} · max ${esc(r.maxTurns || '—')} turns` },
+            { label: 'Actions', render: jobActions },
+          ],
+          rows: activeJobs,
+          emptyText: 'No agent work is currently running or queued', emptyIcon: 'ti-player-pause',
+        })}
+        ${waitingJobs.length ? `<p class="ui-dim" style="margin-top:10px">Waiting for subscription limit: ${waitingJobs.map(job => `${esc(job.assignedAgent)} · ${esc(job.title)}`).join(' | ')}</p>` : ''}
+      </div>
       <div class="adm-section-header" style="margin-top:18px"><h3>Installed agents</h3></div>
       ${table({
         columns: [
@@ -364,7 +383,7 @@ function renderAgents(d) {
           { label: 'Created', render: r => timeAgo(r.createdAt) },
           { label: 'Actions', render: jobActions },
         ],
-        rows: jobs,
+        rows: orderedJobs,
         emptyText: 'No coordinator jobs yet', emptyIcon: 'ti-list-check',
       })}
       <p class="ui-dim" style="margin-top:14px;font-size:12px">
@@ -751,6 +770,7 @@ function render() {
 async function switchTab() {
   const body = document.getElementById('adm-body')
   if (!body) return
+  if (_tab !== 'agents') stopAgentRefresh()
   _el.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === _tab))
   body.innerHTML = loadingSpinner()
   try {
@@ -767,9 +787,32 @@ async function switchTab() {
     }
     body.innerHTML = html
     bindTabEvents()
+    if (_tab === 'agents') startAgentRefresh()
   } catch (err) {
     body.innerHTML = `<div class="ui-empty"><i class="ti ti-alert-circle"></i><span>${esc(err.message)}</span></div>`
   }
+}
+
+function stopAgentRefresh() {
+  if (_agentRefreshTimer) clearInterval(_agentRefreshTimer)
+  _agentRefreshTimer = null
+}
+
+function startAgentRefresh() {
+  if (_agentRefreshTimer) return
+  _agentRefreshTimer = setInterval(async () => {
+    if (_tab !== 'agents' || document.hidden) return
+    const body = document.getElementById('adm-body')
+    if (!body || document.querySelector('.ui-modal-overlay')) return
+    try {
+      const data = await apiJSON('/api/v1/admin/coordinator')
+      _data.agents = data
+      const scrollY = window.scrollY
+      body.innerHTML = renderAgents(data)
+      bindTabEvents()
+      window.scrollTo({ top: scrollY })
+    } catch {}
+  }, 5000)
 }
 
 function bindSystemRefresh() {
@@ -885,4 +928,4 @@ export async function mount() {
   return unmount
 }
 
-export function unmount() { _el = null }
+export function unmount() { stopAgentRefresh(); _el = null }
