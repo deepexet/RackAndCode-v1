@@ -162,6 +162,8 @@ Local AI is the default route and therefore consumes no Codex or Claude subscrip
 
 Explicit natural-language instructions such as “delegate this to Codex and start” are also executable authorization. They create a real queued job and return its job ID and status; a follow-up such as “let it start” can inherit the agent from the recent conversation. Scope-violation requests route to recovery of the existing failed worktree rather than generating a duplicate planning task. Advice-only local responses are post-checked: if the small model claims that it queued or delegated work without a backend action, the response is labelled as not executed.
 
+Numbered or bulleted next actions in an advice response are persisted as task proposal cards under that chat message. Each card shows the selected agent and repository scope, has an idempotent Play control, and records the resulting coordinator job ID. `Queue all` schedules every still-proposed card from that message in order; already queued cards cannot be duplicated. Proposals are tenant/user scoped and synchronize across devices with the rest of the conversation.
+
 The local assistant receives a fresh bounded machine snapshot with CPU, memory, disk, battery, available temperature sensor and macOS thermal state. This context is distinct from agent scheduler load, allowing follow-up questions such as “what is the load on the local Mac?” to return measured values rather than queue activity. System samples are retained for 24 hours at one-minute resolution; the sidebar displays a six-hour temperature sparkline. On Apple Silicon without a privileged SMC helper, the temperature is explicitly labelled as the available virtual/battery sensor rather than misrepresented as CPU die temperature.
 
 ## Live activity

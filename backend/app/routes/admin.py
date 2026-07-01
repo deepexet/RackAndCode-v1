@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -13,6 +14,7 @@ from app.core.config import settings
 from app.middleware.auth import Auth
 
 router = APIRouter()
+_proposal_queue_lock = asyncio.Lock()
 
 
 def _require_authenticated_admin(ctx: Auth) -> None:
@@ -759,11 +761,94 @@ def _natural_delegation(message: str, history: list[dict[str, Any]]) -> tuple[st
     return (agent, message) if agent else None
 
 
+def _extract_task_proposals(answer: str, user_message: str) -> list[dict[str, Any]]:
+    lowered = answer.lower()
+    if not any(term in lowered for term in ("next action", "следующ", "задач", "действ", "рекоменду")):
+        return []
+    titles: list[str] = []
+    for raw_line in answer.splitlines():
+        line = raw_line.strip()
+        match = re.match(r"^(?:#{1,4}\s*)?(?:\d+[.)]\s*|[-*]\s+)(.+)$", line)
+        if not match:
+            continue
+        title = re.sub(r"[*_`#]", "", match.group(1)).strip().rstrip(":")
+        title = re.sub(r"^(?:цель|действие|action|goal)\s*:\s*", "", title, flags=re.I)
+        if 5 <= len(title) <= 180 and title.lower() not in {value.lower() for value in titles}:
+            titles.append(title)
+        if len(titles) >= 8:
+            break
+    proposals: list[dict[str, Any]] = []
+    for title in titles:
+        recommendation = _recommend_work_item_agent({
+            "title": title, "description": f"{user_message}\n{title}", "labels": [],
+        })
+        proposals.append({
+            "title": title,
+            "instructions": (
+                f"Implement the approved Coordinator Chat proposal: {title}\n\n"
+                f"OWNER CONTEXT:\n{user_message}\n\nRun focused verification and stop for review."
+            ),
+            "assignedAgent": recommendation["agent"],
+            "scopePaths": _work_item_scope({"title": title, "description": user_message, "labels": []}),
+        })
+    return proposals
+
+
+async def _queue_chat_proposal(ctx: Any, proposal: dict[str, Any]) -> dict[str, Any]:
+    if proposal.get("status") != "proposed":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Proposal is already queued")
+    agent = proposal["assignedAgent"]
+    created = await _coordinator("/api/v1/jobs", method="POST", body={
+        "title": f"Chat proposal: {proposal['title'][:120]}",
+        "instructions": proposal["instructions"], "assignedAgent": agent,
+        "autoWorktree": agent != "local", "baseRef": settings.coordinator_base_ref,
+        "scopePaths": proposal.get("scopePaths", []), "requiresReview": agent != "local",
+        "maxTurns": 1 if agent == "local" else 14,
+        "createdBy": f"chat-proposal:{ctx.org}:{ctx.user_id}:{proposal['id']}",
+    })
+    job = created.get("job", {})
+    updated = ctx.store.queue_coordinator_chat_proposal(ctx.org, ctx.user_id, proposal["id"], job["id"])
+    return {"proposal": updated, "job": job}
+
+
 @router.get("/coordinator/chat")
 async def coordinator_chat_history(ctx: Auth, limit: int = 100):
     _require_authenticated_admin(ctx)
     await _sync_chat_agent_results(ctx)
-    return {"messages": ctx.store.list_coordinator_chat_messages(ctx.org, ctx.user_id, limit)}
+    return {
+        "messages": ctx.store.list_coordinator_chat_messages(ctx.org, ctx.user_id, limit),
+        "proposals": ctx.store.list_coordinator_chat_proposals(ctx.org, ctx.user_id),
+    }
+
+
+@router.post("/coordinator/chat/proposals/{proposal_id}/queue")
+async def queue_coordinator_chat_proposal(proposal_id: str, ctx: Auth):
+    _require_authenticated_admin(ctx)
+    async with _proposal_queue_lock:
+        proposal = next((row for row in ctx.store.list_coordinator_chat_proposals(ctx.org, ctx.user_id)
+                         if row["id"] == proposal_id), None)
+        if not proposal:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Proposal not found")
+        result = await _queue_chat_proposal(ctx, proposal)
+    ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.chat.proposal.queue", "chat_proposal", proposal_id)
+    return result
+
+
+@router.post("/coordinator/chat/proposals/queue-all")
+async def queue_all_coordinator_chat_proposals(body: dict[str, Any], ctx: Auth):
+    _require_authenticated_admin(ctx)
+    message_id = str(body.get("messageId", ""))
+    queued: list[dict[str, Any]] = []
+    async with _proposal_queue_lock:
+        proposals = [row for row in ctx.store.list_coordinator_chat_proposals(ctx.org, ctx.user_id)
+                     if row["messageId"] == message_id and row["status"] == "proposed"]
+        for proposal in proposals[:10]:
+            try:
+                queued.append(await _queue_chat_proposal(ctx, proposal))
+            except HTTPException:
+                continue
+    ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.chat.proposal.queue_all", "chat_message", message_id)
+    return {"queued": queued}
 
 
 @router.post("/coordinator/chat")
@@ -885,7 +970,14 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
                 + answer
             )
     ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.chat", "agent_coordinator", "current")
-    ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "assistant", answer)
+    assistant_message = ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "assistant", answer)
+    proposals = []
+    if not action or set(action) == {"context"}:
+        extracted = _extract_task_proposals(answer, message)
+        if extracted:
+            proposals = ctx.store.create_coordinator_chat_proposals(
+                ctx.org, ctx.user_id, assistant_message["id"], extracted
+            )
     suggested_actions = []
     if not message.startswith("/"):
         context = (action or {}).get("context", {})
@@ -896,7 +988,10 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
         if failed_count:
             suggested_actions.append({"label": f"Recover failed jobs ({failed_count})", "command": "/recover"})
         suggested_actions.append({"label": "Refresh status", "command": "/status"})
-    return {"answer": answer, "action": action, "suggestedActions": suggested_actions}
+    return {
+        "answer": answer, "action": action, "suggestedActions": suggested_actions,
+        "messageId": assistant_message["id"], "proposals": proposals,
+    }
 
 
 async def autonomous_maintenance_cycle(ctx: Any) -> dict[str, Any]:

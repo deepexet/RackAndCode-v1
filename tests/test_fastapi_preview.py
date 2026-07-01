@@ -273,6 +273,52 @@ class FastApiPreviewTests(unittest.TestCase):
                 settings.db_path = original_db_path
                 settings.lan_mode = original_lan_mode
 
+    def test_coordinator_chat_proposals_can_be_queued_from_widgets(self) -> None:
+        original_db_path = settings.db_path
+        original_lan_mode = settings.lan_mode
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings.db_path = Path(temporary_directory) / "rackpilot.db"
+            settings.lan_mode = True
+            auth._store = None
+            try:
+                with TestClient(app) as client:
+                    self.assertEqual(client.post("/api/v1/auth/dev-login").status_code, 200)
+                    answer = "Next Actions:\n1. Fix API monitor route\n2. Add focused API tests"
+                    with patch("app.routes.admin._coordinator", new=AsyncMock(return_value={
+                        "answer": answer, "context": {"shift": {"enabled": True}, "report": {"counts": {}}},
+                    })):
+                        proposed = client.post("/api/v1/admin/coordinator/chat", json={"message": "What should we do next?"})
+                    self.assertEqual(proposed.status_code, 200, proposed.text)
+                    proposals = proposed.json()["proposals"]
+                    self.assertEqual(len(proposals), 2)
+                    job = {"id": "proposal-job", "status": "queued", "assignedAgent": proposals[0]["assignedAgent"]}
+                    with patch("app.routes.admin._coordinator", new=AsyncMock(return_value={"job": job})):
+                        queued = client.post(
+                            f"/api/v1/admin/coordinator/chat/proposals/{proposals[0]['id']}/queue", json={}
+                        )
+                    self.assertEqual(queued.status_code, 200, queued.text)
+                    self.assertEqual(queued.json()["proposal"]["jobId"], "proposal-job")
+                    history = auth.get_store().list_coordinator_chat_proposals("local-dev", "local-admin")
+                    persisted = next(row for row in history if row["id"] == proposals[0]["id"])
+                    self.assertEqual(persisted["status"], "queued")
+                    second_job = {
+                        "id": "proposal-job-2", "status": "queued",
+                        "assignedAgent": proposals[1]["assignedAgent"],
+                    }
+                    with patch("app.routes.admin._coordinator", new=AsyncMock(return_value={"job": second_job})):
+                        queued_all = client.post(
+                            "/api/v1/admin/coordinator/chat/proposals/queue-all",
+                            json={"messageId": proposed.json()["messageId"]},
+                        )
+                    self.assertEqual(queued_all.status_code, 200, queued_all.text)
+                    self.assertEqual(len(queued_all.json()["queued"]), 1)
+                    persisted = auth.get_store().list_coordinator_chat_proposals("local-dev", "local-admin")
+                    self.assertTrue(all(row["status"] == "queued" for row in persisted))
+            finally:
+                auth._store = None
+                settings.db_path = original_db_path
+                settings.lan_mode = original_lan_mode
+
 
 if __name__ == "__main__":
     unittest.main()

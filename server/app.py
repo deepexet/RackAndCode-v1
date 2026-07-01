@@ -9114,6 +9114,72 @@ Rules:
             for row in reversed(rows)
         ]
 
+    def create_coordinator_chat_proposals(
+        self, org: str, user_id: str, message_id: str, proposals: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        now = utc_now()
+        created: list[dict[str, Any]] = []
+        with self._lock, self._connect() as connection:
+            owner = connection.execute(
+                """SELECT 1 FROM coordinator_chat_messages
+                   WHERE id=? AND organization_id=? AND user_id=?""", (message_id, org, user_id)
+            ).fetchone()
+            if owner is None:
+                raise LookupError("Coordinator chat message not found")
+            for proposal in proposals[:10]:
+                proposal_id = str(uuid.uuid4())
+                agent = str(proposal.get("assignedAgent", "codex"))
+                if agent not in {"codex", "claude", "local"}:
+                    raise ValueError("Invalid proposal agent")
+                title = str(proposal.get("title", "")).strip()[:200]
+                instructions = str(proposal.get("instructions", title)).strip()[:12000]
+                if not title or not instructions:
+                    continue
+                scope_paths = [str(path) for path in proposal.get("scopePaths", [])[:20]]
+                connection.execute(
+                    """INSERT INTO coordinator_chat_proposals
+                       (id,organization_id,user_id,message_id,title,instructions,assigned_agent,
+                        scope_paths_json,status,created_at)
+                       VALUES(?,?,?,?,?,?,?,?, 'proposed',?)""",
+                    (proposal_id, org, user_id, message_id, title, instructions, agent,
+                     json.dumps(scope_paths), now),
+                )
+                created.append({
+                    "id": proposal_id, "messageId": message_id, "title": title,
+                    "instructions": instructions, "assignedAgent": agent, "scopePaths": scope_paths,
+                    "status": "proposed", "jobId": None, "createdAt": now,
+                })
+        return created
+
+    def list_coordinator_chat_proposals(self, org: str, user_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT id,message_id,title,instructions,assigned_agent,scope_paths_json,status,
+                          coordinator_job_id,created_at,queued_at
+                   FROM coordinator_chat_proposals WHERE organization_id=? AND user_id=?
+                   ORDER BY created_at,id""", (org, user_id)
+            ).fetchall()
+        return [{
+            "id": row["id"], "messageId": row["message_id"], "title": row["title"],
+            "instructions": row["instructions"], "assignedAgent": row["assigned_agent"],
+            "scopePaths": json.loads(row["scope_paths_json"] or "[]"), "status": row["status"],
+            "jobId": row["coordinator_job_id"], "createdAt": row["created_at"], "queuedAt": row["queued_at"],
+        } for row in rows]
+
+    def queue_coordinator_chat_proposal(
+        self, org: str, user_id: str, proposal_id: str, job_id: str,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE coordinator_chat_proposals SET status='queued',coordinator_job_id=?,queued_at=?
+                   WHERE id=? AND organization_id=? AND user_id=? AND status='proposed'""",
+                (job_id, now, proposal_id, org, user_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Proposal is already queued or unavailable")
+        return next(row for row in self.list_coordinator_chat_proposals(org, user_id) if row["id"] == proposal_id)
+
     def list_project_activity(self, org: str, project_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch audit events related to a specific project."""
         with self._connect() as conn:

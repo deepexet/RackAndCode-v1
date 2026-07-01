@@ -2,6 +2,7 @@ import { apiJSON, getSession } from '../core/api.js'
 
 let history = []
 let suggestedActions = []
+let proposals = []
 
 function esc(value) {
   return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -15,11 +16,33 @@ function formatMessage(value) {
 async function loadHistory() {
   const data = await apiJSON('/api/v1/admin/coordinator/chat?limit=100')
   history = (data.messages || []).map(row => ({
+    id: row.id,
     role: row.role === 'user' ? 'You' : row.role === 'assistant' ? 'Coordinator' : 'System',
     text: row.content,
     createdAt: row.createdAt,
   }))
+  proposals = data.proposals || []
   renderMessages()
+}
+
+function renderProposalCards(messageId) {
+  const rows = proposals.filter(row => row.messageId === messageId)
+  if (!rows.length) return ''
+  const pending = rows.filter(row => row.status === 'proposed')
+  return `<div class="coord-proposals">
+    <div class="coord-proposals-head"><strong>Proposed work</strong>
+      ${pending.length > 1 ? `<button type="button" data-queue-all="${esc(messageId)}"><i class="ti ti-player-skip-forward"></i> Queue all (${pending.length})</button>` : ''}
+    </div>
+    ${rows.map(row => `<article class="coord-proposal ${row.status === 'queued' ? 'queued' : ''}">
+      <div class="coord-proposal-agent">${esc(row.assignedAgent)}</div>
+      <div class="coord-proposal-copy"><strong>${esc(row.title)}</strong>
+        <small>${esc((row.scopePaths || []).join(', ') || 'text-only')}</small>
+        ${row.jobId ? `<code>Job ${esc(row.jobId)}</code>` : ''}</div>
+      ${row.status === 'proposed'
+        ? `<button type="button" data-queue-proposal="${esc(row.id)}" aria-label="Queue ${esc(row.title)}"><i class="ti ti-player-play"></i></button>`
+        : '<span class="coord-proposal-state"><i class="ti ti-check"></i> queued</span>'}
+    </article>`).join('')}
+  </div>`
 }
 
 function renderMessages() {
@@ -28,7 +51,8 @@ function renderMessages() {
   target.innerHTML = history.length
     ? history.map(row => `<div class="coord-msg coord-msg--${row.role === 'You' ? 'user' : 'assistant'}">
         <span class="coord-msg-role">${row.role === 'You' ? '<i class="ti ti-user"></i>' : '<i class="ti ti-sparkles"></i>'} ${esc(row.role)}</span>
-        <div>${formatMessage(row.text)}</div>${row.createdAt ? `<time>${new Date(row.createdAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time>` : ''}</div>`).join('')
+        <div>${formatMessage(row.text)}</div>${row.createdAt ? `<time>${new Date(row.createdAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</time>` : ''}
+        ${renderProposalCards(row.id)}</div>`).join('')
     : `<div class="coord-chat-welcome"><strong>Your development coordinator</strong>
         <span>Ask about agent activity, progress, limits and priorities. Explicit changes use slash commands.</span></div>`
   target.scrollTop = target.scrollHeight
@@ -115,6 +139,30 @@ export function initCoordinatorChat() {
     input.value = action.dataset.coordinatorCommand
     input.form?.requestSubmit()
   })
+  panel.addEventListener('click', async event => {
+    const proposalButton = event.target.closest('[data-queue-proposal]')
+    const allButton = event.target.closest('[data-queue-all]')
+    if (!proposalButton && !allButton) return
+    const button = proposalButton || allButton
+    button.disabled = true
+    try {
+      if (proposalButton) {
+        await apiJSON(`/api/v1/admin/coordinator/chat/proposals/${encodeURIComponent(proposalButton.dataset.queueProposal)}/queue`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        })
+      } else {
+        await apiJSON('/api/v1/admin/coordinator/chat/proposals/queue-all', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messageId: allButton.dataset.queueAll }),
+        })
+      }
+      await loadHistory()
+      await refreshStatus()
+    } catch (err) {
+      button.disabled = false
+      window.toast?.(`Coordinator: ${err.message}`, 'error')
+    }
+  })
 
   document.getElementById('coordinatorChatForm')?.addEventListener('submit', async event => {
     event.preventDefault()
@@ -132,8 +180,9 @@ export function initCoordinatorChat() {
       const result = await apiJSON('/api/v1/admin/coordinator/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }),
       })
-      history.push({ role: 'Coordinator', text: result.answer || 'No response', createdAt: new Date().toISOString() })
+      history.push({ id: result.messageId, role: 'Coordinator', text: result.answer || 'No response', createdAt: new Date().toISOString() })
       suggestedActions = result.suggestedActions || []
+      if (result.proposals?.length) proposals.push(...result.proposals)
       renderSuggestedActions()
       await refreshStatus()
     } catch (err) {
