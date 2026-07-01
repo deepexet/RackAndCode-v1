@@ -689,6 +689,7 @@ async def _sync_chat_agent_results(ctx: Any) -> None:
 
 async def _recover_failed_agent_jobs(
     ctx: Any, limit: int = 2, agent_filter: str | None = None,
+    allow_busy_queue: bool = False,
 ) -> list[dict[str, Any]]:
     jobs = (await _coordinator("/api/v1/jobs?limit=500")).get("jobs", [])
     active_states = {"queued", "running", "review", "waiting_approval", "integrating"}
@@ -704,7 +705,9 @@ async def _recover_failed_agent_jobs(
         agent = job.get("assignedAgent")
         if agent_filter and agent != agent_filter:
             continue
-        if job.get("status") != "failed" or agent in busy_agents or job.get("sourceWorkItemId") in active_items:
+        if (job.get("status") != "failed"
+                or (agent in busy_agents and not allow_busy_queue)
+                or job.get("sourceWorkItemId") in active_items):
             continue
         error = str(job.get("integrationError") or job.get("error") or "").lower()
         try:
@@ -780,7 +783,9 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
         agent, request_text = natural_delegation
         lowered = request_text.lower()
         if "scope" in lowered or "наруш" in lowered or "вне области" in lowered:
-            recovered = await _recover_failed_agent_jobs(ctx, limit=4, agent_filter=agent)
+            recovered = await _recover_failed_agent_jobs(
+                ctx, limit=4, agent_filter=agent, allow_busy_queue=True
+            )
             action = {"recovered": recovered, "agent": agent}
             answer = (f"Started real recovery for {len(recovered)} failed {agent.capitalize()} job(s): "
                       + "; ".join(row["title"] for row in recovered)) if recovered else (
