@@ -1234,6 +1234,19 @@ async def coordinator_request_job_changes(job_id: str, body: dict[str, Any], ctx
     return result
 
 
+@router.post("/coordinator/jobs/{job_id}/reassign")
+async def coordinator_reassign_job(job_id: str, body: dict[str, Any], ctx: Auth):
+    _require_authenticated_admin(ctx)
+    agent = str(body.get("assignedAgent", "")).lower().strip()
+    if agent not in {"codex", "claude"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Select Codex or Claude")
+    result = await _coordinator(
+        f"/api/v1/jobs/{job_id}/reassign", method="POST", body={"assignedAgent": agent}
+    )
+    ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.job.reassign", "agent_job", job_id)
+    return result
+
+
 @router.post("/coordinator/jobs/{job_id}/{action}")
 async def coordinator_job_action(job_id: str, action: str, ctx: Auth):
     _require_authenticated_admin(ctx)

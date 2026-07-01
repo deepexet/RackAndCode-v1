@@ -322,6 +322,24 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertEqual(recovered[0]["status"], "failed")
         self.assertIn("Coordinator restarted", recovered[0]["error"])
 
+    def test_stopped_job_can_be_handed_off_with_worktree_context_preserved(self):
+        job = self.store.create_job(self.payload())
+        self.store.transition_job(job["id"], "running")
+        self.store.update_execution_context(job["id"], agent_session_id="claude-session")
+        self.store.transition_job(job["id"], "rate_limited", error="usage limit")
+
+        handed_off = self.store.reassign_job(job["id"], "codex")
+        queued = self.store.transition_job(job["id"], "queued", actor="owner-handoff")
+
+        self.assertEqual(handed_off["assignedAgent"], "codex")
+        self.assertEqual(handed_off["worktreePath"], job["worktreePath"])
+        self.assertEqual(handed_off["branchName"], job["branchName"])
+        self.assertEqual(handed_off["agentSessionId"], "")
+        self.assertIn("AGENT HANDOFF", handed_off["instructions"])
+        self.assertEqual(queued["status"], "queued")
+        events = self.store.list_events(job["id"])
+        self.assertTrue(any(event["eventType"] == "job.reassigned" for event in events))
+
     def test_scheduler_defers_overlapping_scopes_across_agents(self):
         launched: list[str] = []
         scheduler = CoordinatorScheduler(

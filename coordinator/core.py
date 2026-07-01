@@ -817,6 +817,34 @@ class CoordinatorStore:
             )
         return self.get_job(job_id)
 
+    def reassign_job(self, job_id: str, assigned_agent: str, *, actor: str = "owner") -> dict[str, Any]:
+        if assigned_agent not in {"codex", "claude"}:
+            raise ValueError("coding jobs can only be handed off to codex or claude")
+        current = self.get_job(job_id)
+        if current["status"] not in {"queued", "failed", "cancelled", "rate_limited"}:
+            raise ValueError("only queued or stopped jobs can be reassigned")
+        if current["assignedAgent"] == assigned_agent:
+            raise ValueError("job is already assigned to this agent")
+        handoff = (
+            f"\n\nAGENT HANDOFF\nContinue the preserved work from {current['assignedAgent']} in the existing "
+            "worktree. Inspect current changes before editing, keep valid work, complete the original task, "
+            "run focused verification, and stop for review. Do not discard another agent's work."
+        )
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """UPDATE coordinator_jobs
+                   SET assigned_agent=?,instructions=?,agent_session_id='',review_feedback='',updated_at=?
+                   WHERE id=?""",
+                (assigned_agent, (current["instructions"] + handoff)[:50000], now, job_id),
+            )
+            self.append_event(
+                "job.reassigned", job_id=job_id, actor=actor,
+                payload={"from": current["assignedAgent"], "to": assigned_agent, "status": current["status"]},
+                connection=connection,
+            )
+        return self.get_job(job_id)
+
     def append_job_log(
         self,
         job_id: str,

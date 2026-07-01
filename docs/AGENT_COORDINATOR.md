@@ -164,6 +164,8 @@ Explicit natural-language instructions such as “delegate this to Codex and sta
 
 Numbered or bulleted next actions in an advice response are persisted as task proposal cards under that chat message. Each card shows the selected agent and repository scope, has an idempotent Play control, and records the resulting coordinator job ID. `Queue all` schedules every still-proposed card from that message in order; already queued cards cannot be duplicated. Proposals are tenant/user scoped and synchronize across devices with the rest of the conversation.
 
+Stopped coding jobs (`rate_limited`, `failed`, or `cancelled`) can be transferred manually to another available coding agent from Admin → Agents. The handoff preserves the existing worktree, branch, logs, scope and partial edits, clears the provider-specific session, appends handoff instructions, and returns the same job to the queue.
+
 The local assistant receives a fresh bounded machine snapshot with CPU, memory, disk, battery, available temperature sensor and macOS thermal state. This context is distinct from agent scheduler load, allowing follow-up questions such as “what is the load on the local Mac?” to return measured values rather than queue activity. System samples are retained for 24 hours at one-minute resolution; the sidebar displays a six-hour temperature sparkline. On Apple Silicon without a privileged SMC helper, the temperature is explicitly labelled as the available virtual/battery sensor rather than misrepresented as CPU die temperature.
 
 ## Live activity

@@ -306,6 +306,15 @@ function renderAgents(d) {
         buttons.push(`<button class="ui-btn ui-btn--sm" data-coordinator-action="submit-review" data-job-id="${esc(job.id)}">
           <i class="ti ti-git-pull-request"></i> Review preserved changes</button>`)
       }
+      if (job.assignedAgent !== 'local') {
+        const handoffTargets = agents.filter(agent =>
+          ['codex', 'claude'].includes(agent.agent) && agent.available && agent.agent !== job.assignedAgent
+        )
+        handoffTargets.forEach(agent => buttons.push(
+          `<button class="ui-btn ui-btn--sm ui-btn--primary" data-coordinator-reassign="${esc(agent.agent)}" data-job-id="${esc(job.id)}">
+            <i class="ti ti-transfer"></i> Transfer to ${esc(agent.agent === 'codex' ? 'Codex' : 'Claude')}</button>`
+        ))
+      }
     }
     if (job.managedWorktree && ['completed', 'failed', 'cancelled', 'rate_limited'].includes(job.status)) {
       buttons.push(`<button class="ui-btn ui-btn--sm" data-coordinator-action="remove-worktree" data-job-id="${esc(job.id)}"
@@ -896,6 +905,26 @@ function bindTabEvents() {
     })
     document.querySelectorAll('[data-coordinator-feedback]').forEach(button => {
       button.addEventListener('click', () => openAgentFeedback(button.dataset.coordinatorFeedback))
+    })
+    document.querySelectorAll('[data-coordinator-reassign]').forEach(button => {
+      button.addEventListener('click', async () => {
+        const agent = button.dataset.coordinatorReassign
+        const jobId = button.dataset.jobId
+        if (!window.confirm(`Transfer this job and its preserved worktree to ${agent}?`)) return
+        button.disabled = true
+        try {
+          await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(jobId)}/reassign`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ assignedAgent: agent }),
+          })
+          delete _data.agents
+          window.toast?.(`Job transferred to ${agent} and queued`, 'success')
+          switchTab()
+        } catch (err) {
+          button.disabled = false
+          window.toast?.(`Coordinator handoff: ${err.message}`, 'error')
+        }
+      })
     })
     return
   }

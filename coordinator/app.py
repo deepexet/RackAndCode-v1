@@ -106,6 +106,10 @@ class ReviewFeedbackRequest(BaseModel):
     feedback: str = Field(min_length=3, max_length=10000)
 
 
+class JobReassignRequest(BaseModel):
+    assignedAgent: str
+
+
 class AutonomousShiftRequest(BaseModel):
     durationHours: int = Field(default=10, ge=1, le=24)
     retryMinutes: int = Field(default=60, ge=5, le=1440)
@@ -668,6 +672,40 @@ async def retry_job(job_id: str, x_coordinator_token: str | None = Header(defaul
             max_turns=next_max_turns,
         )
         store.transition_job(job_id, "queued", actor="owner")
+        queued = store.get_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    scheduler.wake()
+    return {"job": queued}
+
+
+@app.post("/api/v1/jobs/{job_id}/reassign", status_code=status.HTTP_202_ACCEPTED)
+async def reassign_job(
+    job_id: str,
+    body: JobReassignRequest,
+    x_coordinator_token: str | None = Header(default=None),
+):
+    """Hand a stopped coding job and its preserved worktree to another available coding agent."""
+    require_control_token(x_coordinator_token)
+    if not EXECUTION_ENABLED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Agent execution is disabled")
+    try:
+        target = body.assignedAgent.lower().strip()
+        probe = probe_agent(target)
+        if target not in {"codex", "claude"} or not probe.available:
+            raise ValueError(f"{target or 'target agent'} is not available")
+        job = store.get_job(job_id)
+        _validate_job_workspace(job)
+        reassigned = store.reassign_job(job_id, target, actor="owner")
+        store.append_job_log(
+            job_id,
+            f"Manual handoff: {job['assignedAgent']} → {target}; preserving worktree and existing changes",
+            "system",
+        )
+        if reassigned["status"] != "queued":
+            store.transition_job(job_id, "queued", actor="owner-handoff")
         queued = store.get_job(job_id)
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
