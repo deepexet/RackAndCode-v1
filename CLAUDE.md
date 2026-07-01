@@ -114,8 +114,8 @@ See `docs/MIGRATION.md` for current migration phase status.
 
 ## Schema version
 
-Current migration number: **089** (next: 090)
-File: `server/migrations/089_wi_dependencies.sql`
+Current migration number: **106** (next: 107)
+File: `server/migrations/106_wiki_structured_knowledge.sql`
 
 ## Tests
 

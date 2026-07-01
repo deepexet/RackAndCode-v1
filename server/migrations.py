@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -66,7 +67,27 @@ class MigrationRunner:
                         raise MigrationChecksumError(f"Migration {version} checksum mismatch")
                     continue
                 try:
-                    connection.executescript(f"BEGIN IMMEDIATE;\n{sql}\n")
+                    # Some historical installations received additive columns
+                    # out-of-band.  Numbered migrations can declare an additive,
+                    # idempotent repair without failing on those installations:
+                    #   -- ensure-column table column SQL_TYPE DEFAULT ...
+                    ensure_sql: list[str] = []
+                    for table, column, declaration in re.findall(
+                        r"^-- ensure-column ([A-Za-z_][A-Za-z0-9_]*) ([A-Za-z_][A-Za-z0-9_]*) (.+)$",
+                        sql,
+                        flags=re.MULTILINE,
+                    ):
+                        existing = {
+                            row["name"]
+                            for row in connection.execute(f'PRAGMA table_info("{table}")')
+                        }
+                        if column not in existing:
+                            ensure_sql.append(
+                                f'ALTER TABLE "{table}" ADD COLUMN "{column}" {declaration};'
+                            )
+                    connection.executescript(
+                        "BEGIN IMMEDIATE;\n" + "\n".join(ensure_sql) + "\n" + sql + "\n"
+                    )
                     connection.execute(
                         "INSERT INTO schema_migrations (version, checksum, applied_at) VALUES (?, ?, ?)",
                         (version, checksum, datetime.now(timezone.utc).isoformat()),

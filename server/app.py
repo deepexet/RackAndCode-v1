@@ -117,10 +117,94 @@ ALLOWED_BUILDING_STATUSES = {"planned", "active", "on_hold", "completed"}
 DEFAULT_ORGANIZATION_ID = "local-dev"
 ROLE_POLICIES = {
     "Technician":     {"projectRead", "fieldProgress"},
-    "Supervisor":     {"projectRead", "fieldProgress", "projectManage", "logsRead"},
-    "ProjectManager": {"projectRead", "fieldProgress", "projectManage", "logsRead", "developmentWorkspace"},
-    "Administrator":  {"projectRead", "fieldProgress", "projectManage", "logsRead", "apiMonitor", "adminPanel", "developmentWorkspace", "secretsManage", "agentContext"},
+    "Supervisor":     {"projectRead", "fieldProgress", "projectManage", "wikiManage", "logsRead"},
+    "ProjectManager": {"projectRead", "fieldProgress", "projectManage", "wikiManage", "logsRead", "developmentWorkspace"},
+    "Administrator":  {"projectRead", "fieldProgress", "projectManage", "wikiManage", "logsRead", "apiMonitor", "adminPanel", "developmentWorkspace", "secretsManage", "agentContext"},
 }
+_DIAGRAM_COMPONENT_TYPES = {
+    "ict_wx", "ict_door_exp", "reader_wiegand", "reader_osdp", "electric_strike",
+    "maglock", "dps", "rex_pir", "push_exit", "psu_12v", "psu_24v", "relay_spdt",
+    "eol_resistor", "terminal_block", "butt_connector",
+}
+_DIAGRAM_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+_SAFE_DIAGRAM_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+
+
+def validate_generated_diagram(value: Any) -> dict[str, Any]:
+    """Validate untrusted AI output before returning it to a diagram renderer."""
+    if not isinstance(value, dict):
+        raise ValueError("diagram must be an object")
+    components = value.get("components")
+    wires = value.get("wires")
+    labels = value.get("labels", [])
+    if not isinstance(value.get("name"), str) or not value["name"].strip():
+        raise ValueError("diagram name is required")
+    if not isinstance(components, list) or not isinstance(wires, list) or not isinstance(labels, list):
+        raise ValueError("components, wires, and labels must be arrays")
+    if len(components) > 100 or len(wires) > 200 or len(labels) > 100:
+        raise ValueError("diagram exceeds component, wire, or label limits")
+
+    component_ids: set[str] = set()
+    for component in components:
+        if not isinstance(component, dict):
+            raise ValueError("each component must be an object")
+        component_id = component.get("id")
+        if not isinstance(component_id, str) or not _SAFE_DIAGRAM_ID.fullmatch(component_id) or component_id in component_ids:
+            raise ValueError("component IDs must be unique safe identifiers")
+        if component.get("type") not in _DIAGRAM_COMPONENT_TYPES:
+            raise ValueError("component type is not supported")
+        if not all(type(component.get(axis)) is int and 0 <= component[axis] <= 1200 for axis in ("x", "y")):
+            raise ValueError("component coordinates must be bounded integers")
+        component_ids.add(component_id)
+
+    wire_ids: set[str] = set()
+    for wire in wires:
+        if not isinstance(wire, dict):
+            raise ValueError("each wire must be an object")
+        wire_id = wire.get("id")
+        if (
+            not isinstance(wire_id, str)
+            or not _SAFE_DIAGRAM_ID.fullmatch(wire_id)
+            or wire_id in component_ids
+            or wire_id in wire_ids
+        ):
+            raise ValueError("wire IDs must be unique safe identifiers")
+        if not isinstance(wire.get("color"), str) or not _DIAGRAM_HEX_COLOR.fullmatch(wire["color"]):
+            raise ValueError("wire color must be a six-digit hex color")
+        for endpoint_name in ("from", "to"):
+            endpoint = wire.get(endpoint_name)
+            if not isinstance(endpoint, dict) or endpoint.get("compId") not in component_ids:
+                raise ValueError("wire endpoints must reference diagram components")
+            terminal_id = endpoint.get("termId")
+            if not isinstance(terminal_id, str) or not _SAFE_DIAGRAM_ID.fullmatch(terminal_id):
+                raise ValueError("wire endpoints require safe terminal IDs")
+        wire_ids.add(wire_id)
+
+    label_ids: set[str] = set()
+    for label in labels:
+        if not isinstance(label, dict):
+            raise ValueError("each label must be an object")
+        label_id = label.get("id")
+        if (
+            not isinstance(label_id, str)
+            or not _SAFE_DIAGRAM_ID.fullmatch(label_id)
+            or label_id in component_ids
+            or label_id in wire_ids
+            or label_id in label_ids
+        ):
+            raise ValueError("label IDs must be unique safe identifiers")
+        if not isinstance(label.get("text"), str) or len(label["text"]) > 500:
+            raise ValueError("label text must be a string of at most 500 characters")
+        if not all(type(label.get(axis)) is int and 0 <= label[axis] <= 1200 for axis in ("x", "y")):
+            raise ValueError("label coordinates must be bounded integers")
+        if "size" in label and (type(label["size"]) is not int or not 8 <= label["size"] <= 72):
+            raise ValueError("label size must be an integer between 8 and 72")
+        if "color" in label and (not isinstance(label["color"], str) or not _DIAGRAM_HEX_COLOR.fullmatch(label["color"])):
+            raise ValueError("label color must be a six-digit hex color")
+        label_ids.add(label_id)
+    return value
+
+
 # Permissions that require a real Bearer session — dev-mode header not accepted
 SESSION_REQUIRED_PERMISSIONS = frozenset({"secretsManage", "agentContext"})
 TASK_PROGRESS = {"ideas": 0, "backlog": 0, "ready": 10, "progress": 50, "blocked": 25, "review": 75, "testing": 90, "done": 100}
@@ -7197,24 +7281,37 @@ Rules:
     # ── Wiki pages ────────────────────────────────────────────────────────────
     def list_wiki_pages(self, org: str, project_id: str | None = None,
                         category: str | None = None) -> list[dict[str, Any]]:
-        where = "organization_id=?"
+        where = "wp.organization_id=?"
         params: list[Any] = [org]
         if project_id is not None:
-            where += " AND project_id=?"; params.append(project_id)
+            where += " AND wp.project_id=?"; params.append(project_id)
         else:
-            where += " AND project_id IS NULL"
+            where += " AND wp.project_id IS NULL"
         if category:
-            where += " AND category=?"; params.append(category)
+            where += " AND wp.category=?"; params.append(category)
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM wiki_pages WHERE {where} ORDER BY updated_at DESC", params
+                f"""SELECT wp.*, COALESCE(wd.is_pinned, 0) AS is_pinned,
+                            COALESCE(wd.structured_data, '{{}}') AS structured_data,
+                            wd.diagram_page_id
+                     FROM wiki_pages wp
+                     LEFT JOIN wiki_page_details wd
+                       ON wd.organization_id=wp.organization_id AND wd.page_id=wp.id
+                     WHERE {where}
+                     ORDER BY COALESCE(wd.is_pinned, 0) DESC, wp.updated_at DESC""", params
             ).fetchall()
         return [dict(r) for r in rows]
 
     def get_wiki_page(self, org: str, page_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM wiki_pages WHERE id=? AND organization_id=?", (page_id, org)
+                """SELECT wp.*, COALESCE(wd.is_pinned, 0) AS is_pinned,
+                          COALESCE(wd.structured_data, '{}') AS structured_data,
+                          wd.diagram_page_id
+                   FROM wiki_pages wp
+                   LEFT JOIN wiki_page_details wd
+                     ON wd.organization_id=wp.organization_id AND wd.page_id=wp.id
+                   WHERE wp.id=? AND wp.organization_id=?""", (page_id, org)
             ).fetchone()
         return dict(row) if row else None
 
@@ -7354,10 +7451,18 @@ Rules:
         if isinstance(tags, list): tags = _json.dumps(tags)
         metadata = data.get('metadata', {})
         if isinstance(metadata, dict): metadata = _json.dumps(metadata)
+        structured = data.get('structuredData', data.get('structured_data', {}))
+        if not isinstance(structured, (dict, list)):
+            raise ValueError("structuredData must be an object or array")
+        structured_json = _json.dumps(structured, ensure_ascii=False)
+        if len(structured_json) > 100_000:
+            raise ValueError("structuredData exceeds 100 KB")
+        diagram_id = data.get('diagramPageId') or data.get('diagram_page_id') or None
+        project_id = data.get('projectId') or data.get('project_id')
         row = {
             'id': page_id,
             'organization_id': org,
-            'project_id': data.get('projectId') or data.get('project_id'),
+            'project_id': project_id,
             'title': data.get('title', 'Без названия'),
             'content': data.get('content', ''),
             'category': data.get('category', ''),
@@ -7370,6 +7475,20 @@ Rules:
             'updated_at': now,
         }
         with self._connect() as conn:
+            if project_id:
+                project = conn.execute(
+                    "SELECT 1 FROM projects WHERE id=? AND organization_id=?",
+                    (project_id, org),
+                ).fetchone()
+                if not project:
+                    raise ValueError("projectId must reference a project in this organization")
+            if diagram_id:
+                diagram = conn.execute(
+                    "SELECT page_type FROM wiki_pages WHERE id=? AND organization_id=?",
+                    (diagram_id, org),
+                ).fetchone()
+                if not diagram or diagram["page_type"] != "schema":
+                    raise ValueError("diagramPageId must reference a schema page in this organization")
             conn.execute(
                 """INSERT INTO wiki_pages
                    (id,organization_id,project_id,title,content,category,page_type,
@@ -7378,6 +7497,10 @@ Rules:
                    (:id,:organization_id,:project_id,:title,:content,:category,:page_type,
                     :tags,:metadata,:created_by,:updated_by,:created_at,:updated_at)""",
                 row
+            )
+            conn.execute(
+                "INSERT INTO wiki_page_details(organization_id,page_id,is_pinned,structured_data,diagram_page_id) VALUES(?,?,?,?,?)",
+                (org, page_id, int(bool(data.get('isPinned', data.get('is_pinned', False)))), structured_json, diagram_id),
             )
             # Index in FTS
             conn.execute(
@@ -7398,11 +7521,27 @@ Rules:
         if isinstance(tags, list): tags = _json.dumps(tags)
         metadata = data.get('metadata', page.get('metadata', '{}'))
         if isinstance(metadata, dict): metadata = _json.dumps(metadata)
+        structured = data.get('structuredData', data.get('structured_data', page.get('structured_data', '{}')))
+        if isinstance(structured, str):
+            try: structured = _json.loads(structured)
+            except _json.JSONDecodeError as exc: raise ValueError("structuredData must be valid JSON") from exc
+        if not isinstance(structured, (dict, list)):
+            raise ValueError("structuredData must be an object or array")
+        structured_json = _json.dumps(structured, ensure_ascii=False)
+        if len(structured_json) > 100_000: raise ValueError("structuredData exceeds 100 KB")
+        diagram_id = data.get('diagramPageId', data.get('diagram_page_id', page.get('diagram_page_id')))
         new_title = data.get('title', page['title'])
         new_content = data.get('content', page['content'])
         new_category = data.get('category', page['category'])
         new_type = data.get('pageType') or data.get('page_type', page.get('page_type', 'general'))
         with self._connect() as conn:
+            if diagram_id:
+                diagram = conn.execute(
+                    "SELECT page_type FROM wiki_pages WHERE id=? AND organization_id=?",
+                    (diagram_id, org),
+                ).fetchone()
+                if not diagram or diagram["page_type"] != "schema":
+                    raise ValueError("diagramPageId must reference a schema page in this organization")
             conn.execute(
                 """UPDATE wiki_pages SET title=?,content=?,category=?,page_type=?,
                    tags=?,metadata=?,updated_by=?,updated_at=?
@@ -7413,6 +7552,13 @@ Rules:
             conn.execute(
                 "INSERT OR REPLACE INTO wiki_fts(page_id,organization_id,title,content,category) VALUES(?,?,?,?,?)",
                 (page_id, org, new_title, new_content, new_category)
+            )
+            conn.execute(
+                """INSERT INTO wiki_page_details(organization_id,page_id,is_pinned,structured_data,diagram_page_id)
+                   VALUES(?,?,?,?,?) ON CONFLICT(organization_id,page_id) DO UPDATE SET
+                   is_pinned=excluded.is_pinned, structured_data=excluded.structured_data,
+                   diagram_page_id=excluded.diagram_page_id""",
+                (org, page_id, int(bool(data.get('isPinned', data.get('is_pinned', page.get('is_pinned', 0))))), structured_json, diagram_id),
             )
         self.audit(org, actor, None, 'wiki.update', 'wiki_page', page_id)
         return self.get_wiki_page(org, page_id)
@@ -7493,7 +7639,31 @@ Rules:
     ) -> dict[str, Any]:
         """Download a file from `url` and store it locally. Returns attachment record."""
         import urllib.request as _urlr
+        import urllib.parse as _urlparse
         import mimetypes as _mt
+        import ipaddress as _ipaddress
+        import socket as _socket
+
+        parsed = _urlparse.urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+            raise ValueError("attachment URL must be public HTTP(S)")
+        try:
+            addresses = {
+                info[4][0] for info in _socket.getaddrinfo(parsed.hostname, parsed.port or 443)
+            }
+        except _socket.gaierror as exc:
+            raise ValueError("attachment host could not be resolved") from exc
+        if not addresses or any(
+            _ipaddress.ip_address(address).is_private
+            or _ipaddress.ip_address(address).is_loopback
+            or _ipaddress.ip_address(address).is_link_local
+            or _ipaddress.ip_address(address).is_reserved
+            for address in addresses
+        ):
+            raise ValueError("attachment URL must resolve to a public address")
+
+        if page_id and not self.get_wiki_page(org, page_id):
+            raise ValueError("pageId must reference a wiki page in this organization")
 
         att_dir = Path(__file__).parent.parent / "data" / "attachments"
         att_dir.mkdir(parents=True, exist_ok=True)
@@ -7504,9 +7674,19 @@ Rules:
         safe_name = re.sub(r"[^\w\-.]", "_", filename)[:80] + ext if not filename.endswith(ext) else re.sub(r"[^\w\-.]", "_", filename)[:80]
         local_path = att_dir / f"{att_id}{ext}"
 
+        class _NoRedirect(_urlr.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
         req = _urlr.Request(url, headers={"User-Agent": "Mozilla/5.0 (RackPilot/1.0)"})
-        with _urlr.urlopen(req, timeout=30) as resp:
-            data_bytes = resp.read()
+        opener = _urlr.build_opener(_NoRedirect)
+        with opener.open(req, timeout=30) as resp:
+            content_length = int(resp.headers.get("Content-Length") or 0)
+            if content_length > 25 * 1024 * 1024:
+                raise ValueError("attachment exceeds 25 MB")
+            data_bytes = resp.read(25 * 1024 * 1024 + 1)
+            if len(data_bytes) > 25 * 1024 * 1024:
+                raise ValueError("attachment exceeds 25 MB")
 
         local_path.write_bytes(data_bytes)
         mime = _mt.guess_type(filename)[0] or "application/octet-stream"
@@ -7520,8 +7700,11 @@ Rules:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (att_id, org, page_id, url, safe_name, rel_path, len(data_bytes), mime, actor, now),
             )
-            if page_id:
-                self.audit(org, actor, None, "wiki.attach", "wiki_attachment", att_id)
+
+        # Audit after the attachment transaction commits.  ``audit`` opens its
+        # own connection, so calling it inside the write transaction can lock
+        # SQLite; org-level attachments also need the same audit coverage.
+        self.audit(org, actor, None, "wiki.attach", "wiki_attachment", att_id)
 
         return {
             "id": att_id, "pageId": page_id, "filename": safe_name,
@@ -11984,7 +12167,7 @@ class FieldOSHandler(BaseHTTPRequestHandler):
             return
         # Download and store attachment: POST /api/v1/wiki/attachments
         if path == "/api/v1/wiki/attachments":
-            if not self._require_permission("projectRead"): return
+            if not self._require_permission("wikiManage"): return
             try:
                 payload = self._read_json()
                 url = payload.get("url", "").strip()
@@ -11995,14 +12178,16 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 actor = (self.session_context or {}).get("userId", "")
                 att = self.store.download_wiki_attachment(self.organization_id, page_id, url, title, actor=actor)
                 self._json(HTTPStatus.CREATED, {"attachment": att})
+            except ValueError as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e))
             except Exception as e:
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "download_error", str(e))
             return
         # Download attachment for a specific page: POST /api/v1/wiki/:pageId/attachments
         if len(parts) == 5 and parts[2] == "wiki" and parts[4] == "attachments":
-            if not self._require_permission("projectRead"): return
+            if not self._require_permission("wikiManage"): return
             try:
-                page_id = parts[4]
+                page_id = parts[3]
                 payload = self._read_json()
                 url = payload.get("url", "").strip()
                 title = payload.get("title", "").strip() or "document"
@@ -12011,6 +12196,8 @@ class FieldOSHandler(BaseHTTPRequestHandler):
                 actor = (self.session_context or {}).get("userId", "")
                 att = self.store.download_wiki_attachment(self.organization_id, page_id, url, title, actor=actor)
                 self._json(HTTPStatus.CREATED, {"attachment": att})
+            except ValueError as e:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(e))
             except Exception as e:
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "download_error", str(e))
             return
@@ -12078,12 +12265,17 @@ Always include a ## Documentation section at the end with official links when fo
             return
         # Wiki AI diagram generation: POST /api/v1/wiki/generate-diagram
         if path == "/api/v1/wiki/generate-diagram":
-            if not self._require_permission("projectRead"): return
+            if not self._require_permission("wikiManage"): return
             try:
                 payload = self._read_json()
-                prompt = payload.get("prompt", "").strip()
+                raw_prompt = payload.get("prompt", "")
+                if not isinstance(raw_prompt, str):
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "prompt must be a string"); return
+                prompt = raw_prompt.strip()
                 if not prompt:
                     self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "prompt required"); return
+                if len(prompt) > 10_000:
+                    self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "prompt exceeds 10000 characters"); return
                 ai_router = self.store.get_ai_router(self.organization_id)
                 _DIAGRAM_GEN_SYSTEM = """You are a wiring diagram generator for RackPilot, a field-ops platform for ICT access control and low-voltage systems.
 Generate a JSON wiring diagram. Return ONLY valid JSON — no markdown fences, no explanation.
@@ -12114,9 +12306,10 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
                 m = _re2.search(r'\{[\s\S]*\}', text)
                 if not m:
                     self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "ai_error", "AI returned no JSON"); return
-                import json as _j2
-                diagram = _j2.loads(m.group())
+                diagram = validate_generated_diagram(json.loads(m.group()))
                 self._json(HTTPStatus.OK, {"diagram": diagram})
+            except (json.JSONDecodeError, ValueError) as e:
+                self._error(HTTPStatus.BAD_GATEWAY, "ai_error", f"AI returned an invalid diagram: {e}")
             except Exception as e:
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "ai_error", str(e))
             return
@@ -12124,7 +12317,7 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
         # Wiki CRUD: POST /api/v1/wiki, POST /api/v1/wiki/:id, POST /api/v1/wiki/:id/delete
         # Also: POST /api/v1/wiki/projects/:pid (create project wiki page)
         if path == "/api/v1/wiki":
-            if not self._require_permission("projectRead"): return
+            if not self._require_permission("wikiManage"): return
             try:
                 payload = self._read_json()
                 actor = (self.session_context or {}).get("userId", "")
@@ -12134,7 +12327,7 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         if path.startswith("/api/v1/wiki/projects/") and len(parts) == 5:
-            if not self._require_permission("projectRead"): return
+            if not self._require_permission("wikiManage"): return
             try:
                 payload = self._read_json()
                 payload["projectId"] = parts[4]
@@ -12145,7 +12338,7 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         if path.startswith("/api/v1/wiki/") and len(parts) == 4 and parts[3] != "projects":
-            if not self._require_permission("projectRead"): return
+            if not self._require_permission("wikiManage"): return
             try:
                 actor = (self.session_context or {}).get("userId", "")
                 page = self.store.update_wiki_page(self.organization_id, parts[3], self._read_json(), actor=actor)
@@ -12155,7 +12348,7 @@ Layout: x/y multiples of 20. PSU x≈60, controller x≈380, peripherals x≈680
                 self._error(HTTPStatus.BAD_REQUEST, "invalid_request", str(err))
             return
         if path.startswith("/api/v1/wiki/") and parts[-1] == "delete" and len(parts) == 5:
-            if not self._require_permission("projectRead"): return
+            if not self._require_permission("wikiManage"): return
             actor = (self.session_context or {}).get("userId", "")
             self.store.delete_wiki_page(self.organization_id, parts[3], actor=actor)
             self._json(HTTPStatus.OK, {"ok": True})

@@ -145,6 +145,7 @@ function renderSidebar(pages) {
                 <span class="wiki-nav-title">${esc(p.title)}</span>
                 <span class="wiki-nav-meta">${esc(p.category || 'Общее')} · ${timeAgo(p.updated_at)}</span>
               </div>
+              ${p.is_pinned ? '<i class="ti ti-pin-filled" title="Закреплено"></i>' : ''}
               ${p.view_count > 0 ? `<span class="wiki-view-badge" title="${p.view_count} просмотров"><i class="ti ti-eye"></i>${p.view_count}</span>` : ''}
             </button>`).join('')}
       </nav>
@@ -213,6 +214,8 @@ function renderPageView(p, all) {
   try { tags = typeof p.tags === 'string' ? JSON.parse(p.tags) : (p.tags || []) } catch {}
   let meta = {}
   try { meta = typeof p.metadata === 'string' ? JSON.parse(p.metadata) : (p.metadata || {}) } catch {}
+  let structured = {}
+  try { structured = typeof p.structured_data === 'string' ? JSON.parse(p.structured_data) : (p.structured_data || {}) } catch {}
   const typeDef = PAGE_TYPES[p.page_type || 'general'] || PAGE_TYPES.general
 
   return `
@@ -223,6 +226,7 @@ function renderPageView(p, all) {
             <i class="ti ${typeDef.icon}"></i> ${typeDef.label}
           </span>
           <span class="wiki-breadcrumb">${esc(p.category || 'Общее')}</span>
+          ${p.is_pinned ? '<span class="wiki-tag"><i class="ti ti-pin-filled"></i> Закреплено</span>' : ''}
           ${tags.map(t => `<span class="wiki-tag">${esc(t)}</span>`).join('')}
         </div>
         <div class="wiki-page-actions">
@@ -246,6 +250,14 @@ function renderPageView(p, all) {
       </div>
 
       ${p.page_type !== 'schema' ? renderLinkedDiagrams(p.id) : ''}
+
+      ${Object.keys(structured).length ? `<div class="wiki-equip-badge"><i class="ti ti-table"></i><code>${esc(JSON.stringify(structured, null, 2))}</code></div>` : ''}
+
+      ${p.diagram_page_id ? `<div class="wiki-schema-embed" data-diagram-id="${esc(p.diagram_page_id)}">
+        <div class="wiki-schema-embed-icon"><i class="ti ti-circuit-switchboard"></i></div>
+        <div class="wiki-schema-embed-info"><div class="wiki-schema-embed-title">Связанная схема</div></div>
+        <button class="wiki-schema-open-btn" data-diagram-id="${esc(p.diagram_page_id)}"><i class="ti ti-arrow-right"></i> Открыть</button>
+      </div>` : ''}
 
       ${renderPageDocLinks(meta, p.id)}
 
@@ -612,6 +624,8 @@ function openEditModal(page = null, prefill = {}) {
   const defaultType = prefill.pageType || page?.page_type || 'general'
   let meta = {}
   try { meta = typeof page?.metadata === 'string' ? JSON.parse(page.metadata) : (page?.metadata || {}) } catch {}
+  let structured = {}
+  try { structured = typeof page?.structured_data === 'string' ? JSON.parse(page.structured_data) : (page?.structured_data || {}) } catch {}
 
   const { el, close } = openModal({
     title: isEdit ? 'Редактировать страницу' : 'Новая страница',
@@ -642,6 +656,16 @@ function openEditModal(page = null, prefill = {}) {
           <label>Теги (через запятую)</label>
           <input class="ui-input" name="tags" placeholder="cisco, vpn, panel…" value="${esc((() => { try { return (typeof page?.tags==='string'?JSON.parse(page?.tags||'[]'):page?.tags||[]).join(', ') } catch{return''} })())}">
         </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="ui-form-row"><label><input type="checkbox" name="isPinned" ${page?.is_pinned?'checked':''}> Закрепить страницу</label></div>
+        <div class="ui-form-row"><label>Связанная схема</label><select class="ui-input" name="diagramPageId">
+          <option value="">Нет</option>
+          ${_pages.filter(p => p.page_type === 'schema' && p.id !== page?.id).map(p => `<option value="${esc(p.id)}" ${page?.diagram_page_id===p.id?'selected':''}>${esc(p.title)}</option>`).join('')}
+        </select></div>
+      </div>
+      <div class="ui-form-row"><label>Структурированные данные (JSON)</label>
+        <textarea class="ui-input" name="structuredData" rows="4" placeholder='{"rack":"R1","units":42}'>${esc(JSON.stringify(structured, null, 2))}</textarea>
       </div>
       <!-- Equipment metadata (shown for equipment/doc type) -->
       <div id="wiki-equip-meta" style="${['equipment','doc'].includes(defaultType)?'':'display:none'}">
@@ -709,13 +733,16 @@ function openEditModal(page = null, prefill = {}) {
     const fd = Object.fromEntries(new FormData(form))
     if (!fd.title?.trim()) { window.toast?.('Введите название', 'error'); return }
     const tags = fd.tags ? fd.tags.split(',').map(t => t.trim()).filter(Boolean) : []
+    let structuredData
+    try { structuredData = JSON.parse(fd.structuredData || '{}') }
+    catch { window.toast?.('Структурированные данные должны быть валидным JSON', 'error'); return }
     // Preserve docLinks from existing page (edit) or from AI assistant prefill (new)
     let existingMeta = {}
     try { existingMeta = typeof page?.metadata === 'string' ? JSON.parse(page.metadata) : (page?.metadata || {}) } catch {}
     const metadata = { ...existingMeta, ...(prefill.metadata || {}), manufacturer: fd.manufacturer, model: fd.model, doc_version: fd.doc_version }
     try {
       const url = isEdit ? `/api/v1/wiki/${page.id}` : '/api/v1/wiki'
-      await apiPost(url, { title: fd.title.trim(), category: fd.category, pageType: fd.pageType, content: fd.content||'', tags, metadata })
+      await apiPost(url, { title: fd.title.trim(), category: fd.category, pageType: fd.pageType, content: fd.content||'', tags, metadata, isPinned: fd.isPinned === 'on', structuredData, diagramPageId: fd.diagramPageId || null })
       close()
       window.toast?.('Сохранено', 'success')
       await loadPages()

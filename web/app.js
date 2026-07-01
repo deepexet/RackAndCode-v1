@@ -15,9 +15,9 @@ const state = loadState();
 const $ = selector => document.querySelector(selector);
 const ROLE_POLICIES = {
   Technician:    { label: 'Technician',       routes: ['overview', 'projects', 'tech'], permissions: ['projectRead', 'fieldProgress'] },
-  Supervisor:    { label: 'Supervisor',        routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead'] },
-  ProjectManager:{ label: 'Project Manager',  routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead', 'developmentWorkspace'] },
-  Administrator: { label: 'Administrator',    routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs', 'api', 'admin'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'logsRead', 'apiMonitor', 'adminPanel', 'developmentWorkspace'] },
+  Supervisor:    { label: 'Supervisor',        routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'wikiManage', 'logsRead'] },
+  ProjectManager:{ label: 'Project Manager',  routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'wikiManage', 'logsRead', 'developmentWorkspace'] },
+  Administrator: { label: 'Administrator',    routes: ['overview', 'projects', 'inventory', 'work-orders', 'tech', 'logs', 'api', 'admin'], permissions: ['projectRead', 'fieldProgress', 'projectManage', 'wikiManage', 'logsRead', 'apiMonitor', 'adminPanel', 'developmentWorkspace'] },
 };
 let syncTimer;
 let syncInFlight = false;
@@ -272,7 +272,7 @@ function renderRoleMatrix() {
   if (!el) return;
   const PERM_LABELS = {
     projectRead: 'Просмотр проектов', fieldProgress: 'Полевой прогресс',
-    projectManage: 'Управление проектами', logsRead: 'Журналы',
+    projectManage: 'Управление проектами', wikiManage: 'Управление Wiki', logsRead: 'Журналы',
     apiMonitor: 'API-мониторинг', developmentWorkspace: 'Канбан / Dev',
     adminPanel: 'Панель Администратора', secretsManage: 'Secrets Vault',
     agentContext: 'Agent Context',
