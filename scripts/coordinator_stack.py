@@ -20,6 +20,8 @@ PID_PATH = DATA / "coordinator-stack.pid"
 TOKEN_PATH = DATA / "coordinator.token"
 LOG_PATH = DATA / "coordinator-stack.log"
 PYTHON = ROOT / ".venv-coordinator312" / "bin" / "python"
+CANONICAL_APP_DB = ROOT.parent / "ValProjects" / "data" / "rackpilot.db"
+CANONICAL_COORDINATOR_DB = ROOT.parent / "ValProjects-codex-coordinator" / "data" / "coordinator.db"
 
 
 def _pid() -> int | None:
@@ -103,8 +105,8 @@ def stop() -> int:
 def run() -> int:
     token = _token()
     coordinator_port = os.getenv("RACKPILOT_COORDINATOR_PORT", "4180")
-    api_port = os.getenv("RACKPILOT_API_PORT", "4174")
-    frontend_port = os.getenv("RACKPILOT_FRONTEND_PORT", "5174")
+    api_port = os.getenv("RACKPILOT_API_PORT", "4176")
+    frontend_port = os.getenv("RACKPILOT_FRONTEND_PORT", "5176")
     stop_requested = False
 
     def request_stop(*_: object) -> None:
@@ -127,6 +129,13 @@ def run() -> int:
             ),
             "COORDINATOR_TOKEN": token,
             "COORDINATOR_URL": f"http://127.0.0.1:{coordinator_port}",
+            "DB_PATH": base_env.get(
+                "DB_PATH", str(CANONICAL_APP_DB if CANONICAL_APP_DB.exists() else DATA / "rackpilot.db")
+            ),
+            "RACKPILOT_COORDINATOR_DB": base_env.get(
+                "RACKPILOT_COORDINATOR_DB",
+                str(CANONICAL_COORDINATOR_DB if CANONICAL_COORDINATOR_DB.exists() else DATA / "coordinator.db"),
+            ),
             "PORT": coordinator_port,
         }
     )

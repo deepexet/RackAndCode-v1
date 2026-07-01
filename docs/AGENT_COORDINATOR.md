@@ -129,7 +129,7 @@ Runtime PID, token and log files stay under ignored `data/` paths. The token is 
 
 Scheduler defaults are two parallel jobs and one job per agent. They can be overridden with `RACKPILOT_COORDINATOR_MAX_CONCURRENT` and `RACKPILOT_COORDINATOR_MAX_PER_AGENT`.
 
-The supervised ports can be selected with `RACKPILOT_COORDINATOR_PORT`, `RACKPILOT_API_PORT` and `RACKPILOT_FRONTEND_PORT`. Set `DB_PATH` to the canonical RackPilot database when the supervisor runs from an integration worktree.
+The supervised ports can be selected with `RACKPILOT_COORDINATOR_PORT`, `RACKPILOT_API_PORT` and `RACKPILOT_FRONTEND_PORT` (defaults: `4180`, `4176`, `5176`). When the standard sibling workspaces exist, the supervisor automatically uses the canonical RackPilot and coordinator databases; `DB_PATH` and `RACKPILOT_COORDINATOR_DB` can override them.
 
 ## Development Kanban integration
 
