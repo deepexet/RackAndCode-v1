@@ -248,6 +248,31 @@ class FastApiPreviewTests(unittest.TestCase):
                 settings.db_path = original_db_path
                 settings.lan_mode = original_lan_mode
 
+    def test_coordinator_chat_executes_explicit_natural_language_delegation(self) -> None:
+        original_db_path = settings.db_path
+        original_lan_mode = settings.lan_mode
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            settings.db_path = Path(temporary_directory) / "rackpilot.db"
+            settings.lan_mode = True
+            auth._store = None
+            try:
+                with TestClient(app) as client:
+                    self.assertEqual(client.post("/api/v1/auth/dev-login").status_code, 200)
+                    job = {"id": "natural-job", "status": "queued", "assignedAgent": "codex"}
+                    with patch("app.routes.admin._coordinator", new=AsyncMock(return_value={"job": job})) as coordinator:
+                        response = client.post("/api/v1/admin/coordinator/chat", json={
+                            "message": "Делегируй Codex проверку API monitor и начни выполнение",
+                        })
+                    self.assertEqual(response.status_code, 200, response.text)
+                    payload = coordinator.await_args.kwargs["body"]
+                    self.assertEqual(payload["assignedAgent"], "codex")
+                    self.assertTrue(payload["requiresReview"])
+                    self.assertIn("actually queued", response.json()["answer"])
+            finally:
+                auth._store = None
+                settings.db_path = original_db_path
+                settings.lan_mode = original_lan_mode
+
 
 if __name__ == "__main__":
     unittest.main()

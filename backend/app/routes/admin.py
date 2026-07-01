@@ -687,7 +687,9 @@ async def _sync_chat_agent_results(ctx: Any) -> None:
         )
 
 
-async def _recover_failed_agent_jobs(ctx: Any, limit: int = 2) -> list[dict[str, Any]]:
+async def _recover_failed_agent_jobs(
+    ctx: Any, limit: int = 2, agent_filter: str | None = None,
+) -> list[dict[str, Any]]:
     jobs = (await _coordinator("/api/v1/jobs?limit=500")).get("jobs", [])
     active_states = {"queued", "running", "review", "waiting_approval", "integrating"}
     busy_agents = {job.get("assignedAgent") for job in jobs if job.get("status") in active_states}
@@ -700,6 +702,8 @@ async def _recover_failed_agent_jobs(ctx: Any, limit: int = 2) -> list[dict[str,
     recovered: list[dict[str, Any]] = []
     for job in latest_by_item.values():
         agent = job.get("assignedAgent")
+        if agent_filter and agent != agent_filter:
+            continue
         if job.get("status") != "failed" or agent in busy_agents or job.get("sourceWorkItemId") in active_items:
             continue
         error = str(job.get("integrationError") or job.get("error") or "").lower()
@@ -729,6 +733,29 @@ async def _recover_failed_agent_jobs(ctx: Any, limit: int = 2) -> list[dict[str,
     return recovered
 
 
+def _natural_delegation(message: str, history: list[dict[str, Any]]) -> tuple[str, str] | None:
+    lowered = message.lower()
+    action_terms = (
+        "делегиру", "передай", "поставь", "запусти", "начни", "начина", "пусть", "выполни",
+        "delegate", "queue", "start", "execute", "assign",
+    )
+    if not any(term in lowered for term in action_terms):
+        return None
+    agent = "codex" if "codex" in lowered else "claude" if "claude" in lowered else ""
+    if not agent:
+        for row in reversed(history[-8:]):
+            if row.get("role") != "user":
+                continue
+            prior = str(row.get("content", "")).lower()
+            if "codex" in prior:
+                agent = "codex"
+                break
+            if "claude" in prior:
+                agent = "claude"
+                break
+    return (agent, message) if agent else None
+
+
 @router.get("/coordinator/chat")
 async def coordinator_chat_history(ctx: Auth, limit: int = 100):
     _require_authenticated_admin(ctx)
@@ -743,11 +770,41 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
     message = str(body.get("message", "")).strip()
     if not message or len(message) > 4000:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Message must contain 1-4000 characters")
+    prior_history = ctx.store.list_coordinator_chat_messages(ctx.org, ctx.user_id, 20)
     user_message = ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "user", message)
     command = message.split()
+    natural_delegation = _natural_delegation(message, prior_history) if not message.startswith("/") else None
     answer: str | None = None
     action: dict[str, Any] | None = None
-    if command and command[0].lower() == "/retry" and len(command) == 2:
+    if natural_delegation:
+        agent, request_text = natural_delegation
+        lowered = request_text.lower()
+        if "scope" in lowered or "наруш" in lowered or "вне области" in lowered:
+            recovered = await _recover_failed_agent_jobs(ctx, limit=4, agent_filter=agent)
+            action = {"recovered": recovered, "agent": agent}
+            answer = (f"Started real recovery for {len(recovered)} failed {agent.capitalize()} job(s): "
+                      + "; ".join(row["title"] for row in recovered)) if recovered else (
+                f"No failed {agent.capitalize()} job is currently safe to recover. No task was queued."
+            )
+        else:
+            scope_paths = _work_item_scope({"title": request_text, "description": request_text, "labels": []})
+            created = await _coordinator("/api/v1/jobs", method="POST", body={
+                "title": f"Owner request for {agent}: {request_text[:100]}",
+                "instructions": (
+                    f"Act as RackPilot {'Engineering & Integration Lead' if agent == 'codex' else 'Architecture Lead'}. "
+                    "Execute the owner's request in the isolated worktree. Make only necessary scoped changes, "
+                    "run focused tests, document exact results, and stop for integration review.\n\n"
+                    f"OWNER REQUEST:\n{request_text}"
+                ),
+                "assignedAgent": agent, "autoWorktree": True, "baseRef": settings.coordinator_base_ref,
+                "scopePaths": scope_paths, "requiresReview": True, "maxTurns": 14,
+                "createdBy": f"chat:{ctx.org}:{ctx.user_id}:{user_message['id']}",
+            })
+            job = created.get("job", {})
+            action = {"job": job, "agent": agent}
+            answer = (f"Task was actually queued for {agent.capitalize()}. Job ID: {job.get('id')}. "
+                      f"Current status: {job.get('status')}. It will wait safely if the agent is busy.")
+    elif command and command[0].lower() == "/retry" and len(command) == 2:
         action = await _coordinator(f"/api/v1/jobs/{urllib.parse.quote(command[1], safe='')}/retry", method="POST", body={})
         answer = f"Job {command[1]} was queued for retry."
     elif command and command[0].lower() == "/priority" and len(command) == 3:
@@ -812,6 +869,16 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
         )
         answer = result.get("answer", "Coordinator Assistant did not return an answer.")
         action = {"context": result.get("context", {})}
+        false_action_claims = (
+            "добавлены в очередь", "задача добавлена", "задачи добавлены", "делегировано", "запущено выполнение",
+            "queued the task", "tasks were queued", "delegated successfully",
+        )
+        if any(claim in answer.lower() for claim in false_action_claims):
+            answer = (
+                "Никаких действий не было выполнено: локальная модель подготовила только рекомендацию. "
+                "Для реального запуска напишите «делегируй Codex/Claude и начни» либо используйте кнопку действия.\n\n"
+                + answer
+            )
     ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.chat", "agent_coordinator", "current")
     ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "assistant", answer)
     suggested_actions = []
