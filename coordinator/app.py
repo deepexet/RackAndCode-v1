@@ -677,6 +677,41 @@ async def retry_job(job_id: str, x_coordinator_token: str | None = Header(defaul
     return {"job": queued}
 
 
+@app.post("/api/v1/jobs/{job_id}/repair", status_code=status.HTTP_202_ACCEPTED)
+async def repair_failed_job(job_id: str, x_coordinator_token: str | None = Header(default=None)):
+    """Resume a failed coding job with corrective feedback while preserving its worktree."""
+    require_control_token(x_coordinator_token)
+    if not EXECUTION_ENABLED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Agent execution is disabled")
+    try:
+        job = store.get_job(job_id)
+        _validate_job_workspace(job)
+        if job["status"] != "failed":
+            raise ValueError("Only a failed job can be repaired")
+        error = str(job.get("integrationError") or job.get("error") or "failed verification")
+        feedback = (
+            "The previous run failed coordinator verification. Correct the existing worktree instead of "
+            "repeating the task. Revert every change outside the declared scope, keep only complete changes "
+            f"for this work item, run focused tests, and stop for review. Verification error:\n{error[:2000]}"
+        )
+        session_id = job["agentSessionId"] or _latest_logged_session_id(job_id)
+        store.update_execution_context(
+            job_id, agent_session_id=session_id, review_feedback=feedback,
+            max_turns=min(20, max(job["maxTurns"], 12) + 4),
+        )
+        store.transition_job(job_id, "review", actor="autonomous-recovery")
+        store.transition_job(job_id, "waiting_approval", actor="autonomous-recovery")
+        store.transition_job(job_id, "queued", actor="autonomous-recovery")
+        queued = store.get_job(job_id)
+        store.append_job_log(job_id, f"Autonomous repair requested: {error[:500]}", "system")
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    scheduler.wake()
+    return {"job": queued}
+
+
 @app.post("/api/v1/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, x_coordinator_token: str | None = Header(default=None)):
     require_control_token(x_coordinator_token)

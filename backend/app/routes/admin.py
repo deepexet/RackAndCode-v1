@@ -687,6 +687,48 @@ async def _sync_chat_agent_results(ctx: Any) -> None:
         )
 
 
+async def _recover_failed_agent_jobs(ctx: Any, limit: int = 2) -> list[dict[str, Any]]:
+    jobs = (await _coordinator("/api/v1/jobs?limit=500")).get("jobs", [])
+    active_states = {"queued", "running", "review", "waiting_approval", "integrating"}
+    busy_agents = {job.get("assignedAgent") for job in jobs if job.get("status") in active_states}
+    active_items = {job.get("sourceWorkItemId") for job in jobs if job.get("status") in active_states}
+    latest_by_item: dict[str, dict[str, Any]] = {}
+    for job in jobs:  # newest first
+        item_id = str(job.get("sourceWorkItemId") or "")
+        if item_id and item_id not in latest_by_item:
+            latest_by_item[item_id] = job
+    recovered: list[dict[str, Any]] = []
+    for job in latest_by_item.values():
+        agent = job.get("assignedAgent")
+        if job.get("status") != "failed" or agent in busy_agents or job.get("sourceWorkItemId") in active_items:
+            continue
+        error = str(job.get("integrationError") or job.get("error") or "").lower()
+        try:
+            if "outside declared scope" in error or job.get("integrationError"):
+                result = await _coordinator(f"/api/v1/jobs/{job['id']}/repair", method="POST", body={})
+                mode = "repair"
+            elif "maximum number of turns" in error or "max_turns" in error:
+                if int(job.get("maxTurns") or 0) < 20:
+                    result = await _coordinator(f"/api/v1/jobs/{job['id']}/retry", method="POST", body={})
+                    mode = "continue"
+                else:
+                    review = await _coordinator(f"/api/v1/jobs/{job['id']}/review")
+                    if not review.get("review", {}).get("dirty"):
+                        continue
+                    result = await _coordinator(f"/api/v1/jobs/{job['id']}/submit-review", method="POST", body={})
+                    mode = "review-preserved-work"
+            else:
+                result = await _coordinator(f"/api/v1/jobs/{job['id']}/repair", method="POST", body={})
+                mode = "repair"
+        except HTTPException:
+            continue
+        recovered.append({"job": result.get("job", {}), "mode": mode, "title": job.get("title")})
+        busy_agents.add(agent)
+        if len(recovered) >= max(1, min(limit, 4)):
+            break
+    return recovered
+
+
 @router.get("/coordinator/chat")
 async def coordinator_chat_history(ctx: Auth, limit: int = 100):
     _require_authenticated_admin(ctx)
@@ -733,6 +775,11 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
             {"durationHours": max(1, min(hours, 24)), "maxTasks": 8, "retryMinutes": 60}, ctx
         )
         answer = f"Autonomous shift started for {max(1, min(hours, 24))} hours."
+    elif command and command[0].lower() == "/recover":
+        recovered = await _recover_failed_agent_jobs(ctx, limit=2)
+        action = {"recovered": recovered}
+        answer = (f"Recovery started for {len(recovered)} failed job(s)."
+                  if recovered else "No safely recoverable failed jobs are currently available.")
     elif command and command[0].lower() in {"/codex", "/claude"}:
         agent = command[0].lower().removeprefix("/")
         request_text = message[len(command[0]):].strip()
@@ -767,7 +814,17 @@ async def coordinator_chat(body: dict[str, Any], ctx: Auth):
         action = {"context": result.get("context", {})}
     ctx.store.audit(ctx.org, ctx.user_id, ctx.role, "coordinator.chat", "agent_coordinator", "current")
     ctx.store.append_coordinator_chat_message(ctx.org, ctx.user_id, "assistant", answer)
-    return {"answer": answer, "action": action}
+    suggested_actions = []
+    if not message.startswith("/"):
+        context = (action or {}).get("context", {})
+        shift_enabled = bool(context.get("shift", {}).get("enabled"))
+        failed_count = int(context.get("report", {}).get("counts", {}).get("failed", 0))
+        if not shift_enabled:
+            suggested_actions.append({"label": "Start 10h shift", "command": "/start 10"})
+        if failed_count:
+            suggested_actions.append({"label": f"Recover failed jobs ({failed_count})", "command": "/recover"})
+        suggested_actions.append({"label": "Refresh status", "command": "/status"})
+    return {"answer": answer, "action": action, "suggestedActions": suggested_actions}
 
 
 async def autonomous_maintenance_cycle(ctx: Any) -> dict[str, Any]:
@@ -777,7 +834,11 @@ async def autonomous_maintenance_cycle(ctx: Any) -> dict[str, Any]:
     )
     if not autonomous.get("shift", {}).get("enabled"):
         return {"active": False, "created": []}
-    jobs = jobs_payload.get("jobs", [])
+    recovered = await _recover_failed_agent_jobs(ctx, limit=2)
+    if recovered:
+        jobs = (await _coordinator("/api/v1/jobs?limit=500")).get("jobs", [])
+    else:
+        jobs = jobs_payload.get("jobs", [])
     active_states = {"queued", "running", "review", "waiting_approval", "integrating"}
     active = [job for job in jobs if job.get("status") in active_states]
     busy_agents = {job.get("assignedAgent") for job in active}
@@ -840,29 +901,7 @@ async def autonomous_maintenance_cycle(ctx: Any) -> dict[str, Any]:
         if {"codex", "claude", "local"}.issubset(busy_agents):
             break
 
-    # Give the local model one useful triage pass per hour when no local-ready task exists.
-    if "local" not in busy_agents:
-        hour_key = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H")
-        title = f"Autonomous Kanban triage {hour_key} UTC"
-        if not any(job.get("title") == title for job in jobs):
-            backlog = []
-            for project in ctx.store.list_projects(ctx.org):
-                backlog.extend({"project": project.get("name"), "title": item.get("title"),
-                                "priority": item.get("priority"), "status": item.get("status")}
-                               for item in project.get("workItems", [])
-                               if item.get("status") in {"backlog", "ready", "blocked"})
-            payload = {
-                "title": title,
-                "instructions": "Classify the next useful work and summarize blockers from this bounded Kanban snapshot:\n" + json.dumps(backlog[:40], ensure_ascii=False),
-                "assignedAgent": "local", "autoWorktree": False, "scopePaths": [],
-                "requiresReview": False, "maxTurns": 1, "createdBy": "autonomous-utilization",
-            }
-            try:
-                result = await _coordinator("/api/v1/jobs", method="POST", body=payload)
-                created.append(result.get("job", {}))
-            except HTTPException:
-                pass
-    return {"active": True, "created": created}
+    return {"active": True, "created": created, "recovered": recovered}
 
 
 @router.post("/coordinator/jobs")

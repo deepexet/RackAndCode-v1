@@ -1,6 +1,7 @@
 import { apiJSON, getSession } from '../core/api.js'
 
 let history = []
+let suggestedActions = []
 
 function esc(value) {
   return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -31,6 +32,15 @@ function renderMessages() {
     : `<div class="coord-chat-welcome"><strong>Your development coordinator</strong>
         <span>Ask about agent activity, progress, limits and priorities. Explicit changes use slash commands.</span></div>`
   target.scrollTop = target.scrollHeight
+}
+
+function renderSuggestedActions() {
+  const target = document.getElementById('coordinatorChatActions')
+  if (!target) return
+  target.innerHTML = suggestedActions.map(action =>
+    `<button type="button" data-coordinator-command="${esc(action.command)}">${esc(action.label)}</button>`
+  ).join('')
+  target.hidden = !suggestedActions.length
 }
 
 async function refreshStatus() {
@@ -67,11 +77,12 @@ export function initCoordinatorChat() {
         <button id="coordinatorChatClose" type="button" aria-label="Close Coordinator Chat"><i class="ti ti-x"></i></button>
       </header>
       <div class="coord-chat-messages" id="coordinatorChatMessages"></div>
+      <div class="coord-chat-actions" id="coordinatorChatActions" hidden></div>
       <form class="coord-chat-form" id="coordinatorChatForm">
         <textarea name="message" rows="2" maxlength="4000" required placeholder="Ask the coordinator…"></textarea>
         <button type="submit" aria-label="Send to coordinator"><i class="ti ti-send"></i></button>
       </form>
-      <div class="coord-chat-help">Default: Local AI · /local TASK · /codex REQUEST · /claude REQUEST · /status · /start 10 · /stop</div>
+      <div class="coord-chat-help">Default: Local AI · /start 10 · /recover · /local TASK · /codex REQUEST · /claude REQUEST · /status · /stop</div>
     </aside>`
   document.body.append(...host.children)
   renderMessages()
@@ -98,6 +109,12 @@ export function initCoordinatorChat() {
       event.currentTarget.form?.requestSubmit()
     }
   })
+  panel.addEventListener('click', event => {
+    const action = event.target.closest('[data-coordinator-command]')
+    if (!action) return
+    input.value = action.dataset.coordinatorCommand
+    input.form?.requestSubmit()
+  })
 
   document.getElementById('coordinatorChatForm')?.addEventListener('submit', async event => {
     event.preventDefault()
@@ -116,10 +133,14 @@ export function initCoordinatorChat() {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }),
       })
       history.push({ role: 'Coordinator', text: result.answer || 'No response', createdAt: new Date().toISOString() })
+      suggestedActions = result.suggestedActions || []
+      renderSuggestedActions()
       await refreshStatus()
     } catch (err) {
       history.push({ role: 'System', text: err.message === 'Method Not Allowed'
         ? 'Coordinator backend is updating. Try again in a few seconds.' : err.message, createdAt: new Date().toISOString() })
+      suggestedActions = []
+      renderSuggestedActions()
     } finally {
       button.disabled = false
       panel.classList.remove('thinking')

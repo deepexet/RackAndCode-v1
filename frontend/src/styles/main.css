@@ -756,6 +756,10 @@ body {
 .coord-chat-panel.thinking .coord-chat-header small::after { content:' · thinking…'; color:var(--accent); animation:coord-pulse 1.1s ease-in-out infinite; }
 @keyframes coord-pulse { 50% { opacity:.35; } }
 .coord-chat-form { padding:10px; border-top:1px solid var(--border); display:flex; gap:8px; background:var(--bg-3); }
+.coord-chat-actions { padding:8px 10px; border-top:1px solid var(--border); display:flex; gap:7px; flex-wrap:wrap; background:var(--bg-2); }
+.coord-chat-actions[hidden] { display:none; }
+.coord-chat-actions button { border:1px solid rgba(124,139,255,.45); border-radius:16px; background:rgba(124,139,255,.12); color:var(--text-1); padding:7px 11px; font:600 12px/1.2 var(--font); cursor:pointer; }
+.coord-chat-actions button:hover { background:rgba(124,139,255,.24); }
 .coord-chat-form textarea { flex:1; min-width:0; resize:none; border:1px solid var(--border); border-radius:10px; background:var(--bg-1); color:var(--text-1); padding:10px 12px; font:14px/1.4 var(--font); }
 .coord-chat-form button { width:44px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:19px; cursor:pointer; }
 .coord-chat-form button:disabled { opacity:.5; cursor:wait; }
