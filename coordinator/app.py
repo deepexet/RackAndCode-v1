@@ -461,6 +461,20 @@ def _integrate_job(job_id: str) -> None:
     with integration_lock:
         try:
             job = store.get_job(job_id)
+            is_handoff = (
+                str(job.get("createdBy", "")) == "autonomous-utilization"
+                or any(event["eventType"] == "job.reassigned" for event in store.list_events(job_id, limit=200))
+            )
+            if is_handoff:
+                before_scope = set(job.get("scopePaths", []))
+                job = store.expand_job_scope_with_existing_changes(job_id, actor="integration-handoff")
+                added_scope = [path for path in job.get("scopePaths", []) if path not in before_scope]
+                if added_scope:
+                    store.append_job_log(
+                        job_id,
+                        f"Integration inherited {len(added_scope)} existing handoff paths into scope",
+                        "system",
+                    )
             store.append_job_log(job_id, "Integration gate: validating scope and quality", "system")
             result = integrate_job_worktree(REPO_ROOT, job)
             store.update_integration_result(job_id, **{
