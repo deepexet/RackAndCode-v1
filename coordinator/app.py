@@ -43,6 +43,10 @@ EXECUTION_ENABLED = os.getenv("RACKPILOT_COORDINATOR_EXECUTION", "false").lower(
 SCHEDULER_ENABLED = EXECUTION_ENABLED and os.getenv("RACKPILOT_COORDINATOR_SCHEDULER", "true").lower() == "true"
 MAX_CONCURRENT = int(os.getenv("RACKPILOT_COORDINATOR_MAX_CONCURRENT", "2"))
 MAX_PER_AGENT = int(os.getenv("RACKPILOT_COORDINATOR_MAX_PER_AGENT", "1"))
+DEPLOYMENT_MODE = os.getenv("RACKPILOT_DEPLOYMENT_MODE", "development").lower().strip()
+AUTO_INTEGRATE = DEPLOYMENT_MODE == "development" and os.getenv(
+    "RACKPILOT_AUTO_INTEGRATE", "true"
+).lower() == "true"
 WORKTREE_ROOT = Path(
     os.getenv("RACKPILOT_WORKTREE_ROOT", REPO_ROOT.parent / f"{REPO_ROOT.name}-agent-worktrees")
 ).resolve()
@@ -213,6 +217,8 @@ async def health() -> dict[str, Any]:
         "service": "rackpilot-agent-coordinator",
         "version": app.version,
         "executionEnabled": EXECUTION_ENABLED,
+        "deploymentMode": DEPLOYMENT_MODE,
+        "autoIntegrate": AUTO_INTEGRATE,
         "controlConfigured": bool(CONTROL_TOKEN),
         "scheduler": scheduler.snapshot(),
         "autonomousShift": store.get_autonomous_shift(),
@@ -402,6 +408,12 @@ def _run_job(job_id: str) -> None:
         store.transition_job(job_id, "failed", exit_code=process.returncode, result_summary=combined, error=error_text)
     elif job["requiresReview"]:
         store.transition_job(job_id, "review", exit_code=0, result_summary=combined)
+        if AUTO_INTEGRATE:
+            store.transition_job(job_id, "integrating", actor="development-auto-apply")
+            threading.Thread(
+                target=_integrate_job, args=(job_id,), daemon=True,
+                name=f"dev-auto-integrate-{job_id[:8]}",
+            ).start()
     else:
         store.transition_job(job_id, "completed", exit_code=0, result_summary=combined)
     final = store.get_job(job_id)

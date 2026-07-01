@@ -60,3 +60,4 @@ RACKPILOT_AGENT_TOKEN='<enrollment token>' python3 mac_agent.py \
 
 Без `--compute-enabled` устройство передает telemetry, но не может получить вычислительную задачу. Окончательное разрешение задается отдельно в Admin. Token нельзя добавлять в Git, логи или screenshots; при компрометации удалите `data/agent.token` и перезапустите server для генерации нового.
 - Переключение production traffic требует отдельного change approval и rollback plan.
+- `RACKPILOT_DEPLOYMENT_MODE=development` enables verified agent auto-integration and idle-safe local service reloads. `production` keeps agent output in review; production promotion must use a separate staging environment, explicit approval, backup and rollback checks.

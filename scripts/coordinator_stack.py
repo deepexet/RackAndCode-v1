@@ -107,6 +107,7 @@ def run() -> int:
     coordinator_port = os.getenv("RACKPILOT_COORDINATOR_PORT", "4180")
     api_port = os.getenv("RACKPILOT_API_PORT", "4176")
     frontend_port = os.getenv("RACKPILOT_FRONTEND_PORT", "5176")
+    deployment_mode = os.getenv("RACKPILOT_DEPLOYMENT_MODE", "development").lower().strip()
     stop_requested = False
 
     def request_stop(*_: object) -> None:
@@ -127,6 +128,8 @@ def run() -> int:
             "RACKPILOT_COORDINATOR_MAX_PER_AGENT": base_env.get(
                 "RACKPILOT_COORDINATOR_MAX_PER_AGENT", "1"
             ),
+            "RACKPILOT_DEPLOYMENT_MODE": deployment_mode,
+            "RACKPILOT_AUTO_INTEGRATE": base_env.get("RACKPILOT_AUTO_INTEGRATE", "true"),
             "COORDINATOR_TOKEN": token,
             "COORDINATOR_URL": f"http://127.0.0.1:{coordinator_port}",
             "DB_PATH": base_env.get(
@@ -153,6 +156,23 @@ def run() -> int:
         ),
     }
     processes: dict[str, subprocess.Popen[bytes]] = {}
+    head_result = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+    )
+    applied_head = head_result.stdout.strip()
+    pending_head = ""
+
+    def restart_children_for_applied_code() -> None:
+        for child in processes.values():
+            if child.poll() is None:
+                child.terminate()
+        for child in processes.values():
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+        processes.clear()
+
     try:
         while not stop_requested:
             for name, (command, cwd, env) in specs.items():
@@ -160,6 +180,24 @@ def run() -> int:
                 if process is None or process.poll() is not None:
                     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] starting {name}", flush=True)
                     processes[name] = subprocess.Popen(command, cwd=cwd, env=env)
+            if deployment_mode == "development":
+                current = subprocess.run(
+                    ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, check=False,
+                ).stdout.strip()
+                if current and current != applied_head:
+                    pending_head = current
+                health = _health() or {}
+                scheduler_state = health.get("scheduler", {}) if isinstance(health, dict) else {}
+                idle = not any(int(scheduler_state.get(key, 0) or 0) for key in ("running", "integrating"))
+                if pending_head and idle:
+                    print(
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] applying integrated code {pending_head[:12]}",
+                        flush=True,
+                    )
+                    restart_children_for_applied_code()
+                    applied_head = pending_head
+                    pending_head = ""
             time.sleep(1)
     finally:
         for process in processes.values():

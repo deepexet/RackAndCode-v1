@@ -13,7 +13,7 @@ The coordinator does not let agents freely share one working directory. It assig
 - **Engineering & Integration Lead — Codex:** validates architecture against the repository, security and operational constraints; plans implementation; reviews code and tests; resolves integration conflicts and controls what enters the integration branch.
 - **Local AI Helper:** performs bounded text-only triage, summaries, classification and extraction without repository or command access.
 
-Architecture becomes actionable only after Claude records the proposal in an ADR and Codex records its technical review. Product-impacting tradeoffs remain subject to Product Owner approval. Neither agent merges to the integration branch automatically.
+Architecture becomes actionable only after Claude records the proposal in an ADR and Codex records its technical review. Product-impacting tradeoffs remain subject to Product Owner approval. In the current `development` deployment mode, successful coding jobs pass through the deterministic integration gate automatically and the supervised local stack reloads the integrated revision when all agents are idle. Future `production` mode disables automatic integration and runtime reload: changes remain in review/staging until explicit approval and promotion.
 
 The normal delivery loop is:
 

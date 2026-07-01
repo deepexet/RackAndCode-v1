@@ -228,6 +228,7 @@ class CoordinatorStoreTests(unittest.TestCase):
                     "build_agent_command",
                     return_value=["/bin/sh", "-c", "printf 'first\\nsecond\\n'"],
                 ),
+                patch.object(coordinator_app, "AUTO_INTEGRATE", False),
             ):
                 coordinator_app._run_job(job["id"])
         finally:
@@ -237,6 +238,27 @@ class CoordinatorStoreTests(unittest.TestCase):
         self.assertIn("first", messages)
         self.assertIn("second", messages)
         self.assertEqual(self.store.get_job(job["id"])["status"], "review")
+
+    def test_development_runner_sends_successful_job_directly_to_integration(self):
+        from coordinator import app as coordinator_app
+
+        job = self.store.create_job(self.payload(worktree_path=self.temp_dir.name))
+        self.store.transition_job(job["id"], "running")
+        previous_store = coordinator_app.store
+        coordinator_app.store = self.store
+        try:
+            with (
+                patch.object(coordinator_app, "probe_agent", return_value=AgentProbe("claude", True, "/bin/sh", "test")),
+                patch.object(coordinator_app, "build_agent_command", return_value=["/bin/sh", "-c", "printf 'done\\n'"]),
+                patch.object(coordinator_app, "AUTO_INTEGRATE", True),
+                patch.object(coordinator_app.threading, "Thread") as thread,
+            ):
+                coordinator_app._run_job(job["id"])
+        finally:
+            coordinator_app.store = previous_store
+
+        self.assertEqual(self.store.get_job(job["id"])["status"], "integrating")
+        thread.return_value.start.assert_called_once()
 
     def test_allowed_claude_usage_warning_is_not_a_rate_limit(self):
         from coordinator.app import _concise_failure, _is_rate_limited_output

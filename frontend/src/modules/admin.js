@@ -399,6 +399,8 @@ function renderAgents(d) {
       })}
       <p class="ui-dim" style="margin-top:14px;font-size:12px">
         Autonomous execution: <strong>${health.executionEnabled ? 'enabled' : 'disabled'}</strong> ·
+        Deployment: <strong>${esc(health.deploymentMode || 'development')}</strong> ·
+        Auto-apply: <strong>${health.autoIntegrate ? 'enabled' : 'approval required'}</strong> ·
         Scheduler: <strong>${scheduler.enabled ? `enabled (${scheduler.maxConcurrent || 0} parallel, ${scheduler.maxPerAgent || 0}/agent)` : 'disabled'}</strong> ·
         Control token: <strong>${health.controlConfigured ? 'configured' : 'not configured'}</strong>.
         Actions are available only to an authenticated Administrator and every action is audited.
