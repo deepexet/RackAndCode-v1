@@ -896,6 +896,12 @@ function computeAllWirePts() {
     if (!w.pts || w.pts.length < 2) _addToUsedSegs(pts, usedSegs)
   }
   applyParallelOffset(map)
+  // Parallel lane offsets and legacy/manual points can leave an immediate
+  // A→B→C reversal on the same axis. Removing B prevents a wire from drawing
+  // a dead-end tail and then retracing the same line away from a terminal.
+  for (const [wireId, pts] of Object.entries(map)) {
+    map[wireId] = _collapseCollinear(dedupePts(pts))
+  }
   return map
 }
 
@@ -1020,7 +1026,24 @@ function buildWirePath(pts, crossings) {
     const sorted = isH
       ? [...onSeg].sort((a,b) => x1 <= x2 ? a.x - b.x : b.x - a.x)
       : [...onSeg].sort((a,b) => y1 <= y2 ? a.y - b.y : b.y - a.y)
-    for (const c of sorted) {
+    // A parallel bundle represents one logical crossing. Collapse adjacent
+    // crossing points into one bridge instead of drawing an arc per conductor.
+    const merged = []
+    for (const crossing of sorted) {
+      const axis = isH ? crossing.x : crossing.y
+      const group = merged[merged.length - 1]
+      if (group && Math.abs(axis - group.lastAxis) <= HOP_R * 2 + 4) {
+        group.points.push(crossing)
+        group.lastAxis = axis
+      } else {
+        merged.push({ points: [crossing], lastAxis: axis })
+      }
+    }
+    for (const group of merged) {
+      const c = {
+        x: group.points.reduce((sum, point) => sum + point.x, 0) / group.points.length,
+        y: group.points.reduce((sum, point) => sum + point.y, 0) / group.points.length,
+      }
       if (isH) {
         const dir = x1 <= x2 ? 1 : -1
         // Arc curves upward (away from center of diagram is fine)

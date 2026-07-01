@@ -486,6 +486,12 @@ function openAgentJobDetails(jobId) {
 
   const refresh = async () => {
     if (closed || !target?.isConnected) return
+    const previousConsole = target.querySelector('.adm-agent-console')
+    const previousScroll = previousConsole ? {
+      top: previousConsole.scrollTop,
+      height: previousConsole.scrollHeight,
+      followingLatest: previousConsole.scrollTop < 24,
+    } : null
     try {
       const data = await apiJSON(`/api/v1/admin/coordinator/jobs/${encodeURIComponent(jobId)}?after=${lastLogId}`)
       const incomingAttempt = data.job?.attempt ?? 0
@@ -504,7 +510,7 @@ function openAgentJobDetails(jobId) {
       const fallback = !logs.length && job.resultSummary
         ? [{ id: 'result', stream: job.error ? 'stderr' : 'stdout', message: job.resultSummary, createdAt: job.completedAt }]
         : []
-      const visibleLogs = logs.length ? logs : fallback
+      const visibleLogs = (logs.length ? logs : fallback).slice().reverse()
       target.innerHTML = `
         <div class="adm-agent-live-head">
           <div><strong>${esc(job.title || 'Agent job')}</strong><span>${esc(job.assignedAgent || '—')} · ${esc(job.branchName || '—')}</span></div>
@@ -545,6 +551,12 @@ function openAgentJobDetails(jobId) {
           </section>
         </div>
         ${job.error ? `<div class="adm-agent-error"><strong>Error</strong>${esc(job.error)}</div>` : ''}`
+      const nextConsole = target.querySelector('.adm-agent-console')
+      if (nextConsole && previousScroll) {
+        nextConsole.scrollTop = previousScroll.followingLatest
+          ? 0
+          : previousScroll.top + Math.max(0, nextConsole.scrollHeight - previousScroll.height)
+      }
       if (job.status === 'running' || job.status === 'queued') {
         timer = setTimeout(refresh, 1500)
       }
