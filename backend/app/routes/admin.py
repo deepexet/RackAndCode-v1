@@ -719,7 +719,30 @@ async def _recover_failed_agent_jobs(
             continue
         error = str(job.get("integrationError") or job.get("error") or "").lower()
         try:
-            if "outside declared scope" in error or job.get("integrationError"):
+            if "integration conflict" in error:
+                marker = f"integration-reconcile:{job['id']}"
+                if any(candidate.get("createdBy") == marker for candidate in jobs):
+                    continue
+                result = await _coordinator("/api/v1/jobs", method="POST", body={
+                    "title": f"Integration reconciliation: {job.get('title', 'agent task')}",
+                    "instructions": (
+                        "Reconcile a completed agent branch with the current integration branch in a fresh "
+                        "worktree. Inspect the preserved source branch and commit, port the intended changes "
+                        "without reverting newer platform work, resolve semantic conflicts, run focused tests, "
+                        "and stop for review.\n\n"
+                        f"Source branch: {job.get('branchName', '')}\n"
+                        f"Previous integration error:\n{job.get('integrationError') or job.get('error', '')}"
+                    ),
+                    "assignedAgent": agent if agent in {"codex", "claude"} else "codex",
+                    "autoWorktree": True, "baseRef": settings.coordinator_base_ref,
+                    "scopePaths": job.get("scopePaths", []), "requiresReview": True, "maxTurns": 16,
+                    "createdBy": marker,
+                    "sourceOrganizationId": job.get("sourceOrganizationId", ""),
+                    "sourceProjectId": job.get("sourceProjectId", ""),
+                    "sourceWorkItemId": job.get("sourceWorkItemId", ""),
+                })
+                mode = "fresh-integration-reconciliation"
+            elif "outside declared scope" in error or job.get("integrationError"):
                 result = await _coordinator(f"/api/v1/jobs/{job['id']}/repair", method="POST", body={})
                 mode = "repair"
             elif "maximum number of turns" in error or "max_turns" in error:
@@ -1022,28 +1045,18 @@ async def autonomous_maintenance_cycle(ctx: Any) -> dict[str, Any]:
     active_items = {job.get("sourceWorkItemId") for job in active if job.get("sourceWorkItemId")}
     created: list[dict[str, Any]] = []
 
-    # Claude takes over a Codex worktree when Codex cannot proceed because of a subscription limit.
+    # Claude takes over the same job/worktree when Codex reaches a subscription limit.
+    # Reassignment preserves one lineage and avoids nested "Claude assist" copies.
     if "claude" not in busy_agents:
         limited = next((job for job in jobs if job.get("assignedAgent") == "codex"
                         and job.get("status") == "rate_limited"
                         and job.get("sourceWorkItemId") not in active_items), None)
         if limited:
-            payload = {
-                "title": f"Claude assist: {limited['title']}",
-                "instructions": (
-                    "Codex reached its subscription limit. Continue the same scoped task from the existing "
-                    "worktree. Inspect preserved work, finish only the assigned task, run focused tests, and stop "
-                    "for integration review. Do not expand scope.\n\n" + limited.get("instructions", "")
-                ),
-                "assignedAgent": "claude", "autoWorktree": False,
-                "worktreePath": limited["worktreePath"], "branchName": limited["branchName"],
-                "scopePaths": limited.get("scopePaths", []), "requiresReview": True, "maxTurns": 14,
-                "createdBy": "autonomous-utilization", "sourceOrganizationId": limited.get("sourceOrganizationId", ""),
-                "sourceProjectId": limited.get("sourceProjectId", ""), "sourceWorkItemId": limited.get("sourceWorkItemId", ""),
-            }
             try:
-                result = await _coordinator("/api/v1/jobs", method="POST", body=payload)
-                await _coordinator(f"/api/v1/jobs/{limited['id']}/cancel", method="POST", body={})
+                result = await _coordinator(
+                    f"/api/v1/jobs/{limited['id']}/reassign",
+                    method="POST", body={"assignedAgent": "claude"},
+                )
                 created.append(result.get("job", {}))
                 busy_agents.add("claude")
                 active_items.add(limited.get("sourceWorkItemId"))
